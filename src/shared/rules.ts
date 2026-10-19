@@ -15,7 +15,12 @@ export function capFor(total: number, capPct: number): number {
   return Math.floor((capPct * 100 * total + 1e-6) / 10000);
 }
 
-export type PackStatus = 'ok' | 'over' | 'short' | 'moved_too_much';
+/**
+ * `invalid`: an input is not usable (total, a start or a value is not a finite
+ * whole number >= 0, capPct is not a finite number >= 0, or starts/values differ
+ * in length). It takes precedence over over/short and is never ok.
+ */
+export type PackStatus = 'ok' | 'over' | 'short' | 'moved_too_much' | 'invalid';
 
 export interface PackCheck {
   ok: boolean;
@@ -29,26 +34,52 @@ export interface PackCheck {
   cap: number;
 }
 
+function isWholeCases(n: number): boolean {
+  return Number.isFinite(n) && Number.isInteger(n) && n >= 0;
+}
+
+/** Numbers reported to the UI are always finite: anything not computable shows as 0. */
+function finiteOrZero(n: number | undefined): number {
+  return n !== undefined && Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * Never throws (the UI calls it while users type); unusable input yields
+ * status 'invalid' with ok:false and finite numeric fields.
+ */
 export function checkPack(total: number, starts: number[], values: number[], capPct: number): PackCheck {
-  if (starts.length !== values.length) {
-    throw new RangeError(`checkPack: starts (${starts.length}) and values (${values.length}) differ in length`);
-  }
-  const cap = capFor(total, capPct);
+  const valid =
+    starts.length === values.length &&
+    isWholeCases(total) &&
+    starts.every(isWholeCases) &&
+    values.every(isWholeCases) &&
+    Number.isFinite(capPct) &&
+    capPct >= 0;
+
+  const safeTotal = finiteOrZero(total);
+  const cap = valid ? capFor(total, capPct) : finiteOrZero(Number.isFinite(capPct) && capPct >= 0 ? capFor(safeTotal, capPct) : 0);
   let sum = 0;
   let moved = 0;
   let maxChange = 0;
   for (let i = 0; i < values.length; i++) {
-    const v = values[i]!;
-    const delta = v - starts[i]!;
+    const v = finiteOrZero(values[i]);
+    const delta = v - finiteOrZero(starts[i]);
     sum += v;
     if (delta > 0) moved += delta;
     const abs = Math.abs(delta);
     if (abs > maxChange) maxChange = abs;
   }
-  const diff = sum - total;
-  const status: PackStatus =
-    diff > 0 ? 'over' : diff < 0 ? 'short' : moved > cap || maxChange > cap ? 'moved_too_much' : 'ok';
-  return { ok: status === 'ok', status, total, sum, diff, moved, cap };
+  const diff = sum - safeTotal;
+  const status: PackStatus = !valid
+    ? 'invalid'
+    : diff > 0
+      ? 'over'
+      : diff < 0
+        ? 'short'
+        : moved > cap || maxChange > cap
+          ? 'moved_too_much'
+          : 'ok';
+  return { ok: status === 'ok', status, total: safeTotal, sum, diff, moved, cap };
 }
 
 export function checkAll(

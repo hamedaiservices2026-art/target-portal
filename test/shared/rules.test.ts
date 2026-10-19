@@ -94,8 +94,32 @@ describe('checkPack', () => {
     expect(checkPack(19, [10, 9], [9, 10], 5).status).toBe('moved_too_much');
   });
 
-  it('rejects mismatched lengths', () => {
-    expect(() => checkPack(10, [5, 5], [10], 5)).toThrow(RangeError);
+  describe('invalid input fails closed (never throws, never ok, no NaN in output)', () => {
+    const expectInvalid = (r: ReturnType<typeof checkPack>) => {
+      expect(r.status).toBe('invalid');
+      expect(r.ok).toBe(false);
+      for (const n of [r.total, r.sum, r.diff, r.moved, r.cap]) expect(Number.isFinite(n)).toBe(true);
+    };
+
+    it('NaN value', () => expectInvalid(checkPack(1000, [700, 300], [Number.NaN, 300], 5)));
+    it('NaN start', () => expectInvalid(checkPack(1000, [Number.NaN, 300], [700, 300], 5)));
+    it('NaN total', () => expectInvalid(checkPack(Number.NaN, [700, 300], [700, 300], 5)));
+    it('Infinity value', () => expectInvalid(checkPack(1000, [700, 300], [Infinity, 300], 5)));
+    it('negative value', () => expectInvalid(checkPack(1000, [700, 300], [-100, 1100], 5)));
+    it('negative total', () => expectInvalid(checkPack(-5, [0], [0], 5)));
+    it('fractional value', () => expectInvalid(checkPack(1000, [700, 300], [700.5, 299.5], 5)));
+    it('fractional start', () => expectInvalid(checkPack(1000, [700.5, 299.5], [700, 300], 5)));
+    it('fractional total', () => expectInvalid(checkPack(1000.5, [700, 300], [700, 300], 5)));
+    it('mismatched lengths', () => expectInvalid(checkPack(10, [5, 5], [10], 5)));
+    it('NaN or negative capPct', () => {
+      expectInvalid(checkPack(1000, [700, 300], [700, 300], Number.NaN));
+      expectInvalid(checkPack(1000, [700, 300], [700, 300], -5));
+    });
+
+    it('invalid takes precedence over over/short', () => {
+      expect(checkPack(1000, [700, 300], [900.5, 300], 5).status).toBe('invalid');
+      expect(checkPack(1000, [700, 300], [-1, 300], 5).status).toBe('invalid');
+    });
   });
 });
 
@@ -125,6 +149,13 @@ describe('checkAll', () => {
     const r = checkAll({ P1: 10 }, [{ P1: 10 }, {}], [{ P1: 10 }, {}], ['P1', 'P2'], 5);
     expect(r.ok).toBe(true);
     expect(r.byPack.P2).toMatchObject({ total: 0, sum: 0, status: 'ok' });
+  });
+
+  it('is not ok when a pack has invalid input (NaN)', () => {
+    const r = checkAll(totals, starts, [{ P1: Number.NaN, P2: 60 }, { P1: 350, P2: 40 }], packs, 5);
+    expect(r.ok).toBe(false);
+    expect(r.byPack.P1?.status).toBe('invalid');
+    expect(r.byPack.P2?.status).toBe('ok');
   });
 
   it('is ok for an empty pack list', () => {
