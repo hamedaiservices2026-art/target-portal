@@ -1,0 +1,31 @@
+{
+  "name": "target-portal",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n web,worker \"vite build --watch\" \"wrangler dev\"",
+    "build": "vite build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "e2e": "playwright test",
+    "deploy": "npm run build && wrangler deploy"
+  },
+  "dependencies": {
+    "hono": "4.13.13",
+    "preact": "11.0.1",
+    "preact-iso": "2.12.2"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.4.5",
+    "@cloudflare/workers-types": "5.20261019.1",
+    "@playwright/test": "1.64.1",
+    "@preact/preset-vite": "2.10.6",
+    "@types/node": "26.6.5",
+    "concurrently": "10.0.6",
+    "typescript": "7.0.2",
+    "vite": "8.3.4",
+    "vitest": "5.0.5",
+    "wrangler": "4.151.2"
+  }
+}
