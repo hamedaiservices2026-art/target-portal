@@ -1,12 +1,14 @@
 -- Target Management Portal: initial schema.
 -- Timestamps are ISO-8601 text (UTC). *_json columns hold JSON text.
+-- ids of users/departments/nodes/leaves use AUTOINCREMENT so a deleted id is never
+-- reused (month snapshot tables keep old ids without a foreign key).
 -- D1 enforces foreign keys. Month tables are history snapshots: their
 -- node_id / leaf_id / manager_user_id columns deliberately carry NO foreign key
 -- to the live tree or users, so editing the live tree never rewrites or blocks
 -- a past month.
 
 CREATE TABLE users (
-  id        INTEGER PRIMARY KEY,
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
   username  TEXT NOT NULL UNIQUE,
   name      TEXT NOT NULL,
   email     TEXT,
@@ -25,7 +27,7 @@ CREATE TABLE sessions (
 CREATE INDEX idx_sessions_user ON sessions(user_id);
 
 CREATE TABLE departments (
-  id   INTEGER PRIMARY KEY,
+  id   INTEGER PRIMARY KEY AUTOINCREMENT,
   code TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL
 );
@@ -45,7 +47,7 @@ INSERT INTO settings(key, value) VALUES ('cap_pct', '5');
 
 -- Live tree (edited by the admin; copied into each month when it opens).
 CREATE TABLE nodes (
-  id              INTEGER PRIMARY KEY,
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
   dept_id         INTEGER NOT NULL REFERENCES departments(id),
   parent_id       INTEGER REFERENCES nodes(id),
   name            TEXT NOT NULL,
@@ -53,9 +55,11 @@ CREATE TABLE nodes (
   UNIQUE (dept_id, name)
 );
 CREATE INDEX idx_nodes_parent ON nodes(parent_id);
+-- Exactly one root per department.
+CREATE UNIQUE INDEX uq_nodes_root ON nodes(dept_id) WHERE parent_id IS NULL;
 
 CREATE TABLE leaves (
-  id              INTEGER PRIMARY KEY,
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
   dept_id         INTEGER NOT NULL REFERENCES departments(id),
   delivery_system TEXT NOT NULL,
   route_code      TEXT NOT NULL,

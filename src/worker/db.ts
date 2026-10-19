@@ -2,14 +2,17 @@
 // run and chunk.
 
 /**
- * D1 Free allows 50 queries per Worker invocation, and every statement inside
- * db.batch() counts (docs/decisions.md). One db.batch() call therefore never
- * carries more than this many statements.
+ * D1 Free allows 50 queries per Worker invocation (docs/decisions.md), and the
+ * cap is per REQUEST, not per db.batch() call. A request already spends
+ * queries on session lookup, authorization, version checks and audit, so one
+ * batch gets a budget of 40 for the whole request. Bulk work must therefore be
+ * set-based SQL (insertJson, or `... WHERE id IN (SELECT value FROM json_each(?))`),
+ * never one statement per row.
  */
-export const MAX_STATEMENTS_PER_BATCH = 50;
+export const MAX_STATEMENTS_PER_REQUEST = 40;
 
-/** D1 allows at most 100 bound parameters per statement (docs/decisions.md). */
-export const MAX_BOUND_PARAMS = 100;
+/** Largest row count insertJson accepts in one call. */
+export const MAX_INSERT_ROWS = 200;
 
 export type Bindable = string | number | boolean | null | ArrayBuffer;
 
@@ -48,17 +51,16 @@ export async function run(
 }
 
 /**
- * Run prepared statements, at most MAX_STATEMENTS_PER_BATCH per db.batch().
- * Each chunk is atomic; the whole list is NOT (a later chunk can fail after an
- * earlier one committed). Callers needing all-or-nothing must stay within one
- * chunk, or use insertJson (a single statement).
+ * Run prepared statements as ONE atomic db.batch(). Throws before touching the
+ * database when more than MAX_STATEMENTS_PER_REQUEST are passed: splitting
+ * would both exceed the per-request query cap and lose atomicity.
  */
 export async function batch(db: D1Database, stmts: D1PreparedStatement[]): Promise<D1Result[]> {
-  const out: D1Result[] = [];
-  for (let i = 0; i < stmts.length; i += MAX_STATEMENTS_PER_BATCH) {
-    out.push(...(await db.batch(stmts.slice(i, i + MAX_STATEMENTS_PER_BATCH))));
+  if (stmts.length > MAX_STATEMENTS_PER_REQUEST) {
+    throw new Error(`D1 statement budget exceeded: ${stmts.length} > ${MAX_STATEMENTS_PER_REQUEST}`);
   }
-  return out;
+  if (stmts.length === 0) return [];
+  return db.batch(stmts);
 }
 
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -73,7 +75,7 @@ function ident(name: string): string {
  *   INSERT INTO t (a, b) SELECT json_extract(value,'$.a'), json_extract(value,'$.b')
  *   FROM json_each(?) WHERE true [onConflict]
  * Keeps a 200-row batch to a single query (50-queries cap) and one bound
- * parameter (100-params cap). Keep batches to <= 200 rows.
+ * parameter (100-params cap). At most MAX_INSERT_ROWS (200) rows per call.
  *
  * Column values may be string, number, boolean (stored 1/0) or null. A JSON
  * string stays a string, so pass `values_json`-style columns already
@@ -88,6 +90,9 @@ export async function insertJson(
   rows: Record<string, unknown>[],
   opts: { onConflict?: string } = {},
 ): Promise<void> {
+  if (rows.length > MAX_INSERT_ROWS) {
+    throw new Error(`insertJson: ${rows.length} rows exceeds the ${MAX_INSERT_ROWS}-row batch limit`);
+  }
   if (rows.length === 0) return;
   const t = ident(table);
   const cols = columns.map(ident);

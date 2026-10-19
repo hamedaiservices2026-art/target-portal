@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:test';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { all, batch, insertJson, MAX_STATEMENTS_PER_BATCH, one, run } from '../../src/worker/db';
+import { all, batch, insertJson, MAX_STATEMENTS_PER_REQUEST, one, run } from '../../src/worker/db';
 
 const TABLES = [
   'users', 'sessions', 'departments', 'packs', 'settings', 'nodes', 'leaves', 'months',
@@ -68,6 +68,30 @@ describe('migration 0001_init', () => {
   });
 });
 
+describe('ids and tree shape', () => {
+  it('never reuses a deleted leaf id (AUTOINCREMENT)', async () => {
+    const { deptId } = await seedMonth();
+    await run(env.DB, `INSERT INTO nodes(dept_id, parent_id, name) VALUES (?, NULL, 'root')`, deptId);
+    const node = await one<{ id: number }>(env.DB, `SELECT id FROM nodes`);
+    const ins = `INSERT INTO leaves(dept_id, delivery_system, route_code, node_id, label) VALUES (?, 'DS', ?, ?, 'x')`;
+    await run(env.DB, ins, deptId, 'R1', node!.id);
+    const second = await run(env.DB, ins, deptId, 'R2', node!.id);
+    await run(env.DB, `DELETE FROM leaves WHERE id = ?`, second.lastRowId);
+    const third = await run(env.DB, ins, deptId, 'R3', node!.id);
+    expect(third.lastRowId).toBeGreaterThan(second.lastRowId);
+  });
+
+  it('allows one root per department only', async () => {
+    await run(env.DB, `INSERT INTO departments(code, name) VALUES ('D1','d1'), ('D2','d2')`);
+    const [d1, d2] = await all<{ id: number }>(env.DB, `SELECT id FROM departments ORDER BY code`);
+    const ins = `INSERT INTO nodes(dept_id, parent_id, name) VALUES (?, ?, ?)`;
+    const root = await run(env.DB, ins, d1!.id, null, 'root');
+    await run(env.DB, ins, d2!.id, null, 'root');
+    await expect(run(env.DB, ins, d1!.id, null, 'second root')).rejects.toThrow();
+    await run(env.DB, ins, d1!.id, root.lastRowId, 'child');
+  });
+});
+
 describe('db helpers', () => {
   it('one returns null when there is no row, all returns []', async () => {
     expect(await one(env.DB, `SELECT * FROM users`)).toBeNull();
@@ -79,19 +103,25 @@ describe('db helpers', () => {
     expect(res.changes).toBe(1);
   });
 
-  it('batch chunks into groups of at most MAX_STATEMENTS_PER_BATCH', async () => {
-    expect(MAX_STATEMENTS_PER_BATCH).toBe(50);
-    const sizes: number[] = [];
+  const insertDept = (i: number) =>
+    env.DB.prepare(`INSERT INTO departments(code, name) VALUES (?, ?)`).bind(`C${i}`, `n${i}`);
+
+  it('batch runs exactly MAX_STATEMENTS_PER_REQUEST (40) statements in one atomic call', async () => {
+    expect(MAX_STATEMENTS_PER_REQUEST).toBe(40);
+    let calls = 0;
     const spy = {
       prepare: (sql: string) => env.DB.prepare(sql),
-      batch: (stmts: D1PreparedStatement[]) => { sizes.push(stmts.length); return env.DB.batch(stmts); },
+      batch: (stmts: D1PreparedStatement[]) => { calls++; return env.DB.batch(stmts); },
     } as unknown as D1Database;
-    const stmts = Array.from({ length: 120 }, (_, i) =>
-      env.DB.prepare(`INSERT INTO departments(code, name) VALUES (?, ?)`).bind(`C${i}`, `n${i}`));
-    await batch(spy, stmts);
-    expect(sizes).toEqual([50, 50, 20]);
-    const n = await one<{ n: number }>(env.DB, `SELECT COUNT(*) AS n FROM departments`);
-    expect(n!.n).toBe(120);
+    await batch(spy, Array.from({ length: 40 }, (_, i) => insertDept(i)));
+    expect(calls).toBe(1);
+    expect((await one<{ n: number }>(env.DB, `SELECT COUNT(*) AS n FROM departments`))!.n).toBe(40);
+  });
+
+  it('batch with 41 statements throws before touching the database', async () => {
+    await expect(batch(env.DB, Array.from({ length: 41 }, (_, i) => insertDept(i))))
+      .rejects.toThrow('D1 statement budget exceeded: 41 > 40');
+    expect((await one<{ n: number }>(env.DB, `SELECT COUNT(*) AS n FROM departments`))!.n).toBe(0);
   });
 
   it('batch with no statements is a no-op', async () => {
@@ -151,6 +181,12 @@ describe('insertJson (json_each bulk insert)', () => {
     await insertJson(env.DB, 'nodes', ['dept_id', 'parent_id', 'name'], [{ dept_id: d!.id, parent_id: null, name: 'r' }]);
     const n = await one<{ parent_id: number | null }>(env.DB, `SELECT parent_id FROM nodes WHERE name = 'r'`);
     expect(n?.parent_id).toBeNull();
+  });
+
+  it('rejects more than 200 rows', async () => {
+    const rows = Array.from({ length: 201 }, (_, i) => ({ code: `C${i}`, name: 'x' }));
+    await expect(insertJson(env.DB, 'departments', ['code', 'name'], rows)).rejects.toThrow(/200/);
+    expect((await one<{ n: number }>(env.DB, `SELECT COUNT(*) AS n FROM departments`))!.n).toBe(0);
   });
 
   it('rejects unsafe identifiers', async () => {
