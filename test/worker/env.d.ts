@@ -5,6 +5,7 @@ declare global {
     interface Env {
       DB: D1Database;
       ASSETS: Fetcher;
+      BOOTSTRAP_ADMIN_PASSWORD?: string;
       TEST_MIGRATIONS: D1Migration[];
     }
   }
