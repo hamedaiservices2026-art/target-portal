@@ -89,26 +89,42 @@ function casesValue(cell: unknown): number | null {
   return null;
 }
 
-function findHeader(rows: unknown[][]): { index: number; cols: number[] } | null {
+/** Thrown when no row of the sheet contains all six expected column names. */
+export class ForecastHeaderError extends Error {
+  readonly missing: string[];
+  constructor(missing: string[]) {
+    super(`Header row not found. Missing columns: ${missing.join(', ')}`);
+    this.name = 'ForecastHeaderError';
+    this.missing = missing;
+  }
+}
+
+function findHeader(rows: unknown[][]): { index: number; cols: number[] } {
+  let bestMissing: string[] = [...HEADER_NAMES];
+  let bestFound = 0;
   for (let i = 0; i < rows.length; i++) {
     const cells = rows[i];
     if (!Array.isArray(cells)) continue;
     const keys = cells.map((c) => (typeof c === 'string' ? squash(c) : ''));
     const cols = HEADER_KEYS.map((k) => keys.indexOf(k));
-    if (cols.every((c) => c >= 0)) return { index: i, cols };
+    const found = cols.filter((c) => c >= 0).length;
+    if (found === HEADER_KEYS.length) return { index: i, cols };
+    if (found > bestFound) {
+      bestFound = found;
+      bestMissing = HEADER_NAMES.filter((_, k) => cols[k]! < 0);
+    }
   }
-  return null;
+  throw new ForecastHeaderError(bestMissing);
 }
 
 /**
- * Finds the header row, then reads the rows below it. A row is skipped as
+ * Finds the header row (throws ForecastHeaderError if there is none), then reads the rows below it. A row is skipped as
  * blank when Period, Delivery System, Route Code, Salesman ID and Cases are all
  * blank (this also drops the real file's template tail, which has only the pack
  * column filled).
  */
 export function normalizeForecastRows(rows: unknown[][]): RawRow[] {
   const header = findHeader(rows);
-  if (!header) return [];
   const [cPeriod, cDs, cRoute, cSales, cPack, cCases] = header.cols as [number, number, number, number, number, number];
   const out: RawRow[] = [];
   for (let i = header.index + 1; i < rows.length; i++) {
@@ -146,6 +162,10 @@ export function checkForecast(rows: RawRow[], ctx: ForecastContext): ForecastChe
   const err = (code: Issue['code'], line: number, detail: string) => errors.push({ level: 'error', code, line, detail });
   const warn = (code: Issue['code'], detail: string, line?: number) =>
     warnings.push(line === undefined ? { level: 'warning', code, detail } : { level: 'warning', code, line, detail });
+
+  if (rows.length === 0) {
+    errors.push({ level: 'error', code: 'no_rows', detail: 'The file has a header but no data rows.' });
+  }
 
   const packSet = new Set(ctx.packs);
   const packsInFile = new Set<string>();

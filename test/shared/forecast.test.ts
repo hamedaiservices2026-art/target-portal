@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkForecast, compareToTotals, normalizeForecastRows } from '../../src/shared/forecast';
+import { ForecastHeaderError, checkForecast, compareToTotals, normalizeForecastRows } from '../../src/shared/forecast';
 import type { RawRow } from '../../src/shared/forecast';
 import { CLEAN_ROWS, DS, HEADER, LEAVES, PACKS, excelRows, row } from '../fixtures/forecast-small';
 
@@ -41,8 +41,34 @@ describe('normalizeForecastRows', () => {
     expect(out[0]!.line).toBe(2);
   });
 
-  it('returns no rows when the header is missing', () => {
-    expect(normalizeForecastRows([['a', 'b'], [1, 2]])).toEqual([]);
+  it('throws ForecastHeaderError listing the missing columns of the best-matching row', () => {
+    const garbled = ['Period (YYYY-MM)', 'Delivery Sistem', 'Route Code', 'Salesman ID', 'Sales Target Category', 'Case'];
+    let caught: unknown;
+    try {
+      normalizeForecastRows([['title'], garbled, ['2026-10', DS, 1, 2, 'PEP', 3]]);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ForecastHeaderError);
+    expect((caught as ForecastHeaderError).missing).toEqual(['Delivery System', 'Cases']);
+  });
+
+  it('throws with all six columns missing when no row resembles a header', () => {
+    expect(() => normalizeForecastRows([['a', 'b'], [1, 2]])).toThrow(ForecastHeaderError);
+    try {
+      normalizeForecastRows([['a', 'b'], [1, 2]]);
+    } catch (e) {
+      expect((e as ForecastHeaderError).missing).toEqual(HEADER);
+    }
+    expect(() => normalizeForecastRows([])).toThrow(ForecastHeaderError);
+  });
+
+  it('header-only file: normalize returns [] and checkForecast reports no_rows', () => {
+    const rows = normalizeForecastRows([HEADER]);
+    expect(rows).toEqual([]);
+    const r = checkForecast(rows, ctx());
+    expect(r.errors).toMatchObject([{ level: 'error', code: 'no_rows' }]);
+    expect(r.grids).toEqual([]);
   });
 
   it('keeps unusable cases as null and non-date, non-string periods as text that will mismatch', () => {
