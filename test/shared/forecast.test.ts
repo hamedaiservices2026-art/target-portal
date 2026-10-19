@@ -21,6 +21,19 @@ describe('normalizeForecastRows', () => {
     ]);
   });
 
+  it('skips blank rows in the middle of the data and still reads the rows after them', () => {
+    const out = normalizeForecastRows([
+      HEADER,
+      ['2026-10', DS, 1, 'a', 'PEP', 1],
+      [null, null, null, null, null, null],
+      [null, null, null, null, 'PEP', null],
+      ['2026-10', DS, 2, 'b', 'PEP', 2],
+      [null, null, null, null, 'PEP', null],
+      [null, null, null, null, 'MIR', null],
+    ]);
+    expect(out.map((r) => [r.line, r.routeCode])).toEqual([[2, '1'], [5, '2']]);
+  });
+
   it('matches header names case- and space-insensitively', () => {
     const header = ['period (yyyy-mm)', ' DELIVERY  SYSTEM', 'route code', 'salesman id', 'sales target category', 'CASES'];
     const out = normalizeForecastRows([header, ['2026-10', DS, 1, 2, 'PEP', 3]]);

@@ -101,10 +101,10 @@ function findHeader(rows: unknown[][]): { index: number; cols: number[] } | null
 }
 
 /**
- * Finds the header row, then reads rows below it until the template tail.
- * A row ends the data when its first five cells are blank, or when Period,
- * Delivery System, Route Code, Salesman ID and Cases are all blank (the real
- * file's tail has only the pack column filled).
+ * Finds the header row, then reads the rows below it. A row is skipped as
+ * blank when Period, Delivery System, Route Code, Salesman ID and Cases are all
+ * blank (this also drops the real file's template tail, which has only the pack
+ * column filled).
  */
 export function normalizeForecastRows(rows: unknown[][]): RawRow[] {
   const header = findHeader(rows);
@@ -113,9 +113,8 @@ export function normalizeForecastRows(rows: unknown[][]): RawRow[] {
   const out: RawRow[] = [];
   for (let i = header.index + 1; i < rows.length; i++) {
     const cells = rows[i] ?? [];
-    const first5Blank = [0, 1, 2, 3, 4].every((c) => isBlank(cells[c]));
-    const tail = [cPeriod, cDs, cRoute, cSales, cCases].every((c) => isBlank(cells[c]));
-    if (first5Blank || tail) break;
+    const blank = [cPeriod, cDs, cRoute, cSales, cCases].every((c) => isBlank(cells[c]));
+    if (blank) continue;
     out.push({
       line: i + 1,
       period: periodText(cells[cPeriod]),
