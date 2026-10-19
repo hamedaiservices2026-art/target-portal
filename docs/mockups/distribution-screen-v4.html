@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Distribution Screen Mockup</title>
+<style>
+:root{
+  --bg:#f5f6f8; --panel:#ffffff; --ink:#1b2430; --muted:#6b7684; --line:#e3e6eb;
+  --brand:#0b4ea2; --ok:#1f8a4c; --ok-bg:#e7f5ec; --bad:#c62f2f; --bad-bg:#fbeaea;
+  --warn:#a66300; --warn-bg:#fdf3e1; --chip:#eef2f7; --input:#ffffff; --grp:#e9eef6;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#12161c; --panel:#1a2029; --ink:#e7ebf0; --muted:#97a2af; --line:#2b333f;
+    --brand:#6aa5ff; --ok:#5fd08f; --ok-bg:#16301f; --bad:#ff7a7a; --bad-bg:#3a1c1c;
+    --warn:#f2b45a; --warn-bg:#3a2c14; --chip:#232b36; --input:#11161d; --grp:#1f2836;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.4 system-ui,-apple-system,"Segoe UI",Tahoma,Roboto,sans-serif}
+html[dir=rtl] body{font-family:"Segoe UI",Tahoma,"Noto Sans Arabic",system-ui,sans-serif}
+.banner{background:var(--warn-bg);color:var(--warn);text-align:center;padding:6px 16px;font-size:12px}
+header{display:flex;align-items:center;gap:16px;padding:12px 20px;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap}
+header .logo{font-weight:700;color:var(--brand)}
+header .crumbs{color:var(--muted)}
+header .user{margin-inline-start:auto;color:var(--muted)}
+.lang{font:inherit;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:8px;padding:5px 12px;cursor:pointer;font-weight:600}
+main{padding:16px 20px;max-width:1320px;margin:0 auto}
+.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:14px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.card .k{font-size:12px;color:var(--muted)}
+.card .v{font-size:20px;font-weight:650;margin-top:2px;font-variant-numeric:tabular-nums}
+.card .v small{font-size:12px;font-weight:500;color:var(--muted)}
+.lock{font-size:11px;background:var(--chip);border-radius:4px;padding:1px 6px;margin-inline-start:6px;color:var(--muted)}
+.legend{display:flex;gap:16px;flex-wrap:wrap;color:var(--muted);font-size:12px;margin:8px 0 14px}
+.legend b{color:var(--ink)}
+.toolbar{display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+.search{position:relative;flex:1 1 280px;max-width:420px}
+.search input{width:100%;font:inherit;padding:8px 12px;padding-inline-start:32px;border:1px solid var(--line);border-radius:8px;background:var(--input);color:var(--ink)}
+.search svg{position:absolute;inset-inline-start:10px;top:50%;transform:translateY(-50%);width:15px;height:15px;color:var(--muted)}
+.tab{border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:999px;padding:5px 14px;cursor:pointer;font:inherit}
+.tab.on{background:var(--brand);border-color:var(--brand);color:#fff}
+tr.grp.lvl1 td,tr.grp.lvl2 td{background:var(--chip);font-weight:600}
+tr.grp.lvl2 td{font-weight:550}
+.toolbar label{color:var(--muted);display:flex;align-items:center;gap:6px}
+.toolbar .spacer{flex:1}
+.btn{font:inherit;border-radius:8px;padding:8px 14px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
+.btn.primary{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:600}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.link{border:none;background:none;color:var(--brand);padding:8px 6px}
+.tablewrap{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:auto;max-height:72vh}
+table{border-collapse:collapse;width:100%;min-width:1040px}
+th,td{padding:7px 10px;border-bottom:1px solid var(--line);text-align:end;white-space:nowrap;font-variant-numeric:tabular-nums}
+thead th{position:sticky;background:var(--panel);font-size:12px;color:var(--muted);font-weight:600;z-index:2}
+thead tr.h1 th{top:0}
+thead tr.h2 th{top:44px;padding-top:4px;padding-bottom:8px}
+th.s,td.s{text-align:start}
+th .sub{display:block;font-weight:400;font-size:11px}
+.f{width:100%;min-width:70px;font:inherit;font-size:12px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--input);color:var(--ink)}
+.f.num{text-align:end}
+.f.on{border-color:var(--brand);outline:1px solid var(--brand)}
+tr.grp td{background:var(--grp);font-weight:650;cursor:pointer}
+tr.grp td.s{font-size:13px}
+tr.grp .caret{display:inline-block;width:14px;color:var(--muted)}
+tr.grp .gsub{display:block;font-weight:500;font-size:11px;color:var(--muted)}
+tr.grp .gsub.up{color:var(--ok)} tr.grp .gsub.down{color:var(--warn)}
+td.pack{font-weight:600}
+td.tgt{font-weight:650}
+.cell{display:flex;flex-direction:column;align-items:flex-end;gap:2px}
+.cell input{width:84px;text-align:end;font:inherit;font-variant-numeric:tabular-nums;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--input);color:var(--ink)}
+.cell input:focus{outline:2px solid var(--brand);outline-offset:-1px}
+.cell .d{font-size:11px;color:var(--muted)}
+.cell .d.up{color:var(--ok)} .cell .d.down{color:var(--warn)}
+.cell.over input{border-color:var(--bad);background:var(--bad-bg)}
+.cell.over .d{color:var(--bad);font-weight:600}
+.status{font-size:12px;border-radius:999px;padding:2px 9px;display:inline-block}
+.status.ok{background:var(--ok-bg);color:var(--ok)}
+.status.bad{background:var(--bad-bg);color:var(--bad)}
+.moved{font-size:12px;color:var(--muted)}
+.moved.bad{color:var(--bad);font-weight:600}
+.reset{border:none;background:none;color:var(--brand);cursor:pointer;font:inherit;font-size:12px}
+.foot{color:var(--muted);font-size:12px;margin-top:10px}
+.empty{color:var(--muted);text-align:center;padding:30px}
+</style>
+</head>
+<body>
+<div class="banner" data-t="banner"></div>
+<header>
+  <span class="logo" data-t="logo"></span>
+  <span class="crumbs" data-t="crumbs"></span>
+  <span class="user" data-t="user"></span>
+  <button class="lang" id="langBtn"></button>
+</header>
+<main>
+  <div class="summary">
+    <div class="card"><div class="k"><span data-t="myTarget"></span><span class="lock" data-t="locked"></span></div><div class="v" id="sTotal"></div></div>
+    <div class="card"><div class="k" data-t="team"></div><div class="v">4 <small data-t="salesmen"></small></div></div>
+    <div class="card"><div class="k" data-t="cap"></div><div class="v">5% <small data-t="capSub"></small></div></div>
+    <div class="card"><div class="k" data-t="passing"></div><div class="v" id="sPass"></div></div>
+    <div class="card"><div class="k" data-t="deadline"></div><div class="v"><span data-t="deadlineVal"></span> <small data-t="placeholder"></small></div></div>
+  </div>
+
+  <div class="legend">
+    <span><b data-t="r1h"></b> <span data-t="r1"></span></span>
+    <span><b data-t="r2h"></b> <span data-t="r2"></span></span>
+    <span><b data-t="r3h"></b> <span data-t="r3"></span></span>
+  </div>
+
+  <div class="toolbar">
+    <button class="tab on" data-g="all" data-t="tabAll"></button>
+    <button class="tab" data-g="CSD">CSD</button>
+    <button class="tab" data-g="Water" data-t="tabWater"></button>
+    <button class="tab" data-g="LRB-Others">LRB-Others</button>
+  </div>
+  <div class="toolbar">
+    <div class="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+      <input id="q" type="search">
+    </div>
+    <label><input type="checkbox" id="hideZero" checked> <span data-t="hideZero"></span></label>
+    <button class="btn link" id="expandAll" data-t="expandAll"></button>
+    <button class="btn link" id="collapseAll" data-t="collapseAll"></button>
+    <button class="btn link" id="clearF" data-t="clearF"></button>
+    <span class="spacer"></span>
+    <button class="btn" id="saveBtn" data-t="save"></button>
+    <button class="btn primary" id="submitBtn" disabled data-t="submit"></button>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr class="h1" id="head"></tr><tr class="h2" id="filters"></tr></thead>
+      <tbody id="body"></tbody>
+    </table>
+  </div>
+  <div class="foot" id="foot"></div>
+</main>
+
+<script>
+const DATA = {"routes":[{"route":314023,"salesman":42059,"vals":{"CSD_CANS150":296,"CSD_CANS240":2236,"CSD_CANS250":0,"CSD_CANS300":169,"CSD_CANS320":3292,"CSD_CANS325":99,"CSD_CANS330":4899,"CSD_CANS355":0,"CSD_CANS360":0,"CSD_NRB":353,"CSD_SSPET250":351,"CSD_SSPET400":81,"CSD_PET1000":5015,"CSD_PET2000":1672,"CSD_PET2200":0,"CSD_PET2250":470,"PMIX":0,"LIT_CANS240":232,"LIT_CANS150":0,"LIT_CANS315":0,"LIT_CANS320":273,"LIT_SSPET330":0,"LIT_FSY":0,"MPLUS_NRB300":88,"TROP_FRUTZ_CANS":0,"GATORADE":21,"Britvic_300":14,"Britvic_Soda":11,"Rockstar_250":14,"Rockstar_185":28,"AquafinA_Sparkling_250":36,"AquafinA_200":222,"AquafinA_330":1852,"AquafinA_500":1790,"AquafinA_1500":4524,"AquafinA_NRB250":5,"AquafinA_NRB750":18,"STING_250":284,"STING_240":0,"Sting Energy_185":13,"Sting Energy_240":9,"Sting Energy_300":8}},{"route":314075,"salesman":42220,"vals":{"CSD_CANS150":13,"CSD_CANS240":1398,"CSD_CANS250":0,"CSD_CANS300":139,"CSD_CANS320":2361,"CSD_CANS325":16,"CSD_CANS330":4671,"CSD_CANS355":0,"CSD_CANS360":0,"CSD_NRB":180,"CSD_SSPET250":162,"CSD_SSPET400":69,"CSD_PET1000":8234,"CSD_PET2000":2098,"CSD_PET2200":0,"CSD_PET2250":167,"PMIX":0,"LIT_CANS240":155,"LIT_CANS150":0,"LIT_CANS315":0,"LIT_CANS320":119,"LIT_SSPET330":0,"LIT_FSY":0,"MPLUS_NRB300":65,"TROP_FRUTZ_CANS":0,"GATORADE":17,"Britvic_300":4,"Britvic_Soda":15,"Rockstar_250":9,"Rockstar_185":32,"AquafinA_Sparkling_250":32,"AquafinA_200":71,"AquafinA_330":1247,"AquafinA_500":2585,"AquafinA_1500":2162,"AquafinA_NRB250":0,"AquafinA_NRB750":3,"STING_250":348,"STING_240":0,"Sting Energy_185":5,"Sting Energy_240":3,"Sting Energy_300":2}},{"route":314052,"salesman":42033,"vals":{"CSD_CANS150":10,"CSD_CANS240":990,"CSD_CANS250":0,"CSD_CANS300":0,"CSD_CANS320":1659,"CSD_CANS325":1,"CSD_CANS330":6312,"CSD_CANS355":0,"CSD_CANS360":0,"CSD_NRB":192,"CSD_SSPET250":301,"CSD_SSPET400":89,"CSD_PET1000":6278,"CSD_PET2000":1500,"CSD_PET2200":0,"CSD_PET2250":120,"PMIX":0,"LIT_CANS240":300,"LIT_CANS150":0,"LIT_CANS315":0,"LIT_CANS320":135,"LIT_SSPET330":0,"LIT_FSY":0,"MPLUS_NRB300":84,"TROP_FRUTZ_CANS":0,"GATORADE":9,"Britvic_300":9,"Britvic_Soda":13,"Rockstar_250":7,"Rockstar_185":19,"AquafinA_Sparkling_250":22,"AquafinA_200":22,"AquafinA_330":1795,"AquafinA_500":4471,"AquafinA_1500":1062,"AquafinA_NRB250":4,"AquafinA_NRB750":9,"STING_250":321,"STING_240":0,"Sting Energy_185":12,"Sting Energy_240":5,"Sting Energy_300":0}},{"route":314062,"salesman":42103,"vals":{"CSD_CANS150":90,"CSD_CANS240":889,"CSD_CANS250":0,"CSD_CANS300":0,"CSD_CANS320":2165,"CSD_CANS325":3,"CSD_CANS330":5544,"CSD_CANS355":0,"CSD_CANS360":0,"CSD_NRB":283,"CSD_SSPET250":130,"CSD_SSPET400":36,"CSD_PET1000":7973,"CSD_PET2000":2601,"CSD_PET2200":0,"CSD_PET2250":160,"PMIX":0,"LIT_CANS240":400,"LIT_CANS150":0,"LIT_CANS315":0,"LIT_CANS320":152,"LIT_SSPET330":0,"LIT_FSY":0,"MPLUS_NRB300":46,"TROP_FRUTZ_CANS":0,"GATORADE":19,"Britvic_300":9,"Britvic_Soda":11,"Rockstar_250":8,"Rockstar_185":16,"AquafinA_Sparkling_250":24,"AquafinA_200":150,"AquafinA_330":1400,"AquafinA_500":1237,"AquafinA_1500":721,"AquafinA_NRB250":8,"AquafinA_NRB750":1,"STING_250":90,"STING_240":0,"Sting Energy_185":3,"Sting Energy_240":3,"Sting Energy_300":4}}]};
+const CAP_PCT = 5;
+
+const T = {
+ en:{
+  banner:"Mockup only. Sample: 4 TT DMM routes, October 2026 file, rounded to whole cases.",
+  logo:"Target Portal", crumbs:"Oct 2026 › TT DMM › Supervisor S-01 › Distribute to team",
+  user:"Supervisor S-01 · Step 3 of 3", langBtn:"العربية",
+  myTarget:"My target (all packs)", locked:"locked", team:"Team", salesmen:"salesmen",
+  cap:"Cap (set by admin)", capSub:"of each pack target", passing:"Packs passing", of:"of",
+  deadline:"Deadline", deadlineVal:"27 Oct", placeholder:"placeholder", cases:"cases",
+  r1h:"Rule 1:", r1:"every pack must still add up to its locked target.",
+  r2h:"Rule 2:", r2:"one salesman can change by at most the cap.",
+  r3h:"Rule 3:", r3:"total cases moved in a pack can't exceed the cap.",
+  search:"Search pack, route or salesman…", hideZero:"Hide packs with 0 target",
+  expandAll:"Expand all", collapseAll:"Collapse all", clearF:"Clear filters",
+  save:"Save draft", submit:"Submit to next level",
+  pack:"Pack", tgt:"My target", route:"Route", salesman:"Salesman", moved:"Moved / cap", status:"Status",
+  fText:"Filter…", fNum:"e.g. >500", all:"All", ok:"OK", problems:"Problems",
+  start:"start", from:"from", over:"Over by ", short:"Short by ", personCap:"Salesman over cap", movedTooMuch:"Moved too much",
+  reset:"Reset", nothing:"No packs match the search or filters.",
+  grpOk:"OK", shownLbl:"packs shown", tabAll:"All packs", tabWater:"Water",
+  foot:"Type a new number in any salesman cell. Numeric filters accept >500, <100, =0 or 100-500.",
+  saved:"Draft saved (mockup: nothing is stored).", submitted:"Submitted (mockup). The next level would now see this split, read-only.",
+  groups:{CSD:"CSD","Water":"Water","LRB-Others":"LRB-Others"}
+ },
+ ar:{
+  banner:"نموذج تجريبي فقط. عينة: 4 خطوط من TT الدمام، ملف أكتوبر 2026، مقرّبة إلى كراتين كاملة.",
+  logo:"بوابة الأهداف", crumbs:"أكتوبر 2026 › TT الدمام › المشرف S-01 › التوزيع على الفريق",
+  user:"المشرف S-01 · الخطوة 3 من 3", langBtn:"English",
+  myTarget:"هدفي (كل العبوات)", locked:"مقفل", team:"الفريق", salesmen:"مندوبين",
+  cap:"الحد (يحدده المسؤول)", capSub:"من هدف كل عبوة", passing:"العبوات المطابقة", of:"من",
+  deadline:"آخر موعد", deadlineVal:"27 أكتوبر", placeholder:"مثال", cases:"كرتون",
+  r1h:"القاعدة 1:", r1:"مجموع كل عبوة يجب أن يساوي هدفها المقفل.",
+  r2h:"القاعدة 2:", r2:"لا يتغير هدف أي مندوب بأكثر من الحد.",
+  r3h:"القاعدة 3:", r3:"إجمالي الكراتين المنقولة في العبوة لا يتجاوز الحد.",
+  search:"ابحث عن عبوة أو خط أو مندوب…", hideZero:"إخفاء العبوات ذات الهدف صفر",
+  expandAll:"توسيع الكل", collapseAll:"طي الكل", clearF:"مسح الفلاتر",
+  save:"حفظ كمسودة", submit:"إرسال للمستوى التالي",
+  pack:"العبوة", tgt:"هدفي", route:"الخط", salesman:"المندوب", moved:"المنقول / الحد", status:"الحالة",
+  fText:"تصفية…", fNum:"مثال ‎>500", all:"الكل", ok:"سليم", problems:"مشاكل",
+  start:"البداية", from:"من", over:"زيادة ", short:"نقص ", personCap:"مندوب تجاوز الحد", movedTooMuch:"نقل أكثر من الحد",
+  reset:"إعادة", nothing:"لا توجد عبوات مطابقة للبحث أو الفلاتر.",
+  grpOk:"سليم", shownLbl:"عبوة معروضة", tabAll:"كل العبوات", tabWater:"المياه",
+  foot:"اكتب رقماً جديداً في خانة أي مندوب. فلاتر الأرقام تقبل ‎>500 أو ‎<100 أو ‎=0 أو ‎100-500.",
+  saved:"تم حفظ المسودة (نموذج: لا يتم حفظ شيء).", submitted:"تم الإرسال (نموذج). سيرى المستوى التالي هذا التوزيع للقراءة فقط.",
+  groups:{CSD:"المشروبات الغازية (CSD)","Water":"المياه (Water)","LRB-Others":"مشروبات أخرى (LRB-Others)"}
+ }
+};
+let lang = "en";
+try { lang = localStorage.getItem("tp_lang") || "en"; } catch(e){}
+const t = k => T[lang][k];
+
+const groupOf = p => p.startsWith("AquafinA") ? "Water"
+  : (p.startsWith("CSD_") || p==="PMIX" || p==="STING_250" || p==="STING_240") ? "CSD" : "LRB-Others";
+const ORDER = ["CSD","Water","LRB-Others"];
+const packs = Object.keys(DATA.routes[0].vals);
+const reps = DATA.routes;
+const start = {}, cur = {}, target = {};
+packs.forEach(p=>{
+  start[p] = reps.map(r=>r.vals[p]);
+  cur[p] = start[p].slice();
+  target[p] = start[p].reduce((a,b)=>a+b,0);
+});
+const collapsed = {};
+const cap = p => Math.floor(target[p]*CAP_PCT/100);
+const fmt = n => n.toLocaleString("en-US");
+
+// filters: pack text, tgt num, rep_i num, moved num, status select
+const F = {pack:"", tgt:"", moved:"", status:"all", reps: reps.map(()=> "")};
+let q = "";
+
+function numTest(expr, v){
+  expr = (expr||"").replace(/\s|,/g,"");
+  if (!expr) return true;
+  let m;
+  if ((m = expr.match(/^(-?\d+)-(-?\d+)$/))) return v>=+m[1] && v<=+m[2];
+  if ((m = expr.match(/^(>=|<=|>|<|=)?(-?\d+)$/))) {
+    const n=+m[2];
+    switch(m[1]){case ">":return v>n;case "<":return v<n;case ">=":return v>=n;case "<=":return v<=n;default:return v===n;}
+  }
+  return true;
+}
+
+function check(p){
+  const d = cur[p].map((v,i)=>v-start[p][i]);
+  const sum = cur[p].reduce((a,b)=>a+b,0);
+  const up = d.filter(x=>x>0).reduce((a,b)=>a+b,0);
+  const down = -d.filter(x=>x<0).reduce((a,b)=>a+b,0);
+  const moved = Math.max(up,down);
+  const c = cap(p);
+  const overPerson = d.map(x=>Math.abs(x)>c);
+  let msg=null;
+  if (sum!==target[p]) msg = (sum>target[p]?t("over"):t("short"))+fmt(Math.abs(sum-target[p]));
+  else if (overPerson.some(Boolean)) msg = t("personCap");
+  else if (moved>c) msg = t("movedTooMuch");
+  return {d,moved,c,overPerson,ok:!msg,msg};
+}
+
+function visibleReps(){
+  const s = q.trim().toLowerCase();
+  if (!s) return reps.map((_,i)=>i);
+  const hits = reps.map((r,i)=>(String(r.route).includes(s)||String(r.salesman).includes(s))?i:-1).filter(i=>i>=0);
+  return hits.length ? hits : reps.map((_,i)=>i);
+}
+function repSearchHit(){
+  const s=q.trim().toLowerCase();
+  return !!s && reps.some(r=>String(r.route).includes(s)||String(r.salesman).includes(s));
+}
+
+function packPasses(p, vr){
+  const r = check(p);
+  const s = q.trim().toLowerCase();
+  if (s && !repSearchHit() && !p.toLowerCase().includes(s)) return false;
+  if (F.pack && !p.toLowerCase().includes(F.pack.toLowerCase())) return false;
+  if (!numTest(F.tgt, target[p])) return false;
+  for (const i of vr) if (!numTest(F.reps[i], cur[p][i])) return false;
+  if (!numTest(F.moved, r.moved)) return false;
+  if (F.status==="ok" && !r.ok) return false;
+  if (F.status==="bad" && r.ok) return false;
+  return true;
+}
+
+function renderHead(vr){
+  document.getElementById("head").innerHTML =
+    `<th class="s">${t("pack")}</th><th>${t("tgt")}<span class="sub">${t("locked")}</span></th>` +
+    vr.map(i=>`<th>${t("route")} ${reps[i].route}<span class="sub">${t("salesman")} ${reps[i].salesman}</span></th>`).join("") +
+    `<th>${t("moved")}</th><th class="s">${t("status")}</th><th></th>`;
+  const fx = (key, val, num) => `<th><input class="f ${num?"num":""} ${val?"on":""}" data-f="${key}" value="${val}" placeholder="${num?t("fNum"):t("fText")}"></th>`;
+  document.getElementById("filters").innerHTML =
+    fx("pack",F.pack,false).replace("<th>",'<th class="s">') + fx("tgt",F.tgt,true) +
+    vr.map(i=>fx("rep"+i,F.reps[i],true)).join("") + fx("moved",F.moved,true) +
+    `<th class="s"><select class="f ${F.status!=="all"?"on":""}" data-f="status">
+       <option value="all"${F.status==="all"?" selected":""}>${t("all")}</option>
+       <option value="ok"${F.status==="ok"?" selected":""}>${t("ok")}</option>
+       <option value="bad"${F.status==="bad"?" selected":""}>${t("problems")}</option></select></th><th></th>`;
+}
+
+const TREE = [
+ {id:"CSD", kids:[
+   {id:"SSNR", kids:[
+     {id:"CANS", kids:["CSD_CANS150","CSD_CANS240","CSD_CANS250","CSD_CANS300","CSD_CANS320","CSD_CANS325","CSD_CANS330","CSD_CANS355","CSD_CANS360","STING_240"]},
+     "CSD_NRB","STING_250","CSD_SSPET250","CSD_SSPET400"]},
+   {id:"MSPET", kids:["CSD_PET1000", {id:"BIG MSPET", kids:["CSD_PET2000","CSD_PET2200","CSD_PET2250"]}]},
+   "PMIX"]},
+ {id:"Water", kids:["AquafinA_200","AquafinA_330","AquafinA_500","AquafinA_1500","AquafinA_Sparkling_250","AquafinA_NRB250","AquafinA_NRB750"]},
+ {id:"LRB-Others", kids:[
+   {id:"LIT", kids:["LIT_CANS150","LIT_CANS240","LIT_CANS320","LIT_CANS315","LIT_SSPET330","LIT_FSY"]},
+   "GATORADE","MPLUS_NRB300","TROP_FRUTZ_CANS",
+   {id:"ROCKSTAR", kids:["Rockstar_185","Rockstar_250"]},
+   {id:"Sting Energy", kids:["Sting Energy_185","Sting Energy_240","Sting Energy_300"]},
+   {id:"Britvic", kids:["Britvic_300","Britvic_Soda"]}]}
+];
+const leaves = n => typeof n==="string" ? [n] : n.kids.flatMap(leaves);
+let tab = "all";
+TREE.forEach(n=>{ n.kids = leaves(n); });
+
+function renderBody(){
+  const vr = visibleReps();
+  const hideZero = document.getElementById("hideZero").checked;
+  const cols = vr.length + 5;
+  let html="";
+  const keep = p => packs.includes(p) && !(hideZero && target[p]===0);
+  const walk = (node, lvl) => {
+    if (typeof node==="string"){
+      const p=node; if (!keep(p) || !packPasses(p,vr)) return;
+      const r = check(p);
+      html += `<tr data-p="${p}"><td class="s pack" style="padding-inline-start:${16+lvl*18}px">${p}</td><td class="tgt">${fmt(target[p])}</td>` +
+        vr.map(i=>{
+          const v=cur[p][i], dd=r.d[i];
+          const cls = r.overPerson[i]?"cell over":"cell";
+          const dc = dd>0?"d up":dd<0?"d down":"d";
+          const dt = dd===0?`${t("start")} ${fmt(start[p][i])}`:`${dd>0?"+":""}${fmt(dd)} ${t("from")} ${fmt(start[p][i])}`;
+          return `<td><div class="${cls}"><input inputmode="numeric" data-i="${i}" value="${v}"><span class="${dc}">${dt}</span></div></td>`;
+        }).join("") +
+        `<td><span class="moved ${r.moved>r.c?"bad":""}">${fmt(r.moved)} / ${fmt(r.c)}</span></td>` +
+        `<td class="s"><span class="status ${r.ok?"ok":"bad"}">${r.ok?t("ok"):r.msg}</span></td>` +
+        `<td><button class="reset" data-reset="${p}">${t("reset")}</button></td></tr>`;
+      return;
+    }
+    const all = leaves(node).filter(keep);
+    const shown = all.filter(p=>packPasses(p,vr));
+    if (!shown.length) return;
+    const g=node.id;
+    const gt = all.reduce((a,p)=>a+target[p],0);
+    const okN = all.filter(p=>check(p).ok).length;
+    const caret = collapsed[g] ? (lang==="ar"?"◂":"▸") : "▾";
+    const label = (lvl===0 ? T[lang].groups[g] : (lang==="ar"?"إجمالي ":"Total ")+g);
+    html += `<tr class="grp lvl${lvl}" data-g="${g}"><td class="s" style="padding-inline-start:${10+lvl*18}px"><span class="caret">${caret}</span>${label}
+              <span class="gsub">${shown.length} / ${all.length} ${t("shownLbl")}</span></td>
+              <td>${fmt(gt)}</td>` +
+      vr.map(i=>{
+        const now = all.reduce((a,p)=>a+cur[p][i],0), st = all.reduce((a,p)=>a+start[p][i],0), d=now-st;
+        return `<td>${fmt(now)}<span class="gsub ${d>0?"up":d<0?"down":""}">${d===0?t("start")+" "+fmt(st):(d>0?"+":"")+fmt(d)}</span></td>`;
+      }).join("") +
+      `<td></td><td class="s"><span class="status ${okN===all.length?"ok":"bad"}">${okN} / ${all.length} ${t("grpOk")}</span></td><td></td></tr>`;
+    if (collapsed[g]) return;
+    node.kids.forEach(k=>walk(k,lvl+1));
+  };
+  TREE.filter(n=>tab==="all"||n.id===tab).forEach(n=>walk(n,0));
+  document.getElementById("body").innerHTML = html || `<tr><td class="empty" colspan="${cols}">${t("nothing")}</td></tr>`;
+  summarize();
+}
+
+function render(){ renderHead(visibleReps()); renderBody(); }
+
+function summarize(){
+  const all = packs.filter(p=>target[p]>0);
+  const pass = all.filter(p=>check(p).ok).length;
+  document.getElementById("sTotal").innerHTML = fmt(packs.reduce((a,p)=>a+target[p],0)) + ` <small>${t("cases")}</small>`;
+  document.getElementById("sPass").innerHTML = `${pass} <small>${t("of")} ${all.length}</small>`;
+  document.getElementById("submitBtn").disabled = pass!==all.length;
+}
+
+function applyLang(){
+  document.documentElement.lang = lang;
+  document.documentElement.dir = lang==="ar"?"rtl":"ltr";
+  document.querySelectorAll("[data-t]").forEach(el=>{ el.textContent = t(el.dataset.t); });
+  document.getElementById("langBtn").textContent = t("langBtn");
+  document.getElementById("q").placeholder = t("search");
+  document.getElementById("foot").textContent = t("foot");
+  render();
+}
+
+// events
+document.getElementById("body").addEventListener("change",e=>{
+  if (e.target.tagName!=="INPUT") return;
+  const p = e.target.closest("tr").dataset.p, i=+e.target.dataset.i;
+  let v = parseInt(String(e.target.value).replace(/[^0-9]/g,""),10);
+  if (isNaN(v)||v<0) v=0;
+  cur[p][i]=v; renderBody();
+});
+document.getElementById("body").addEventListener("click",e=>{
+  const rp = e.target.dataset && e.target.dataset.reset;
+  if (rp){ cur[rp]=start[rp].slice(); renderBody(); return; }
+  const g = e.target.closest("tr.grp");
+  if (g){ collapsed[g.dataset.g]=!collapsed[g.dataset.g]; renderBody(); }
+});
+document.getElementById("filters").addEventListener("input",e=>{
+  const k=e.target.dataset.f; if(!k) return;
+  if (k.startsWith("rep")) F.reps[+k.slice(3)] = e.target.value; else F[k]=e.target.value;
+  e.target.classList.toggle("on", !!e.target.value && e.target.value!=="all");
+  renderBody();
+});
+document.getElementById("q").addEventListener("input",e=>{ q=e.target.value; render(); });
+document.getElementById("hideZero").onchange=renderBody;
+const allIds=[];(function c(n){if(typeof n!=="string"){allIds.push(n.id);n.kids.forEach(c);}})({kids:TREE});
+document.getElementById("expandAll").onclick=()=>{allIds.forEach(g=>collapsed[g]=false);renderBody();};
+document.getElementById("collapseAll").onclick=()=>{allIds.forEach(g=>collapsed[g]=true);renderBody();};
+document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{document.querySelectorAll(".tab").forEach(x=>x.classList.remove("on"));b.classList.add("on");tab=b.dataset.g;renderBody();});
+document.getElementById("clearF").onclick=()=>{F.pack=F.tgt=F.moved="";F.status="all";F.reps=reps.map(()=> "");q="";document.getElementById("q").value="";render();};
+document.getElementById("langBtn").onclick=()=>{ lang = lang==="en"?"ar":"en"; try{localStorage.setItem("tp_lang",lang);}catch(e){} applyLang(); };
+document.getElementById("saveBtn").onclick=()=>{document.getElementById("foot").textContent=t("saved");};
+document.getElementById("submitBtn").onclick=()=>{document.getElementById("foot").textContent=t("submitted");};
+applyLang();
+</script>
+</body>
+</html>
