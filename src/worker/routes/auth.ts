@@ -69,7 +69,7 @@ auth.post('/api/auth/login', async (c) => {
   const user = await one<UserRow>(
     db,
     `SELECT id, role, lang, name, pw_hash, pw_salt, active FROM users WHERE username = ?`,
-    username,
+    key, // Ruling R11: usernames are stored trimmed and lower-cased
   );
 
   let sessionUser: SessionUser | null = null;

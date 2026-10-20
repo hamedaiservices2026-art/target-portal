@@ -105,6 +105,36 @@ describe('POST /api/auth/login', () => {
     expect(cookie).toMatch(/Max-Age=43200/i);
   });
 
+  it('finds the user by the trimmed, lower-cased username', async () => {
+    await addUser('sara', 'pw-sara');
+    const res = await login(' SARA ', 'pw-sara');
+    expect(res.status).toBe(200);
+    expect((await res.json<{ user: { name: string } }>()).user.name).toBe('Name sara');
+  });
+
+  it('refuses non-JSON content types with 415 before doing any work', async () => {
+    for (const [type, body] of [
+      ['text/plain', JSON.stringify({ username: 'sara', password: 'x' })],
+      ['application/x-www-form-urlencoded', 'username=sara&password=x'],
+    ] as const) {
+      const res = await SELF.fetch('http://x/api/auth/login', { method: 'POST', headers: { 'content-type': type }, body });
+      expect(res.status).toBe(415);
+      expect(await res.json()).toEqual({ error: 'unsupported_media_type' });
+    }
+    expect((await SELF.fetch('http://x/api/auth/login', { method: 'POST', body: '{}' })).status).toBe(415);
+    expect(await one(env.DB, `SELECT 1 AS x FROM login_failures`)).toBeNull();
+  });
+
+  it('accepts a JSON content type with parameters', async () => {
+    await addUser('sara', 'pw-sara');
+    const res = await SELF.fetch('http://x/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'Application/JSON; charset=utf-8' },
+      body: JSON.stringify({ username: 'sara', password: 'pw-sara' }),
+    });
+    expect(res.status).toBe(200);
+  });
+
   it('stores only the SHA-256 hex of the token, 12 h expiry', async () => {
     await addUser('sara', 'pw-sara');
     const sid = await loginSid('sara', 'pw-sara');
@@ -138,7 +168,11 @@ describe('POST /api/auth/login', () => {
   it('rejects non-string or missing fields with 400', async () => {
     expect((await login(undefined, 'x')).status).toBe(400);
     expect((await login('x', 123)).status).toBe(400);
-    const bad = await SELF.fetch('http://x/api/auth/login', { method: 'POST', body: 'not json' });
+    const bad = await SELF.fetch('http://x/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: 'not json',
+    });
     expect(bad.status).toBe(400);
   });
 });
@@ -257,7 +291,7 @@ describe('sessions', () => {
   it('logout deletes the session and clears the cookie', async () => {
     await addUser('sara', 'pw-sara');
     const sid = await loginSid('sara', 'pw-sara');
-    const res = await SELF.fetch('http://x/api/auth/logout', withSid(sid, { method: 'POST' }));
+    const res = await SELF.fetch('http://x/api/auth/logout', withSid(sid, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }));
     expect(res.status).toBe(200);
     expect(res.headers.get('set-cookie')).toMatch(/sid=;/);
     expect(await one(env.DB, `SELECT 1 AS x FROM sessions`)).toBeNull();
@@ -265,7 +299,11 @@ describe('sessions', () => {
   });
 
   it('logout without a session is still 200', async () => {
-    const res = await SELF.fetch('http://x/api/auth/logout', { method: 'POST' });
+    const res = await SELF.fetch('http://x/api/auth/logout', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
     expect(res.status).toBe(200);
   });
 });
