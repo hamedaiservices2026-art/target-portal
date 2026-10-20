@@ -3,6 +3,7 @@ import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import {
   hashPassword,
   newSessionToken,
+  PBKDF2_ITERATIONS,
   requireUser,
   safeEqualStrings,
   SESSION_COOKIE,
@@ -20,7 +21,7 @@ const MAX_USERNAME = 100;
 const MAX_PASSWORD = 1024;
 
 // Verified against when the user is unknown, so a miss costs the same CPU as a hit.
-const DUMMY_HASH = 'pbkdf2-sha256$10000$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
+const DUMMY_HASH = `pbkdf2-sha256$${PBKDF2_ITERATIONS}$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=`;
 const DUMMY_SALT = 'AAAAAAAAAAAAAAAAAAAAAA==';
 
 const cookieOpts = {
@@ -51,13 +52,19 @@ auth.post('/api/auth/login', async (c) => {
   const nowIso = now.toISOString();
   const windowStart = new Date(now.getTime() - WINDOW_MS).toISOString();
 
-  // Throttle first, before any password work.
-  const fails = await one<{ n: number }>(
-    db,
-    `SELECT COUNT(*) AS n FROM login_failures WHERE username = ? AND at > ?`,
-    key, windowStart,
-  );
-  if ((fails?.n ?? 0) >= MAX_FAILURES) return c.json({ error: 'too_many_attempts' }, 429);
+  // Throttle first, before any password work. The attempt is recorded BEFORE
+  // it is checked, in one batch (one D1 transaction), so parallel requests
+  // see each other's rows and cannot all slip under the limit. The count
+  // includes this attempt: attempts 1..5 are checked, the 6th is blocked.
+  // Success deletes the username's rows below. Out-of-window rows are pruned.
+  const [, , counted] = await batch(db, [
+    db.prepare(`INSERT INTO login_failures(username, at) VALUES (?, ?)`).bind(key, nowIso),
+    db.prepare(`DELETE FROM login_failures WHERE at <= ?`).bind(windowStart),
+    db.prepare(`SELECT COUNT(*) AS n FROM login_failures WHERE username = ? AND at > ?`)
+      .bind(key, windowStart),
+  ]);
+  const attempts = (counted?.results[0] as { n: number } | undefined)?.n ?? 0;
+  if (attempts > MAX_FAILURES) return c.json({ error: 'too_many_attempts' }, 429);
 
   const user = await one<UserRow>(
     db,
@@ -71,19 +78,16 @@ auth.post('/api/auth/login', async (c) => {
     if (ok && user.active) {
       sessionUser = { id: user.id, role: user.role, lang: user.lang, name: user.name };
     }
+  } else if (await isBootstrapLogin(c.env, username, password)) {
+    // createBootstrapAdmin runs one PBKDF2 (hashPassword), the same cost as a
+    // verify; a dummy verify on top would double the CPU of this request.
+    sessionUser = await createBootstrapAdmin(c.env.DB, password);
   } else {
     await verifyPassword(password, DUMMY_HASH, DUMMY_SALT);
-    sessionUser = await tryBootstrap(c.env, username, password);
   }
 
-  if (!sessionUser) {
-    // Record the failure and prune rows outside the window in one round trip.
-    await batch(db, [
-      db.prepare(`INSERT INTO login_failures(username, at) VALUES (?, ?)`).bind(key, nowIso),
-      db.prepare(`DELETE FROM login_failures WHERE at <= ?`).bind(windowStart),
-    ]);
-    return c.json({ error: 'invalid_credentials' }, 401);
-  }
+  // The failed attempt is already recorded (see the throttle above).
+  if (!sessionUser) return c.json({ error: 'invalid_credentials' }, 401);
 
   const sid = newSessionToken();
   const expires = new Date(now.getTime() + SESSION_TTL_SECONDS * 1000).toISOString();
@@ -102,16 +106,19 @@ auth.post('/api/auth/login', async (c) => {
  * `admin` with exactly that password, and the users table is empty. The
  * emptiness check is part of the INSERT, so two racing logins create one row.
  */
-async function tryBootstrap(
+async function isBootstrapLogin(
   env: AppEnv['Bindings'],
   username: string,
   password: string,
-): Promise<SessionUser | null> {
+): Promise<boolean> {
   const secret = env.BOOTSTRAP_ADMIN_PASSWORD;
-  if (!secret || username !== 'admin' || !(await safeEqualStrings(password, secret))) return null;
+  return !!secret && username === 'admin' && (await safeEqualStrings(password, secret));
+}
+
+async function createBootstrapAdmin(db: D1Database, password: string): Promise<SessionUser | null> {
   const { hash, salt } = await hashPassword(password);
   const res = await run(
-    env.DB,
+    db,
     `INSERT INTO users(username, name, pw_hash, pw_salt, role)
      SELECT 'admin', 'Administrator', ?, ?, 'admin' WHERE NOT EXISTS (SELECT 1 FROM users)`,
     hash, salt,

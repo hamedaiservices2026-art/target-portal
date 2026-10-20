@@ -1,6 +1,6 @@
 import { env, SELF } from 'cloudflare:test';
 import { Hono } from 'hono';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   hashPassword,
   PBKDF2_ITERATIONS,
@@ -200,6 +200,22 @@ describe('login throttling', () => {
   });
 });
 
+describe('login throttling under concurrency', () => {
+  it('lets at most 5 of 10 parallel wrong guesses through to the password check', async () => {
+    await addUser('sara', 'pw-sara');
+    const results = await Promise.all(Array.from({ length: 10 }, () => login('sara', 'bad')));
+    const statuses = results.map((r) => r.status);
+    expect(statuses.filter((s) => s === 401)).toHaveLength(5);
+    expect(statuses.filter((s) => s === 429)).toHaveLength(5);
+  });
+
+  it('applies to unknown usernames in parallel too', async () => {
+    const results = await Promise.all(Array.from({ length: 10 }, () => login('ghost', 'bad')));
+    expect(results.filter((r) => r.status === 401).length).toBeLessThanOrEqual(5);
+    expect(results.filter((r) => r.status === 429).length).toBeGreaterThanOrEqual(5);
+  });
+});
+
 describe('sessions', () => {
   it('GET /api/me returns the user for a valid session', async () => {
     await addUser('sara', 'pw-sara', { role: 'admin' });
@@ -325,6 +341,20 @@ describe('requireAdmin', () => {
 });
 
 describe('bootstrap admin', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('performs exactly one PBKDF2 derivation (CPU budget)', async () => {
+    const spy = vi.spyOn(crypto.subtle, 'deriveBits');
+    const res = await login('admin', BOOTSTRAP);
+    expect(res.status).toBe(200);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('an unknown user still costs exactly one PBKDF2 derivation', async () => {
+    const spy = vi.spyOn(crypto.subtle, 'deriveBits');
+    expect((await login('ghost', 'bad')).status).toBe(401);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
   it('creates the admin on first login with the secret, only once', async () => {
     const first = await login('admin', BOOTSTRAP);
     expect(first.status).toBe(200);
