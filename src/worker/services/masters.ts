@@ -11,15 +11,19 @@ import { auditStatement } from './audit';
 export class ApiError extends Error {
   constructor(
     readonly status: 400 | 404 | 409,
-    readonly body: { error: 'invalid_request' | 'not_found' | 'conflict'; detail?: string },
+    readonly body: {
+      error: 'invalid_request' | 'not_found' | 'conflict';
+      detail?: string;
+      errors?: { line: number; detail: string }[];
+    },
   ) {
     super(body.error + (body.detail ? `: ${body.detail}` : ''));
   }
 }
-const bad = (detail: string) => new ApiError(400, { error: 'invalid_request', detail });
-const notFound = () => new ApiError(404, { error: 'not_found' });
+export const bad = (detail: string) => new ApiError(400, { error: 'invalid_request', detail });
+export const notFound = () => new ApiError(404, { error: 'not_found' });
 
-type Obj = Record<string, unknown>;
+export type Obj = Record<string, unknown>;
 
 export function asObject(body: unknown): Obj {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw bad('body must be a JSON object');
@@ -33,12 +37,16 @@ export function parseId(raw: string): number {
 }
 
 /** Runs the batch; a UNIQUE violation (the whole batch rolls back) becomes 409. */
-async function writeBatch(db: D1Database, stmts: D1PreparedStatement[], conflict: string): Promise<D1Result[]> {
+export async function writeBatch(
+  db: D1Database,
+  stmts: D1PreparedStatement[],
+  conflict: string | ((sqliteMessage: string) => string),
+): Promise<D1Result[]> {
   try {
     return await batch(db, stmts);
   } catch (e) {
     const msg = e instanceof Error ? `${e.message} ${(e.cause as Error | undefined)?.message ?? ''}` : '';
-    if (/UNIQUE constraint failed/i.test(msg)) throw new ApiError(409, { error: 'conflict', detail: conflict });
+    if (/UNIQUE constraint failed/i.test(msg)) throw new ApiError(409, { error: 'conflict', detail: typeof conflict === 'string' ? conflict : conflict(msg) });
     throw e;
   }
 }
@@ -50,7 +58,7 @@ const MAX_USERNAME = 100; // login rejects longer
 const MAX_PASSWORD = 1024; // login rejects longer
 const MIN_PASSWORD = 8;
 
-function text(v: unknown, field: string, max = MAX_TEXT): string {
+export function text(v: unknown, field: string, max = MAX_TEXT): string {
   if (typeof v !== 'string') throw bad(`${field} must be a string`);
   const s = v.trim();
   if (!s) throw bad(`${field} must not be empty`);
@@ -84,7 +92,7 @@ function bool(v: unknown, field: string): boolean {
   return v;
 }
 
-function int(v: unknown, field: string): number {
+export function int(v: unknown, field: string): number {
   if (typeof v !== 'number' || !Number.isInteger(v) || Math.abs(v) > 1_000_000_000) {
     throw bad(`${field} must be an integer`);
   }

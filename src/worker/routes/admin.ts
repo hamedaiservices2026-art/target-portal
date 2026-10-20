@@ -2,6 +2,10 @@
 import { Hono, type Context } from 'hono';
 import { requireAdmin, requireUser, type AppEnv } from '../auth';
 import {
+  bulkMapLeaves, createLeaf, createNode, deleteLeaf, deleteNode, listLeaves, listNodes, optionalDept,
+  updateLeaf, updateNode,
+} from '../services/hierarchy';
+import {
   ApiError, asObject, createDepartment, createPack, createUser, getCapPct, listDepartments,
   listPacks, listUsers, parseId, setCapPct, setUserPassword, updateDepartment, updatePack, updateUser,
 } from '../services/masters';
@@ -49,5 +53,30 @@ admin.patch('/api/admin/packs/:code', h(async (c, db, me, body) =>
 admin.get('/api/admin/settings', h(async (c, db) => c.json({ capPct: await getCapPct(db) })));
 admin.put('/api/admin/settings', h(async (c, db, me, body) =>
   c.json({ capPct: await setCapPct(db, me, await body()) })));
+
+admin.get('/api/admin/nodes', h(async (c, db) =>
+  c.json({ nodes: await listNodes(db, optionalDept(c.req.query('dept'))) })));
+admin.post('/api/admin/nodes', h(async (c, db, me, body) =>
+  c.json({ node: await createNode(db, me, await body()) }, 201)));
+admin.patch('/api/admin/nodes/:id', h(async (c, db, me, body) =>
+  c.json(await updateNode(db, me, parseId(p(c, 'id')), await body()))));
+admin.delete('/api/admin/nodes/:id', h(async (c, db, me) => {
+  await deleteNode(db, me, parseId(p(c, 'id')));
+  return c.json({ ok: true });
+}));
+
+admin.get('/api/admin/leaves', h(async (c, db) =>
+  c.json({ leaves: await listLeaves(db, optionalDept(c.req.query('dept'))) })));
+admin.post('/api/admin/leaves', h(async (c, db, me, body) =>
+  c.json({ leaf: await createLeaf(db, me, await body()) }, 201)));
+// Registered before /:id routes; "bulk-map" is not a numeric id anyway.
+admin.post('/api/admin/leaves/bulk-map', h(async (c, db, me, body) =>
+  c.json(await bulkMapLeaves(db, me, await body()))));
+admin.patch('/api/admin/leaves/:id', h(async (c, db, me, body) =>
+  c.json(await updateLeaf(db, me, parseId(p(c, 'id')), await body()))));
+admin.delete('/api/admin/leaves/:id', h(async (c, db, me) => {
+  await deleteLeaf(db, me, parseId(p(c, 'id')));
+  return c.json({ ok: true });
+}));
 
 export default admin;
