@@ -245,23 +245,38 @@ async function applyMoves(
   if (moves.length === 0) return { ...EMPTY };
   const toById = new Map(moves.map((m) => [m.id, m.to]));
   const ids = JSON.stringify([...toById.keys()]);
-  const targetSql = what === 'leaf'
-    ? `SELECT t.month_id, t.leaf_id AS id, t.node_id AS cur, t.dept_id, md.state
-       FROM month_leaves t JOIN month_depts md ON md.month_id = t.month_id AND md.dept_id = t.dept_id
-       WHERE t.leaf_id IN (SELECT value FROM json_each(?))`
-    : `SELECT t.month_id, t.node_id AS id, t.parent_id AS cur, t.dept_id, md.state
-       FROM month_nodes t JOIN month_depts md ON md.month_id = t.month_id AND md.dept_id = t.dept_id
-       WHERE t.node_id IN (SELECT value FROM json_each(?))`;
-  const [targetsRes, treeRes] = await batch(db, [
-    db.prepare(targetSql).bind(ids),
+  // Only open (running/loading) months are read and sent: complete months
+  // only need to be named as skipped, so they cost one EXISTS probe each and
+  // nothing grows with the leaf count times the month history. CROSS JOIN
+  // keeps month_depts as the outer loop, so the target rows are found by
+  // primary key (month_id, leaf_id / node_id) in open months only.
+  const [table, idCol, curCol, live] = what === 'leaf'
+    ? ['month_leaves', 'leaf_id', 'node_id', 'leaves'] as const
+    : ['month_nodes', 'node_id', 'parent_id', 'nodes'] as const;
+  const deptOf = `(SELECT DISTINCT dept_id FROM ${live} WHERE id IN (SELECT value FROM json_each(?)))`;
+  const targetSql =
+    `SELECT t.month_id, t.${idCol} AS id, t.${curCol} AS cur, t.dept_id, md.state
+     FROM month_depts md CROSS JOIN ${table} t
+     WHERE md.state IN ('running', 'loading') AND md.dept_id IN ${deptOf}
+       AND t.month_id = md.month_id AND t.${idCol} IN (SELECT value FROM json_each(?))`;
+  const [targetsRes, treeRes, completeRes] = await batch(db, [
+    db.prepare(targetSql).bind(ids, ids),
     db.prepare(
       `SELECT mn.month_id, mn.node_id, mn.parent_id, mn.status, mn.held_status
-       FROM month_nodes mn JOIN month_depts md ON md.month_id = mn.month_id AND md.dept_id = mn.dept_id
-       WHERE md.state IN ('running', 'loading')
-         AND (mn.month_id, mn.dept_id) IN (SELECT t.month_id, t.dept_id FROM (${targetSql}) t)`,
-    ).bind(ids),
+       FROM month_depts md CROSS JOIN month_nodes mn
+       WHERE md.state IN ('running', 'loading') AND md.dept_id IN ${deptOf}
+         AND mn.month_id = md.month_id AND mn.dept_id = md.dept_id
+         AND md.month_id IN (SELECT t.month_id FROM (${targetSql}) t)`,
+    ).bind(ids, ids, ids),
+    db.prepare(
+      `SELECT md.month_id FROM month_depts md
+       WHERE md.state = 'complete' AND md.dept_id IN ${deptOf}
+         AND EXISTS (SELECT 1 FROM ${table} t WHERE t.month_id = md.month_id AND t.${idCol} IN (SELECT value FROM json_each(?)))
+       ORDER BY md.month_id`,
+    ).bind(ids, ids),
   ]);
   const targets = targetsRes!.results as Target[];
+  const completeMonths = (completeRes!.results as { month_id: number }[]).map((r) => r.month_id);
   const trees = new Map<number, MonthNode[]>();
   for (const n of treeRes!.results as MonthNode[]) trees.set(n.month_id, [...(trees.get(n.month_id) ?? []), n]);
 
@@ -273,12 +288,12 @@ async function applyMoves(
     let g = groups.get(key);
     if (!g) {
       g = { m: t.month_id, d: t.dept_id, st: t.state, f: t.cur, t: to, ok: 0, path: [], ids: [] };
-      if (t.state !== 'complete') judge(g, trees.get(t.month_id) ?? [], what === 'node' ? t.id : null);
+      judge(g, trees.get(t.month_id) ?? [], what === 'node' ? t.id : null);
       groups.set(key, g);
     }
     g.ids.push(t.id);
   }
-  if (groups.size === 0) return { ...EMPTY };
+  if (groups.size === 0 && completeMonths.length === 0) return { ...EMPTY };
 
   const payload = JSON.stringify([...groups.values()]);
   const cte = `WITH g AS MATERIALIZED (
@@ -304,9 +319,10 @@ async function applyMoves(
        INSERT INTO audit(at, user_id, action, month_id, node_id, detail_json)
        SELECT ?, ?, 'tree.apply_month', NULL, ?, json_object(
          'appliedMonths', ${months('gok')},
-         'skippedMonths', ${months('(SELECT m FROM g WHERE NOT EXISTS (SELECT 1 FROM gok WHERE gok.m = g.m AND gok.f = g.f AND gok.t = g.t))')})
+         'skippedMonths', ${months(`(SELECT m FROM g WHERE NOT EXISTS (SELECT 1 FROM gok WHERE gok.m = g.m AND gok.f = g.f AND gok.t = g.t))
+                                     UNION SELECT value AS m FROM json_each(?)`)})
        RETURNING detail_json`,
-    ).bind(payload, new Date().toISOString(), actorId, auditNode),
+    ).bind(payload, new Date().toISOString(), actorId, auditNode, JSON.stringify(completeMonths)),
     db.prepare(
       `${cte}, x AS MATERIALIZED (SELECT DISTINCT gok.m AS m, p.value AS id FROM gok, json_each(gok.path) p)
        UPDATE month_nodes SET version = version + 1 FROM x

@@ -545,6 +545,99 @@ describe('mid-month tree changes', () => {
     expect(await grandTotals(month, tt)).toEqual(start);
   });
 
+  it('bulk move with month history: only open months are read and sent; complete months are reported skipped', async () => {
+    const boss = (await one<{ id: number }>(env.DB, `SELECT id FROM users WHERE username = 'boss'`))!.id;
+    // 60 more live routes under Sup A, loaded into the running month with zero cases.
+    await run(env.DB, `INSERT INTO leaves(dept_id, delivery_system, route_code, node_id, label)
+      WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 60) SELECT ?, 'DS', 'X' || i, ?, 'x' FROM n`, tt, supA);
+    const file = (await one<{ id: number }>(env.DB, `SELECT id FROM month_files WHERE month_id = ?`, month))!.id;
+    await run(env.DB, `INSERT INTO month_leaves(month_id, leaf_id, node_id, dept_id, file_id, delivery_system, route_code, values_json)
+      SELECT ?, id, node_id, dept_id, ?, delivery_system, route_code, ? FROM leaves WHERE route_code LIKE 'X%'`,
+      month, file, JSON.stringify(V(0, 0)));
+    // Four past complete months and one loading month, each holding every route.
+    const copyMonth = async (period: string, state: string): Promise<number> => {
+      const m = (await json(await api('POST', '/admin/months', admin, { period }))).month.id;
+      const f = (await run(env.DB, `INSERT INTO month_files(month_id, dept_id, name, uploaded_by, uploaded_at) VALUES (?, ?, 'f', ?, 'now')`, m, tt, boss)).lastRowId;
+      await run(env.DB, `INSERT INTO month_leaves(month_id, leaf_id, node_id, dept_id, file_id, delivery_system, route_code, salesman_id, values_json)
+        SELECT ?, leaf_id, node_id, dept_id, ?, delivery_system, route_code, salesman_id, values_json FROM month_leaves WHERE month_id = ?`, m, f, month);
+      await run(env.DB, `UPDATE month_depts SET state = ? WHERE month_id = ?`, state, m);
+      return m;
+    };
+    const past = [];
+    for (const p of ['2026-06', '2026-07', '2026-08', '2026-09']) past.push(await copyMonth(p, 'complete'));
+    const next = await copyMonth('2026-11', 'loading');
+    const nextTotals = await grandTotals(next, tt);
+
+    const binds: { sql: string; args: unknown[] }[] = [];
+    const db = new Proxy(env.DB, {
+      get(target, key) {
+        if (key === 'prepare') {
+          return (sql: string) => {
+            const st = target.prepare(sql);
+            return new Proxy(st, {
+              get(t, k) {
+                if (k === 'bind') return (...args: unknown[]) => { binds.push({ sql, args }); return t.bind(...(args as any[])); };
+                const v = (t as any)[k];
+                return typeof v === 'function' ? v.bind(t) : v;
+              },
+            });
+          };
+        }
+        const v = (target as any)[key];
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    });
+    const { bulkMapLeaves } = await import('../../src/worker/services/hierarchy');
+    const rows = [{ deliverySystem: 'DS', routeCode: 'R1', nodeName: 'Sup B' }, { deliverySystem: 'DS', routeCode: 'R2', nodeName: 'Sup B' }];
+    for (let i = 1; i <= 60; i++) rows.push({ deliverySystem: 'DS', routeCode: `X${i}`, nodeName: 'Sup B' });
+    const out = await bulkMapLeaves(db, boss, { deptId: tt, rows });
+    expect(out.moved).toBe(62);
+    expect(out.treeChange).toEqual({ appliedMonths: [month, next], skippedMonths: past });
+
+    const moved = await all<{ month_id: number; n: number }>(env.DB,
+      `SELECT month_id, COUNT(*) AS n FROM month_leaves WHERE node_id = ? GROUP BY month_id ORDER BY month_id`, supB);
+    // Complete months keep their history (only R3, R4 under Sup B); open months take all 62 moves.
+    expect(moved).toEqual([...past.map((m) => ({ month_id: m, n: 2 })), { month_id: month, n: 64 }, { month_id: next, n: 64 }]
+      .sort((a, b) => a.month_id - b.month_id));
+
+    // The move payload (bound into the three write statements) holds open-month groups only.
+    const writes = binds.filter((b) => b.sql.includes('gok AS MATERIALIZED'));
+    expect(writes).toHaveLength(3);
+    for (const w of writes) {
+      const groups = JSON.parse(w.args[0] as string) as { m: number; ids: number[] }[];
+      expect(groups.map((g) => g.m).sort()).toEqual([month, next]);
+      expect(groups.reduce((n, g) => n + g.ids.length, 0)).toBe(124);
+    }
+    expect(await grandTotals(month, tt)).toEqual(start);
+    expect(await grandTotals(next, tt)).toEqual(nextTotals);
+  });
+
+  it('a move-propagation failure does not stop the manager change in the same edit', async () => {
+    await areaMoves50();
+    const newU = await addUser('newsup');
+    const boss = (await one<{ id: number }>(env.DB, `SELECT id FROM users WHERE username = 'boss'`))!.id;
+    let batches = 0;
+    const db = new Proxy(env.DB, {
+      get(target, key) {
+        // Batch 1: the live change. Batch 2: the move's reads (fails). Batch 3+: the manager change.
+        if (key === 'batch') {
+          return async (stmts: D1PreparedStatement[]) => {
+            if (++batches === 2) throw new Error('D1 is down');
+            return target.batch(stmts);
+          };
+        }
+        const v = (target as any)[key];
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    });
+    const { updateNode } = await import('../../src/worker/services/hierarchy');
+    const out = await updateNode(db, boss, supC, { parentId: supA, managerUserId: newU });
+    expect(out.treeChange).toEqual({ appliedMonths: [month], skippedMonths: [], error: 'move_node: D1 is down' });
+    expect((await nodeRow(month, supC)).manager_user_id).toBe(newU);
+    expect((await nodeRow(month, supC)).parent_id).toBe(area);
+    expect(await grandTotals(month, tt)).toEqual(start);
+  });
+
   it('a propagation failure leaves the live change in place and reports treeChange.error', async () => {
     let batches = 0;
     const db = new Proxy(env.DB, {
@@ -563,7 +656,7 @@ describe('mid-month tree changes', () => {
     const { updateLeaf } = await import('../../src/worker/services/hierarchy');
     const boss = (await one<{ id: number }>(env.DB, `SELECT id FROM users WHERE username = 'boss'`))!.id;
     const out = await updateLeaf(db, boss, r2, { nodeId: supB });
-    expect(out.treeChange).toEqual({ appliedMonths: [], skippedMonths: [], error: 'D1 is down' });
+    expect(out.treeChange).toEqual({ appliedMonths: [], skippedMonths: [], error: 'move_leaf: D1 is down' });
     expect((await one<{ node_id: number }>(env.DB, `SELECT node_id FROM leaves WHERE id = ?`, r2))!.node_id).toBe(supB);
   });
 });

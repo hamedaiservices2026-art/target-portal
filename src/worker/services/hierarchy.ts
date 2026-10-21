@@ -38,15 +38,23 @@ function mergeChanges(results: TreeChangeResult[]): TreeChangeResult | null {
   };
 }
 
+/**
+ * Each change is propagated on its own: one failing (say a move) never stops
+ * the others (say a manager reassignment, which must reach open months so a
+ * replaced manager loses his edit rights). Failures are joined into `error`.
+ */
 async function notify(db: D1Database, actorId: number, changes: TreeChange[]): Promise<TreeChangeResult | null> {
   const results: TreeChangeResult[] = [];
-  try {
-    for (const c of changes) results.push(await applyTreeChangeToOpenMonths(db, c, actorId));
-  } catch (e) {
-    const merged = mergeChanges(results) ?? { appliedMonths: [], skippedMonths: [] };
-    return { ...merged, error: e instanceof Error ? e.message : String(e) };
+  const errors: string[] = [];
+  for (const c of changes) {
+    try {
+      results.push(await applyTreeChangeToOpenMonths(db, c, actorId));
+    } catch (e) {
+      errors.push(`${c.kind}: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
-  return mergeChanges(results);
+  if (errors.length === 0) return mergeChanges(results);
+  return { ...(mergeChanges(results) ?? { appliedMonths: [], skippedMonths: [] }), error: errors.join('; ') };
 }
 
 async function requireDept(db: D1Database, id: number): Promise<void> {
