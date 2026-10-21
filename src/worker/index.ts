@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { AppEnv } from './auth';
 import adminRoutes from './routes/admin';
 import authRoutes from './routes/auth';
+import workRoutes from './routes/work';
 
 export type Env = {
   DB: D1Database;
@@ -28,6 +29,7 @@ app.use('/api/*', async (c, next) => {
 app.get('/api/health', (c) => c.json({ ok: true }));
 app.route('/', authRoutes);
 app.route('/', adminRoutes);
+app.route('/', workRoutes);
 
 // Anything else under /api is an unknown endpoint. Non-/api paths never reach
 // the Worker: Static Assets serves them, falling back to index.html (SPA).

@@ -332,6 +332,16 @@ export async function startDept(
   db: D1Database, env: Env, actorId: number, monthId: number, deptId: number,
 ): Promise<{ state: 'running' }> {
   const state = await getMonthDept(db, monthId, deptId);
+  if (state === 'running') {
+    // Ruling R16: start is re-runnable. If an earlier start set the department
+    // running but opening the root's turn failed, open it now.
+    const root = await one<{ node_id: number; status: string }>(
+      db, `SELECT node_id, status FROM month_nodes WHERE month_id = ? AND dept_id = ? AND parent_id IS NULL`, monthId, deptId);
+    if (root?.status === 'waiting') {
+      await openTurn(db, env, monthId, root.node_id, actorId);
+      return { state: 'running' };
+    }
+  }
   if (state !== 'loading') throw conflict('department_not_loading');
 
   const files = await one<{ n: number }>(db, `SELECT COUNT(*) AS n FROM month_files WHERE month_id = ? AND dept_id = ?`, monthId, deptId);
@@ -355,6 +365,6 @@ export async function startDept(
     db.prepare(`UPDATE month_depts SET state = 'running' WHERE month_id = ? AND dept_id = ?`).bind(monthId, deptId),
     auditStatement(db, actorId, 'month.dept_start', { monthId, nodeId: root.node_id }, { deptId }),
   ], 'conflict');
-  await openTurn(db, env, monthId, root.node_id);
+  await openTurn(db, env, monthId, root.node_id, actorId);
   return { state: 'running' };
 }

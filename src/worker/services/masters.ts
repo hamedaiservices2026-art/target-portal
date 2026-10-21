@@ -10,13 +10,15 @@ import { auditStatement } from './audit';
 /** Thrown for any client error; routes turn it into a JSON response. */
 export class ApiError extends Error {
   constructor(
-    readonly status: 400 | 404 | 409 | 413,
+    readonly status: 400 | 403 | 404 | 409 | 413,
     readonly body: {
-      error: 'invalid_request' | 'not_found' | 'conflict' | 'too_many_rows';
+      error: 'invalid_request' | 'forbidden' | 'not_found' | 'conflict' | 'stale' | 'too_many_rows' | 'rules_failed';
       detail?: string;
       errors?: { line: number; detail: string }[];
       /** Leaves a 409 is about (month uploads). */
       leafIds?: number[];
+      /** Per-pack rule results when a submit fails the cap rules (distribution). */
+      byPack?: Record<string, unknown>;
     },
   ) {
     super(body.error + (body.detail ? `: ${body.detail}` : ''));
@@ -24,6 +26,7 @@ export class ApiError extends Error {
 }
 export const bad = (detail: string) => new ApiError(400, { error: 'invalid_request', detail });
 export const notFound = () => new ApiError(404, { error: 'not_found' });
+export const forbidden = () => new ApiError(403, { error: 'forbidden' });
 
 export type Obj = Record<string, unknown>;
 
@@ -293,10 +296,15 @@ export async function updatePack(db: D1Database, actorId: number, code: string, 
 const DEFAULT_CAP_PCT = 5;
 
 /** Also used by later tasks (cap computation). Falls back to the default if the row is missing or garbled. */
+/** The stored settings value as a cap %; anything unusable falls back to the default. */
+export function capPctFrom(raw: string | null | undefined): number {
+  const n = raw === null || raw === undefined ? NaN : Number(raw);
+  return Number.isFinite(n) && n > 0 && n <= 100 ? n : DEFAULT_CAP_PCT;
+}
+
 export async function getCapPct(db: D1Database): Promise<number> {
   const row = await one<{ value: string }>(db, `SELECT value FROM settings WHERE key = 'cap_pct'`);
-  const n = row ? Number(row.value) : NaN;
-  return Number.isFinite(n) && n > 0 && n <= 100 ? n : DEFAULT_CAP_PCT;
+  return capPctFrom(row?.value);
 }
 
 export async function setCapPct(db: D1Database, actorId: number, body: Obj): Promise<number> {

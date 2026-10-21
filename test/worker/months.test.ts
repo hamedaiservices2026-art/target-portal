@@ -445,7 +445,8 @@ describe('start', () => {
     expect((await one<Json>(env.DB, `SELECT state FROM month_depts WHERE month_id = ? AND dept_id = ?`, id, tt))!.state).toBe('running');
     const nodes = await all<Json>(env.DB, `SELECT node_id, status FROM month_nodes WHERE month_id = ? ORDER BY node_id`, id);
     expect(nodes).toEqual([{ node_id: ttRoot, status: 'in_progress' }, { node_id: ttArea, status: 'waiting' }]);
-    expect((await auditActions()).slice(-1)).toEqual(['month.dept_start']);
+    // openTurn (distribution) audits the root's turn after the start itself.
+    expect((await auditActions()).slice(-2)).toEqual(['month.dept_start', 'node.open']);
     // MT is untouched
     expect((await one<Json>(env.DB, `SELECT state FROM month_depts WHERE month_id = ? AND dept_id = ?`, id, mt))!.state).toBe('loading');
   });
@@ -470,9 +471,10 @@ describe('reset', () => {
     expect(await all<Json>(env.DB, `SELECT leaf_id FROM month_leaves WHERE month_id = ?`, id)).toEqual([{ leaf_id: m1 }]);
     expect(await all<Json>(env.DB, `SELECT id FROM month_files WHERE month_id = ?`, id)).toEqual([{ id: fm }]);
     const nodes = await all<Json>(env.DB, `SELECT node_id, status, held_status, baseline_json, draft_json, opened_at, submitted_at, version FROM month_nodes WHERE month_id = ? ORDER BY node_id`, id);
-    const clear = { status: 'waiting', held_status: null, baseline_json: null, draft_json: null, opened_at: null, submitted_at: null, version: 1 };
-    expect(nodes[0]).toMatchObject({ node_id: ttRoot, ...clear });
-    expect(nodes[1]).toMatchObject({ node_id: ttArea, ...clear });
+    const clear = { status: 'waiting', held_status: null, baseline_json: null, draft_json: null, opened_at: null, submitted_at: null };
+    // The root's turn was opened (version 1) before the reset bumped it again.
+    expect(nodes[0]).toMatchObject({ node_id: ttRoot, ...clear, version: 2 });
+    expect(nodes[1]).toMatchObject({ node_id: ttArea, ...clear, version: 1 });
     expect(nodes[2]).toMatchObject({ node_id: mtNode, status: 'submitted', version: 0 });
     const states = await all<Json>(env.DB, `SELECT dept_id, state FROM month_depts WHERE month_id = ? ORDER BY dept_id`, id);
     expect(states).toEqual([{ dept_id: tt, state: 'loading' }, { dept_id: mt, state: 'loading' }]);
