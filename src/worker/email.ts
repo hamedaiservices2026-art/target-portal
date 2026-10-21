@@ -1,5 +1,5 @@
 import type { Env } from './index';
-import { all, run } from './db';
+import { all, insertJson } from './db';
 import { departmentComplete, deadlineReminder, turnOpened, type Lang } from './emailTemplates';
 
 export type MailMsg = { to: string; subject: string; text: string; html: string };
@@ -7,43 +7,73 @@ export type MailResult = 'sent' | 'logged' | 'failed';
 
 const MAX_PER_RUN = 30;
 
-async function log(env: Env, to: string, subject: string, result: string): Promise<void> {
+type Delivery = { to: string; subject: string; result: MailResult; logged: string };
+
+async function logAll(env: Env, ds: Delivery[]): Promise<void> {
+  if (!ds.length) return;
   try {
-    await run(env.DB, `INSERT INTO email_log(at, to_addr, subject, result) VALUES (?, ?, ?, ?)`,
-      new Date().toISOString(), to, subject, result);
+    const at = new Date().toISOString();
+    await insertJson(env.DB, 'email_log', ['at', 'to_addr', 'subject', 'result'],
+      ds.map((d) => ({ at, to_addr: d.to, subject: d.subject, result: d.logged })));
   } catch { /* logging must never break a request */ }
+}
+
+/** One delivery attempt; never throws and never touches the database. */
+async function deliver(env: Env, msg: MailMsg): Promise<Delivery> {
+  const base = { to: msg.to, subject: msg.subject };
+  if (!(env.BREVO_API_KEY && env.MAIL_FROM)) return { ...base, result: 'logged', logged: 'logged' };
+  try {
+    const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: { 'api-key': env.BREVO_API_KEY, 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({
+        sender: { email: env.MAIL_FROM, name: 'Target Portal' },
+        to: [{ email: msg.to }],
+        replyTo: { email: env.MAIL_FROM },
+        subject: msg.subject,
+        htmlContent: msg.html,
+        textContent: msg.text,
+      }),
+      signal: AbortSignal.timeout(5000),
+    });
+    return res.status >= 200 && res.status < 300
+      ? { ...base, result: 'sent', logged: 'sent' }
+      : { ...base, result: 'failed', logged: `failed:${res.status}` };
+  } catch (e) {
+    const timeout = e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError');
+    return { ...base, result: 'failed', logged: timeout ? 'failed:timeout' : 'failed:error' };
+  }
 }
 
 /** Sends through Brevo when configured, else only logs. Always writes email_log; never throws. */
 export async function sendMail(env: Env, msg: MailMsg): Promise<MailResult> {
-  let result: MailResult = 'logged';
-  if (env.BREVO_API_KEY && env.MAIL_FROM) {
-    try {
-      const res = await fetch('https://api.brevo.com/v3/smtp/email', {
-        method: 'POST',
-        headers: { 'api-key': env.BREVO_API_KEY, 'content-type': 'application/json', accept: 'application/json' },
-        body: JSON.stringify({
-          sender: { email: env.MAIL_FROM, name: 'Target Portal' },
-          to: [{ email: msg.to }],
-          replyTo: { email: env.MAIL_FROM },
-          subject: msg.subject,
-          htmlContent: msg.html,
-          textContent: msg.text,
-        }),
-        signal: AbortSignal.timeout(5000),
-      });
-      result = res.status >= 200 && res.status < 300 ? 'sent' : 'failed';
-    } catch {
-      result = 'failed';
-    }
-  }
-  await log(env, msg.to, msg.subject, result);
-  return result;
+  const d = await deliver(env, msg);
+  await logAll(env, [d]);
+  return d.result;
 }
 
 /** Awaits sendMail; never throws. */
 export async function queueMail(env: Env, msg: MailMsg): Promise<void> {
   try { await sendMail(env, msg); } catch { /* never fail the caller */ }
+}
+
+/** Sends all messages concurrently, then writes one multi-row email_log INSERT. Never throws. */
+export async function sendMailBatch(env: Env, msgs: MailMsg[]): Promise<void> {
+  try {
+    const settled = await Promise.allSettled(msgs.map((m) => deliver(env, m)));
+    await logAll(env, settled.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : [])));
+  } catch { /* never fail the caller */ }
+}
+
+/**
+ * Notifications are fire-and-forget after the commit: with a deferrer
+ * (waitUntil) the response does not wait for email; without one (tests,
+ * cron) the work is awaited.
+ */
+async function dispatch(env: Env, work: Promise<unknown>): Promise<void> {
+  const safe = work.catch(() => {});
+  if (env.defer) env.defer(safe);
+  else await safe;
 }
 
 function link(env: Env, monthId: number, nodeId: number): string | null {
@@ -64,29 +94,35 @@ function nodeMail(env: Env, r: NodeRow, tpl: typeof turnOpened) {
 }
 
 /** After the turns of `nodeIds` opened (D1 batch already committed). Never throws. */
-export async function notifyTurnOpened(env: Env, monthId: number, nodeIds: number[]): Promise<void> {
+export function notifyTurnOpened(env: Env, monthId: number, nodeIds: number[]): Promise<void> {
+  return dispatch(env, turnOpenedWork(env, monthId, nodeIds));
+}
+
+async function turnOpenedWork(env: Env, monthId: number, nodeIds: number[]): Promise<void> {
   try {
     const ids = nodeIds.slice(0, MAX_PER_RUN);
     if (!ids.length) return;
     const rows = await all<NodeRow>(env.DB,
       `${NODE_SELECT} AND mn.month_id = ? AND mn.node_id IN (${ids.map(() => '?').join(',')})`, monthId, ...ids);
-    for (const r of rows) await queueMail(env, nodeMail(env, r, turnOpened));
+    await sendMailBatch(env, rows.map((r) => nodeMail(env, r, turnOpened)));
   } catch { /* email must not fail the request */ }
 }
 
 /** After a department became complete: all active admins with an email. Never throws. */
-export async function notifyDeptComplete(env: Env, monthId: number, deptId: number): Promise<void> {
+export function notifyDeptComplete(env: Env, monthId: number, deptId: number): Promise<void> {
+  return dispatch(env, deptCompleteWork(env, monthId, deptId));
+}
+
+async function deptCompleteWork(env: Env, monthId: number, deptId: number): Promise<void> {
   try {
     const rows = await all<{ email: string; lang: Lang; period: string; dept_name: string }>(env.DB,
       `SELECT u.email, u.lang, m.period, d.name AS dept_name FROM users u, months m, departments d
        WHERE m.id = ? AND d.id = ? AND u.role = 'admin' AND u.active = 1 AND u.email IS NOT NULL AND u.email <> ''
        LIMIT ${MAX_PER_RUN}`, monthId, deptId);
     const base = env.APP_URL?.replace(/\/+$/, '');
-    for (const r of rows) {
-      await queueMail(env, { to: r.email, ...departmentComplete({
-        period: r.period, deptName: r.dept_name, lang: r.lang, link: base ? `${base}/m/${monthId}` : null,
-      }) });
-    }
+    await sendMailBatch(env, rows.map((r) => ({ to: r.email, ...departmentComplete({
+      period: r.period, deptName: r.dept_name, lang: r.lang, link: base ? `${base}/m/${monthId}` : null,
+    }) })));
   } catch { /* email must not fail the request */ }
 }
 
@@ -96,7 +132,7 @@ export async function sendDeadlineReminders(db: D1Database, env: Env, now: Date)
     const tomorrow = new Date(now.getTime() + (3 + 24) * 3600_000).toISOString().slice(0, 10);
     const rows = await all<NodeRow>(db,
       `${NODE_SELECT} AND mn.status = 'in_progress' AND m.deadline = ? LIMIT ${MAX_PER_RUN}`, tomorrow);
-    for (const r of rows) await queueMail(env, nodeMail(env, r, deadlineReminder));
+    await sendMailBatch(env, rows.map((r) => nodeMail(env, r, deadlineReminder)));
     return rows.length;
   } catch {
     return 0;

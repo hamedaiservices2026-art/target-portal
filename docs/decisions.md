@@ -69,7 +69,7 @@ Owner setup steps:
 1. Create a free Brevo account with the owner's Gmail (or a dedicated Gmail such as the one used for the portal). Complete any account validation Brevo asks for.
 2. Settings > Senders, Domains, IPs > Senders > Add a sender: name "Target Portal", email = that Gmail address. Enter the 6-digit code Brevo emails to that address.
 3. SMTP & API > API keys > Generate a new API key. Give it to Claude only as a Worker secret (`wrangler secret put BREVO_API_KEY`), never in the repo.
-4. Set the sender address and name as Worker variables (`EMAIL_FROM`, `EMAIL_FROM_NAME`).
+4. Set the sender address as the Worker variable `MAIL_FROM` (the verified Gmail address; also used as reply-to). The sender name is fixed in code as "Target Portal".
 5. Send a test to a company inbox and to a personal inbox. Check spam folders and report the result. Ask company IT to allow-list `*.t-sender-sib.com` / `brevo` if the company inbox blocks it.
 
 Caveats:

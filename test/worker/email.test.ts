@@ -50,13 +50,19 @@ describe('sendMail', () => {
   it('a 500 is failed and does not throw', async () => {
     fetchSpy.mockResolvedValue(new Response('no', { status: 500 }));
     expect(await sendMail(cfg(), msg)).toBe('failed');
-    expect((await logRows())[0]!.result).toBe('failed');
+    expect((await logRows())[0]!.result).toBe('failed:500');
   });
 
   it('a network error is failed; queueMail never throws', async () => {
     fetchSpy.mockRejectedValue(new Error('down'));
     await expect(queueMail(cfg(), msg)).resolves.toBeUndefined();
-    expect((await logRows())[0]!.result).toBe('failed');
+    expect((await logRows())[0]!.result).toBe('failed:error');
+  });
+
+  it('a timeout is logged as failed:timeout, without secrets', async () => {
+    fetchSpy.mockRejectedValue(new DOMException('t', 'TimeoutError'));
+    await sendMail(cfg(), msg);
+    expect((await logRows())[0]!.result).toBe('failed:timeout');
   });
 });
 
@@ -93,6 +99,50 @@ describe('hooks', () => {
 
   it('a failing database never throws', async () => {
     await expect(notifyTurnOpened({ ...env, DB: undefined as never } as Env, 1, [1])).resolves.toBeUndefined();
+  });
+});
+
+describe('fan-out', () => {
+  async function seedMany(n: number) {
+    await seed('2026-11-20', []);
+    for (let i = 0; i < n; i++) {
+      const id = 100 + i;
+      await run(env.DB, `INSERT INTO users(id, username, name, email, pw_hash, pw_salt, role) VALUES (?, ?, ?, ?, 'h', 's', 'manager')`, id, `u${id}`, `U${id}`, `u${id}@e.com`);
+      await run(env.DB, `INSERT INTO month_nodes(month_id, node_id, dept_id, name, manager_user_id, status) VALUES (1, ?, 1, ?, ?, 'in_progress')`, id, `N${id}`, id);
+    }
+    return Array.from({ length: n }, (_, i) => 100 + i);
+  }
+
+  it('sends concurrently and writes one email_log INSERT', async () => {
+    const ids = await seedMany(5);
+    let inFlight = 0; let peak = 0;
+    fetchSpy.mockImplementation(async () => {
+      peak = Math.max(peak, ++inFlight);
+      await new Promise((r) => setTimeout(r, 20));
+      inFlight--;
+      return new Response('{}', { status: 201 });
+    });
+    const inserts: string[] = [];
+    const db = new Proxy(env.DB, { get: (t, k) => k === 'prepare'
+      ? (sql: string) => { if (/INSERT INTO email_log/.test(sql)) inserts.push(sql); return t.prepare(sql); }
+      : (t as any)[k].bind?.(t) ?? (t as any)[k] });
+    await notifyTurnOpened(cfg({ DB: db as D1Database }), 1, ids);
+    expect(peak).toBe(5);
+    expect(inserts).toHaveLength(1);
+    expect(await logRows()).toHaveLength(5);
+  });
+
+  it('with defer the call returns before a slow fetch resolves', async () => {
+    const ids = await seedMany(2);
+    const releases: (() => void)[] = [];
+    fetchSpy.mockImplementation(() => new Promise((r) => { releases.push(() => r(new Response('{}', { status: 201 }))); }));
+    const pending: Promise<unknown>[] = [];
+    await notifyTurnOpened(cfg({ defer: (p) => { pending.push(p); } }), 1, ids);
+    expect(await logRows()).toHaveLength(0);
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
+    releases.forEach((r) => r());
+    await Promise.all(pending);
+    await vi.waitFor(async () => expect(await logRows()).toHaveLength(2));
   });
 });
 

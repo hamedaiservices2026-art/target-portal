@@ -16,13 +16,22 @@ export type Env = {
   BREVO_API_KEY?: string;
   /** Var. The single verified sender address (also used as reply-to). */
   MAIL_FROM?: string;
+  /** Set per request: hands background work (email) to waitUntil so the response does not wait for it. */
+  defer?: (p: Promise<unknown>) => void;
 };
 
 export const app = new Hono<AppEnv>();
 
-// Email links need an absolute base: without APP_URL fall back to this request's origin.
+// Email: links need an absolute base (APP_URL, else this request's origin), and
+// sends are deferred with waitUntil so the response never waits for Brevo.
 app.use('*', async (c, next) => {
-  if (!c.env.APP_URL) c.env = { ...c.env, APP_URL: new URL(c.req.url).origin };
+  const extra: Partial<Env> = {};
+  if (!c.env.APP_URL) extra.APP_URL = new URL(c.req.url).origin;
+  try {
+    const ctx = c.executionCtx;
+    extra.defer = (p) => ctx.waitUntil(p);
+  } catch { /* no execution context (plain app.request): sends are awaited */ }
+  c.env = { ...c.env, ...extra };
   await next();
 });
 
