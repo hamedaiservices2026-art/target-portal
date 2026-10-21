@@ -6,6 +6,7 @@ import {
   addFile, createMonth, listMonths, monthContext, requiredDept, resetDept, startDept, updateMonth, uploadBatch,
 } from '../services/months';
 import { monthBoard, pushNode, reopenNode } from '../services/flow';
+import { exportDept, exportMonth } from '../services/export';
 import { parseId } from '../services/masters';
 import { h, p } from './handler';
 
@@ -18,6 +19,9 @@ months.patch('/api/admin/months/:id', h(async (c, db, me, body) =>
   c.json({ month: await updateMonth(db, me, parseId(p(c, 'id')), await body()) })));
 months.get('/api/admin/months/:id/context', h(async (c, db) =>
   c.json(await monthContext(db, parseId(p(c, 'id')), requiredDept(c.req.query('dept'))))));
+
+months.get('/api/admin/months/:id/export', h(async (c, db, me) =>
+  c.json(await exportMonth(db, me, parseId(p(c, 'id')), exportDept(c.req.query('dept'))))));
 
 months.post('/api/admin/months/:id/files', h(async (c, db, me, body) =>
   c.json(await addFile(db, me, parseId(p(c, 'id')), await body()), 201)));

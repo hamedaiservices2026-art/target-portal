@@ -2,6 +2,7 @@
 import { Hono } from 'hono';
 import { requireAdmin, requireUser, type AppEnv } from '../auth';
 import { h, p } from './handler';
+import { backup, listAudit } from '../services/export';
 import monthRoutes from './months';
 import {
   bulkMapLeaves, createLeaf, createNode, deleteLeaf, deleteNode, listLeaves, listNodes, optionalDept,
@@ -64,6 +65,14 @@ admin.patch('/api/admin/leaves/:id', h(async (c, db, me, body) =>
 admin.delete('/api/admin/leaves/:id', h(async (c, db, me) => {
   await deleteLeaf(db, me, parseId(p(c, 'id')));
   return c.json({ ok: true });
+}));
+
+admin.get('/api/admin/audit', h(async (c, db) =>
+  c.json(await listAudit(db, { month: c.req.query('month'), limit: c.req.query('limit'), before: c.req.query('before') }))));
+admin.get('/api/admin/backup', h(async (c, db, me) => {
+  const data = await backup(db, me);
+  c.header('Content-Disposition', `attachment; filename="target-portal-backup-${String(data.exportedAt).slice(0, 10)}.json"`);
+  return c.json(data);
 }));
 
 // Month routes sit behind the guard registered above (registered after it).
