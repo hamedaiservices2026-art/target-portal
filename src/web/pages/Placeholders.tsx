@@ -19,8 +19,6 @@ const ADMIN_TITLES: Record<string, TextKey> = {
   packs: 'navPacks',
   settings: 'navSettings',
   hierarchy: 'navHierarchy',
-  months: 'navMonths',
-  history: 'navHistory',
 };
 
 export function Admin({ rest }: { rest?: string }) {

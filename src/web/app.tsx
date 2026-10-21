@@ -10,6 +10,9 @@ import { Login, safeNext } from './pages/Login';
 import { Distribute } from './pages/Distribute';
 import { Departments } from './pages/admin/Departments';
 import { Hierarchy } from './pages/admin/Hierarchy';
+import { History } from './pages/admin/History';
+import { MonthDetail } from './pages/admin/MonthDetail';
+import { Months } from './pages/admin/Months';
 import { Packs } from './pages/admin/Packs';
 import { Settings } from './pages/admin/Settings';
 import { Users } from './pages/admin/Users';
@@ -17,10 +20,10 @@ import { Admin, NotAllowed, NotFound } from './pages/Placeholders';
 import { expire, loadSession, useSession } from './session';
 
 /** The setup screens are for administrators only (the API enforces it too). */
-function adminOnly(Page: () => preact.JSX.Element): () => preact.JSX.Element {
-  return function AdminPage() {
+function adminOnly<P extends object>(Page: (props: P) => preact.JSX.Element): (props: P) => preact.JSX.Element {
+  return function AdminPage(props: P) {
     const { user } = useSession();
-    return user?.role === 'admin' ? <Page /> : <NotAllowed />;
+    return user?.role === 'admin' ? <Page {...props} /> : <NotAllowed />;
   };
 }
 const AdminUsers = adminOnly(Users);
@@ -28,6 +31,9 @@ const AdminDepartments = adminOnly(Departments);
 const AdminPacks = adminOnly(Packs);
 const AdminSettings = adminOnly(Settings);
 const AdminHierarchy = adminOnly(Hierarchy);
+const AdminMonths = adminOnly(Months);
+const AdminMonthDetail = adminOnly(MonthDetail);
+const AdminHistory = adminOnly(History);
 
 function Routes() {
   useLang();
@@ -67,6 +73,9 @@ function Routes() {
         <Route path="/admin/packs" component={AdminPacks} />
         <Route path="/admin/settings" component={AdminSettings} />
         <Route path="/admin/hierarchy" component={AdminHierarchy} />
+        <Route path="/admin/months" component={AdminMonths} />
+        <Route path="/admin/months/:mid" component={AdminMonthDetail} />
+        <Route path="/admin/history" component={AdminHistory} />
         <Route path="/admin" component={Admin} />
         <Route path="/admin/*" component={Admin} />
         <Route default component={NotFound} />

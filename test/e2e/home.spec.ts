@@ -27,7 +27,9 @@ async function ensureSupSubmitted(page: Page) {
 
 test('a manager sees one task on Home; after submit it shows Submitted and the branch agrees', async ({ page }) => {
   await signIn(page, 'sup1');
-  const tasks = page.getByTestId('task');
+  // The admin-month spec opens another month (TT nodes copied as waiting): look at the seed month only.
+  const seedMonth = page.getByTestId('month-group').filter({ hasText: 'Oct 2026' });
+  const tasks = seedMonth.getByTestId('task');
   await expect(tasks).toHaveCount(1);
   await expect(tasks.first()).toContainText('Sup S-01');
   await expect(tasks.first().getByTestId('task-status')).toHaveText(/^(In progress|Submitted)$/);
@@ -35,10 +37,10 @@ test('a manager sees one task on Home; after submit it shows Submitted and the b
 
   await ensureSupSubmitted(page);
   await page.reload();
-  await expect(page.getByTestId('task').first().getByTestId('task-status')).toHaveText('Submitted');
+  await expect(tasks.first().getByTestId('task-status')).toHaveText('Submitted');
 
   // The branch of S-01 shows itself as submitted, with its total (the 4 routes of the mockup).
-  await page.getByRole('link', { name: 'View branch' }).click();
+  await seedMonth.getByRole('link', { name: 'View branch' }).click();
   await expect(page).toHaveURL(/\/m\/1\/n\/2\/branch$/);
   const row = page.getByTestId('branch-row-2');
   await expect(row).toContainText('Sup S-01');
@@ -47,7 +49,7 @@ test('a manager sees one task on Home; after submit it shows Submitted and the b
 
   // Open goes to the workspace.
   await page.goto('/');
-  await page.getByRole('link', { name: 'Open' }).click();
+  await seedMonth.getByRole('link', { name: 'Open' }).click();
   await expect(page).toHaveURL(/\/m\/1\/n\/2$/);
 });
 

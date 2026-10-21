@@ -22,3 +22,13 @@ export function fmtPeriod(period: string, lang: Lang): string {
 export const STATUS_LABEL: Record<NodeStatus, TextKey> = {
   waiting: 'dsStatusWaiting', in_progress: 'dsStatusInProgress', submitted: 'dsStatusSubmitted',
 };
+
+/** Date and time of an ISO timestamp, in the viewer's time zone (Western digits in Arabic too). */
+export function fmtDateTime(iso: string | null, lang: Lang): string {
+  if (!iso) return '—';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return new Intl.DateTimeFormat(dateLocale(lang), {
+    day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  }).format(date);
+}

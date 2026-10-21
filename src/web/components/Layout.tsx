@@ -39,11 +39,14 @@ export function Layout({ children }: { children?: ComponentChildren }) {
       {isAdmin && (
         <nav class="nav" aria-label={t('mainNav')}>
           <a class={`tab${path === '/' ? ' on' : ''}`} href="/">{t('navHome')}</a>
-          {ADMIN_NAV.map((n) => (
-            <a class={`tab${path === n.path ? ' on' : ''}`} href={n.path} aria-current={path === n.path ? 'page' : undefined}>
-              {t(n.label)}
-            </a>
-          ))}
+          {ADMIN_NAV.map((n) => {
+            const on = path === n.path || path.startsWith(`${n.path}/`);
+            return (
+              <a class={`tab${on ? ' on' : ''}`} href={n.path} aria-current={path === n.path ? 'page' : undefined}>
+                {t(n.label)}
+              </a>
+            );
+          })}
         </nav>
       )}
       <main class="page">{children}</main>
