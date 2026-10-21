@@ -1,0 +1,50 @@
+// Source of keys for all UI text. ar.ts must define exactly the same keys.
+export const en = {
+  appName: 'Target Portal',
+  loading: 'Loading…',
+  comingSoon: 'Coming soon',
+  comingSoonText: 'This page will be available in a later update.',
+  notFound: 'Page not found',
+  notFoundText: 'The page you are looking for does not exist.',
+  forbidden: 'Not allowed',
+  forbiddenText: 'Only administrators can open this page.',
+  backHome: 'Back to home',
+
+  loginTitle: 'Sign in',
+  loginIntro: 'Use the username and password given to you by the administrator.',
+  username: 'Username',
+  password: 'Password',
+  signIn: 'Sign in',
+  signingIn: 'Signing in…',
+  errInvalidCredentials: 'Wrong username or password.',
+  errTooManyAttempts: 'Too many attempts. Please wait a few minutes and try again.',
+  errNetwork: 'Could not reach the server. Check your connection and try again.',
+  errGeneric: 'Something went wrong. Please try again.',
+
+  langToggle: 'العربية',
+  langToggleLabel: 'Switch language to Arabic',
+  logout: 'Sign out',
+  signedInAs: 'Signed in as',
+  roleAdmin: 'Administrator',
+  roleManager: 'Manager',
+  mainNav: 'Main navigation',
+
+  navHome: 'Home',
+  navUsers: 'Users',
+  navDepartments: 'Departments',
+  navPacks: 'Packs',
+  navSettings: 'Settings',
+  navHierarchy: 'Hierarchy',
+  navMonths: 'Months',
+  navHistory: 'History',
+
+  homeTitle: 'My tasks',
+  homeWelcome: 'Welcome',
+  homeText: 'The months and teams assigned to you will appear here.',
+  distributeTitle: 'Distribute to team',
+  branchTitle: 'Whole branch (read-only)',
+  month: 'Month',
+  node: 'Node',
+} as const;
+
+export type TextKey = keyof typeof en;

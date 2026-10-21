@@ -9,6 +9,7 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "e2e": "playwright test",
+    "seed": "node scripts/seed-dev.ts",
     "deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {

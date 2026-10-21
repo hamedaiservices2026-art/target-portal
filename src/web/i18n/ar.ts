@@ -1,0 +1,50 @@
+import type { TextKey } from './en';
+
+// Same keys as en.ts (checked by the type). Saudi business Arabic; pack codes are never translated.
+export const ar: Record<TextKey, string> = {
+  appName: 'بوابة الأهداف',
+  loading: 'جارٍ التحميل…',
+  comingSoon: 'قريباً',
+  comingSoonText: 'ستتوفر هذه الصفحة في تحديث قادم.',
+  notFound: 'الصفحة غير موجودة',
+  notFoundText: 'الصفحة التي تبحث عنها غير موجودة.',
+  forbidden: 'غير مصرّح',
+  forbiddenText: 'هذه الصفحة متاحة للمسؤولين فقط.',
+  backHome: 'العودة إلى الرئيسية',
+
+  loginTitle: 'تسجيل الدخول',
+  loginIntro: 'استخدم اسم المستخدم وكلمة المرور اللذين زوّدك بهما المسؤول.',
+  username: 'اسم المستخدم',
+  password: 'كلمة المرور',
+  signIn: 'تسجيل الدخول',
+  signingIn: 'جارٍ تسجيل الدخول…',
+  errInvalidCredentials: 'اسم المستخدم أو كلمة المرور غير صحيحة.',
+  errTooManyAttempts: 'محاولات كثيرة. يرجى الانتظار بضع دقائق ثم إعادة المحاولة.',
+  errNetwork: 'تعذّر الاتصال بالخادم. تحقّق من اتصالك ثم أعد المحاولة.',
+  errGeneric: 'حدث خطأ ما. يرجى المحاولة مرة أخرى.',
+
+  langToggle: 'English',
+  langToggleLabel: 'تغيير اللغة إلى الإنجليزية',
+  logout: 'تسجيل الخروج',
+  signedInAs: 'تم تسجيل الدخول باسم',
+  roleAdmin: 'مسؤول',
+  roleManager: 'مدير',
+  mainNav: 'التنقل الرئيسي',
+
+  navHome: 'الرئيسية',
+  navUsers: 'المستخدمون',
+  navDepartments: 'الأقسام',
+  navPacks: 'العبوات',
+  navSettings: 'الإعدادات',
+  navHierarchy: 'الهيكل التنظيمي',
+  navMonths: 'الأشهر',
+  navHistory: 'السجل',
+
+  homeTitle: 'مهامي',
+  homeWelcome: 'مرحباً',
+  homeText: 'ستظهر هنا الأشهر والفرق المسندة إليك.',
+  distributeTitle: 'التوزيع على الفريق',
+  branchTitle: 'الفرع بالكامل (للعرض فقط)',
+  month: 'الشهر',
+  node: 'المستوى',
+};

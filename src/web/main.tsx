@@ -1,7 +1,5 @@
 import { render } from 'preact';
-
-function App() {
-  return <h1>Target Portal</h1>;
-}
+import { App } from './app';
+import './styles.css';
 
 render(<App />, document.getElementById('app')!);

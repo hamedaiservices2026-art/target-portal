@@ -1,0 +1,2 @@
+# Copy to .dev.vars for `npm run dev` (then `npm run seed`).
+BOOTSTRAP_ADMIN_PASSWORD=admin-pass-123
