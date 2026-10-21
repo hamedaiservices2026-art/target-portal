@@ -13,7 +13,7 @@ const DEPT = { code: `MC${SFX}`.toUpperCase(), name: `Month dept ${SFX}` };
 const ROOT = `Root ${SFX}`;
 const BRANCH = `Branch ${SFX}`;
 const DS = `Presell – TT ${SFX}`; // en dash, as in the real TT DMM file
-const ROUTES = ['914023', '914075', '914052'];
+const ROUTES = ['0914023', '914075', '914052']; // the leading zero must survive import and export
 // A period far from the seed month (2026-10), unique enough per run.
 const PERIOD = `${2100 + (Date.now() % 800)}-${String((Math.floor(Date.now() / 1000) % 12) + 1).padStart(2, '0')}`;
 const FIXTURE = 'test/fixtures/tt-dmm-small.xlsx';
@@ -154,6 +154,13 @@ test('admin opens a month, uploads the checked forecast, starts, pushes, exports
   const sheet = await readSheet((await file.path()) as string);
   expect(sheet[0]).toEqual(HEADERS);
   expect(sheet.length - 1).toBe(ROUTES.length * packs.length);
+  // Code columns are text cells, Cases a number cell.
+  const zero = sheet.find((r) => r[2] === ROUTES[0])!;
+  expect(zero).toBeDefined();
+  expect(zero[0]).toBe(PERIOD);
+  expect(typeof zero[3]).toBe('string');
+  expect(zero[3]).toBe(MOCKUP_ROUTES[0]!.salesman);
+  expect(typeof zero[5]).toBe('number');
 
   // "All departments" includes the seed department, which is still loading in this month: a warning first.
   await page.getByRole('button', { name: 'Export all departments' }).click();

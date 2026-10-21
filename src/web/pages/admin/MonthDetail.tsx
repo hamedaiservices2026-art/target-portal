@@ -9,7 +9,7 @@ import type { ExportResult } from '../../../worker/services/export';
 import { api, ApiError } from '../../api';
 import { ConfirmButton, errText, LoadError, PageHead, useResource } from '../../components/AdminBits';
 import { StatusPill } from '../../components/StatusPill';
-import { readSheet, writeXlsx } from '../../excel';
+import { readSheet, readSheets, writeXlsx } from '../../excel';
 import { fmtDateTime, fmtPeriod } from '../../format';
 import { fmtNum, t, tf, useLang, type TextKey } from '../../i18n';
 import { groupTotals, parseSheet1, toBatches, type Sheet1 } from '../../monthUpload';
@@ -73,7 +73,8 @@ function ExportButton({ month, dept, label, testId }: { month: Month; dept: Dept
   const fileName = `targets-${month.period}-${tag}.xlsx`;
 
   async function download(data: ExportResult) {
-    await writeXlsx(fileName, data.columns, data.rows);
+    // Every code column is text (a route like 0314 keeps its zero); Cases is a number.
+    await writeXlsx(fileName, data.columns, data.rows, data.columns.map((c) => (c === 'Cases' ? 'number' : 'string')));
     setPending(null);
   }
   async function start() {
@@ -112,6 +113,7 @@ function ExportButton({ month, dept, label, testId }: { month: Month; dept: Dept
 
 type Checked = {
   fileName: string;
+  sheetName: string;
   ctx: MonthContext;
   result: ForecastCheck;
   rows: number;
@@ -157,7 +159,7 @@ function CheckReport({ c }: { c: Checked }) {
     <div class="check-report">
       <p class={`banner ${errors.length ? 'bad' : warnings.length ? 'warn' : 'ok'}`} data-testid="check-summary" role="status">
         <span>
-          <b><bdi>{c.fileName}</bdi></b>: {plural(errors.length, 'mcErrors1', 'mcErrorsN')}, {plural(warnings.length, 'mcWarnings1', 'mcWarningsN')}.
+          <b><bdi>{c.fileName}</bdi></b> <span class="small">({tf('mcSheetUsed', { sheet: c.sheetName })})</span>: {plural(errors.length, 'mcErrors1', 'mcErrorsN')}, {plural(warnings.length, 'mcWarnings1', 'mcWarningsN')}.
           {' '}{tf('mcCheckCounts', { rows: fmtNum(c.rows), routes: fmtNum(grids.length) })}
           {' '}{errors.length ? t('mcErrorsBlock') : warnings.length ? t('mcWarningsOk') : t('mcAllGood')}
         </span>
@@ -170,6 +172,11 @@ function CheckReport({ c }: { c: Checked }) {
           <h3>{tf('mcSheet1Title', { file: c.sheet1.fileName })}</h3>
           {c.sheet1.invalid.length > 0 && (
             <p class="banner warn">{tf('mcSheet1Invalid', { lines: c.sheet1.invalid.map((x) => `${x.line} (${x.pack})`).join(', ') })}</p>
+          )}
+          {c.sheet1.unrecognised.length > 0 && (
+            <p class="banner warn" data-testid="sheet1-unrecognised">
+              {tf('mcSheet1Unrecognised', { rows: c.sheet1.unrecognised.map((x) => `${x.line} (${x.pack}: ${fmtNum(Math.round(x.total))})`).join(', ') })}
+            </p>
           )}
           {c.sheet1.diffs.length === 0 ? (
             <p class="banner ok" data-testid="sheet1-match">{t('mcSheet1Match')}</p>
@@ -212,9 +219,14 @@ function CheckReport({ c }: { c: Checked }) {
   );
 }
 
-function UploadPanel({ month, dept, onUploaded }: { month: Month; dept: Dept; onUploaded: () => void }) {
+function UploadPanel({ month, dept, onUploaded, onSending }: {
+  month: Month; dept: Dept; onUploaded: () => void; onSending: (sending: boolean) => void;
+}) {
   useLang();
   const [state, setState] = useState<UploadState>({ kind: 'idle' });
+  const sending = state.kind === 'sending';
+  useEffect(() => onSending(sending), [sending]);
+  useEffect(() => () => onSending(false), []);
   const forecast = useRef<File | null>(null);
   const sheet1 = useRef<File | null>(null);
   const run = useRef(0);
@@ -231,19 +243,27 @@ function UploadPanel({ month, dept, onUploaded }: { month: Month; dept: Dept; on
     } catch (x) {
       return set({ kind: 'problem', message: errText(x) });
     }
-    let cells: unknown[][];
+    let sheets: { sheet: string; data: unknown[][] }[];
     try {
-      cells = await readSheet(file);
+      sheets = await readSheets(file);
     } catch {
       return set({ kind: 'problem', message: t('adMapErrUnreadable') });
     }
-    let rows;
-    try {
-      rows = normalizeForecastRows(cells);
-    } catch (x) {
-      if (x instanceof ForecastHeaderError) return set({ kind: 'problem', message: tf('mcErrHeader', { columns: x.missing.join(', ') }) });
-      return set({ kind: 'problem', message: t('errGeneric') });
+    // The forecast may be on any sheet (the TT DMM workbook has the totals first): use the first sheet with the header.
+    let rows: ReturnType<typeof normalizeForecastRows> | null = null;
+    let sheetName = '';
+    let best: string[] | null = null;
+    for (const sh of sheets) {
+      try {
+        rows = normalizeForecastRows(sh.data);
+        sheetName = sh.sheet;
+        break;
+      } catch (x) {
+        if (!(x instanceof ForecastHeaderError)) return set({ kind: 'problem', message: t('errGeneric') });
+        if (best === null || x.missing.length < best.length) best = x.missing;
+      }
     }
+    if (rows === null) return set({ kind: 'problem', message: tf('mcErrHeader', { columns: (best ?? []).join(', ') }) });
     const codes = ctx.packs.map((p) => p.code);
     const result = checkForecast(rows, {
       period: ctx.period,
@@ -255,7 +275,7 @@ function UploadPanel({ month, dept, onUploaded }: { month: Month; dept: Dept; on
     if (sheet1.current) {
       try {
         const parsed = parseSheet1(await readSheet(sheet1.current), codes);
-        if (Object.keys(parsed.totals).length === 0 && parsed.invalid.length === 0) {
+        if (Object.keys(parsed.totals).length === 0 && parsed.invalid.length === 0 && parsed.unrecognised.length === 0) {
           return set({ kind: 'problem', message: t('mcSheet1Empty') });
         }
         s1 = { ...parsed, fileName: sheet1.current.name, diffs: compareToTotals(result.packTotals, parsed.totals) };
@@ -263,7 +283,7 @@ function UploadPanel({ month, dept, onUploaded }: { month: Month; dept: Dept; on
         return set({ kind: 'problem', message: t('mcSheet1Unreadable') });
       }
     }
-    set({ kind: 'checked', c: { fileName: file.name, ctx, result, rows: rows.length, sheet1: s1 } });
+    set({ kind: 'checked', c: { fileName: file.name, sheetName, ctx, result, rows: rows.length, sheet1: s1 } });
   }
 
   function pick(which: 'forecast' | 'sheet1') {
@@ -271,6 +291,7 @@ function UploadPanel({ month, dept, onUploaded }: { month: Month; dept: Dept; on
       const input = e.currentTarget as HTMLInputElement;
       const f = input.files?.[0] ?? null;
       (which === 'forecast' ? forecast : sheet1).current = f;
+      input.value = ''; // so choosing the same file again (after fixing it, or after an upload) runs again
       if (forecast.current) void check();
       else setState({ kind: 'idle' });
     };
@@ -482,6 +503,7 @@ function Board({ month, dept, onDeptChanged }: { month: Month; dept: Dept; onDep
 function DeptCard({ month, dept, onChanged }: { month: Month; dept: Dept; onChanged: () => void }) {
   useLang();
   const [uploading, setUploading] = useState(false);
+  const [sending, setSending] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [flash, setFlash] = useState<(() => string) | null>(null);
@@ -543,18 +565,19 @@ function DeptCard({ month, dept, onChanged }: { month: Month; dept: Dept; onChan
           </button>
         )}
         {loading && (
-          <button type="button" class="btn primary" disabled={busy || dept.files === 0} title={dept.files === 0 ? t('mcErrNoFiles') : undefined} onClick={start}>
+          <button type="button" class="btn primary" disabled={busy || sending || dept.files === 0} title={dept.files === 0 ? t('mcErrNoFiles') : undefined} onClick={start}>
             {t('mcStart')}
           </button>
         )}
         <ExportButton month={month} dept={dept} label={t('mcExport')} />
         <ConfirmButton
           label={t('mcReset')} question={tf('mcResetQ', { dept: dept.name })} yesLabel={t('mcResetYes')} onConfirm={reset}
+          disabled={sending} title={sending ? t('mcResetWhileSending') : undefined}
         />
       </div>
       {flash && <div class="banner ok" role="status">{flash()}</div>}
       {err && <div class="alert" role="alert" data-testid="dept-error">{err}</div>}
-      {loading && uploading && <UploadPanel month={month} dept={dept} onUploaded={onChanged} />}
+      {loading && uploading && <UploadPanel month={month} dept={dept} onUploaded={onChanged} onSending={setSending} />}
       {!loading && <Board month={month} dept={dept} onDeptChanged={onChanged} />}
     </section>
   );

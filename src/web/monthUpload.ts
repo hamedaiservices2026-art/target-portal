@@ -9,6 +9,8 @@ export type Sheet1 = {
   totals: Grid;
   /** Rows whose first cell is a pack code but whose total is not a number of zero or more. */
   invalid: { line: number; pack: string }[];
+  /** Rows that look like data (text in the pack column, a number as total) but whose pack is not a pack of the month. */
+  unrecognised: { line: number; pack: string; total: number }[];
 };
 
 const squash = (s: string): string => s.toLowerCase().replace(/\s+/g, '');
@@ -32,8 +34,9 @@ function cellNumber(c: unknown): number | null {
  * Reads a Sheet 1 file: one pack code and its total per row. The columns are the
  * ones headed Pack (or Sales Target Category) and Total (or Cases) when such a
  * header row exists, else the first two. Rows whose pack cell is not a pack of the
- * month (the header, subtotals like "Total CANS", blank rows) are ignored. A pack
- * listed twice is added up.
+ * month are ignored: the header and subtotals like "Total CANS" quietly, any other
+ * row with a number is listed in `unrecognised`. An empty total is skipped (compared
+ * as 0). A pack listed twice is added up.
  */
 export function parseSheet1(rows: unknown[][], packs: string[]): Sheet1 {
   let cPack = 0;
@@ -52,10 +55,20 @@ export function parseSheet1(rows: unknown[][], packs: string[]): Sheet1 {
   const known = new Set(packs);
   const totals: Grid = {};
   const invalid: Sheet1['invalid'] = [];
+  const unrecognised: Sheet1['unrecognised'] = [];
   rows.forEach((r, i) => {
     if (!Array.isArray(r)) return;
     const pack = cellText(r[cPack]);
-    if (!known.has(pack)) return;
+    if (!known.has(pack)) {
+      // Subtotals ("Total CANS", "Total LRB ") and header rows are expected; anything else with a number is worth a note.
+      const n = cellNumber(r[cTotal]);
+      if (pack !== '' && n !== null && !/^total\b/i.test(pack) && !PACK_HEADERS.has(squash(pack))) {
+        unrecognised.push({ line: i + 1, pack, total: n });
+      }
+      return;
+    }
+    const blank = r[cTotal] === null || r[cTotal] === undefined || (typeof r[cTotal] === 'string' && (r[cTotal] as string).trim() === '');
+    if (blank) return; // an empty total (like PMIX in the TT file) means no target: compared as 0
     const n = cellNumber(r[cTotal]);
     if (n === null || n < 0) {
       invalid.push({ line: i + 1, pack });
@@ -63,7 +76,7 @@ export function parseSheet1(rows: unknown[][], packs: string[]): Sheet1 {
     }
     totals[pack] = (totals[pack] ?? 0) + n;
   });
-  return { totals, invalid };
+  return { totals, invalid, unrecognised };
 }
 
 /** Cases per pack group, in the fixed group order, plus the grand total. */

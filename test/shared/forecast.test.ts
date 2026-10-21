@@ -41,6 +41,12 @@ describe('normalizeForecastRows', () => {
     expect(out[0]!.line).toBe(2);
   });
 
+  it('accepts the real TT DMM period header "Period (YYYYMM)"', () => {
+    const header = ['Period (YYYYMM)', 'Delivery System', 'Route Code', 'Salesman ID', 'Sales Target Category', 'Cases'];
+    const out = normalizeForecastRows([header, ['2026-10', DS, 1, 2, 'PEP', 3]]);
+    expect(out.map((r) => [r.period, r.cases])).toEqual([['2026-10', 3]]);
+  });
+
   it('throws ForecastHeaderError listing the missing columns of the best-matching row', () => {
     const garbled = ['Period (YYYY-MM)', 'Delivery Sistem', 'Route Code', 'Salesman ID', 'Sales Target Category', 'Case'];
     let caught: unknown;

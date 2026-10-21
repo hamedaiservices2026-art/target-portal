@@ -52,3 +52,26 @@ describe('toBatches', () => {
     expect(b[2]![0]).toEqual({ leafId: 401, salesmanId: 'S', values: { P: 400 } });
   });
 });
+
+describe('parseSheet1 on the TT DMM "Total Target By Package" layout', () => {
+  // Same shape as the owner's file: header Pack / TT DMM, pack rows, "Total …" subtotal
+  // rows (one with a trailing space), a pack with an empty total. Numbers are made up.
+  const rows: unknown[][] = [
+    ['Pack', 'TT DMM'],
+    ['CSD_CANS150', 2082.6],
+    ['CSD_NRB', 10],
+    ['Total CANS', 2092.6],
+    ['PMIX', null],
+    ['AquafinA_330', 40],
+    ['XYZ', 12],
+    ['GATORADE', 5],
+    ['Total LRB ', 57.6],
+  ];
+
+  it('reads the pack totals, skips subtotal rows and blank totals quietly, reports an unknown row with a number', () => {
+    const s = parseSheet1(rows, [...PACKS, 'PMIX']);
+    expect(s.totals).toEqual({ CSD_CANS150: 2082.6, CSD_NRB: 10, AquafinA_330: 40, GATORADE: 5 });
+    expect(s.invalid).toEqual([]);
+    expect(s.unrecognised).toEqual([{ line: 7, pack: 'XYZ', total: 12 }]);
+  });
+});

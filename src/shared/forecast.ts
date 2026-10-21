@@ -51,7 +51,8 @@ const HEADER_NAMES = [
 ] as const;
 
 const squash = (s: string): string => s.toLowerCase().replace(/\s+/g, '');
-const HEADER_KEYS = HEADER_NAMES.map(squash);
+// Accepted spellings per column. The owner's TT DMM file heads the first column "Period (YYYYMM)".
+const HEADER_KEYS: string[][] = HEADER_NAMES.map((n) => (n === 'Period (YYYY-MM)' ? [squash(n), 'period(yyyymm)'] : [squash(n)]));
 
 function isBlank(cell: unknown): boolean {
   return cell === null || cell === undefined || (typeof cell === 'string' && cell.trim() === '');
@@ -106,7 +107,7 @@ function findHeader(rows: unknown[][]): { index: number; cols: number[] } {
     const cells = rows[i];
     if (!Array.isArray(cells)) continue;
     const keys = cells.map((c) => (typeof c === 'string' ? squash(c) : ''));
-    const cols = HEADER_KEYS.map((k) => keys.indexOf(k));
+    const cols = HEADER_KEYS.map((alts) => keys.findIndex((k) => alts.includes(k)));
     const found = cols.filter((c) => c >= 0).length;
     if (found === HEADER_KEYS.length) return { index: i, cols };
     if (found > bestFound) {
