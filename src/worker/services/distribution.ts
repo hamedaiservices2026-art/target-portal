@@ -61,13 +61,9 @@ export type SubmitResult = { version: number; status: 'submitted'; deptComplete:
 export const conflict = (detail: string) => new ApiError(409, { error: 'conflict', detail });
 export const stale = () => new ApiError(409, { error: 'stale' });
 
-// ---------- notification hooks (Task 14 wires email here) ----------
-
-/** Called after the turns of `nodeIds` opened. No-op until Task 14 (queueMail). */
-export function notifyTurnOpened(_env: Env, _monthId: number, _nodeIds: number[]): void {}
-
-/** Called after a department became complete. No-op until Task 14 (admin email). */
-export function notifyDeptComplete(_env: Env, _monthId: number, _deptId: number): void {}
+// Email hooks live in ../email (they never throw and run after the commit).
+export { notifyTurnOpened, notifyDeptComplete } from '../email';
+import { notifyTurnOpened, notifyDeptComplete } from '../email';
 
 // ---------- loading ----------
 
@@ -395,7 +391,7 @@ export async function openTurn(db: D1Database, env: Env, monthId: number, nodeId
     openTurnsIf(db, g, monthId, [{ id: nodeId, b: baseline }], now),
   ]);
   if ((res[1]!.meta.changes ?? 0) !== 1) throw stale();
-  notifyTurnOpened(env, monthId, [nodeId]);
+  await notifyTurnOpened(env, monthId, [nodeId]);
 }
 
 // ---------- drafts ----------
@@ -594,7 +590,7 @@ export async function submitWith(
   const res = await batch(db, stmts);
   if ((res[nodeIdx]!.meta.changes ?? 0) !== 1) throw stale();
   const deptComplete = (res[deptIdx]!.meta.changes ?? 0) === 1;
-  if (opened.length) notifyTurnOpened(env, monthId, opened);
-  if (deptComplete) notifyDeptComplete(env, monthId, d.deptId);
+  if (opened.length) await notifyTurnOpened(env, monthId, opened);
+  if (deptComplete) await notifyDeptComplete(env, monthId, d.deptId);
   return { result: { version: node.version + 1, status: 'submitted', deptComplete }, used };
 }

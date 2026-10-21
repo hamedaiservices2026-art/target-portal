@@ -3,6 +3,7 @@ import type { AppEnv } from './auth';
 import adminRoutes from './routes/admin';
 import authRoutes from './routes/auth';
 import workRoutes from './routes/work';
+import { sendDeadlineReminders } from './email';
 
 export type Env = {
   DB: D1Database;
@@ -11,9 +12,19 @@ export type Env = {
   BOOTSTRAP_ADMIN_PASSWORD?: string;
   /** Var. Absolute base URL of the app (e.g. https://target-portal.example.workers.dev) for links; defaults to the request origin. */
   APP_URL?: string;
+  /** Secret. Brevo API key; without it emails are only written to email_log. */
+  BREVO_API_KEY?: string;
+  /** Var. The single verified sender address (also used as reply-to). */
+  MAIL_FROM?: string;
 };
 
-const app = new Hono<AppEnv>();
+export const app = new Hono<AppEnv>();
+
+// Email links need an absolute base: without APP_URL fall back to this request's origin.
+app.use('*', async (c, next) => {
+  if (!c.env.APP_URL) c.env = { ...c.env, APP_URL: new URL(c.req.url).origin };
+  await next();
+});
 
 // Ruling R12: every state-changing API call is JSON (clients send `{}` for
 // body-less calls). Refusing other content types also rules out the "simple"
@@ -37,4 +48,9 @@ app.route('/', workRoutes);
 // the Worker: Static Assets serves them, falling back to index.html (SPA).
 app.all('/api/*', (c) => c.json({ error: 'not_found' }, 404));
 
-export default app;
+export default {
+  fetch: app.fetch,
+  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(sendDeadlineReminders(env.DB, env, new Date()));
+  },
+};

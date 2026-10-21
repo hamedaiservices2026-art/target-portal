@@ -115,7 +115,7 @@ export async function reopenNode(
     ).bind(monthId, node.dept_id, ...reopened.args),
   ]);
   if ((res[1]!.meta.changes ?? 0) !== 1) throw stale();
-  notifyTurnOpened(env, monthId, [nodeId]);
+  await notifyTurnOpened(env, monthId, [nodeId]);
   return { status: 'in_progress', version: v + 1 };
 }
 
@@ -142,7 +142,7 @@ export async function restoreOrReopen(
   }
   const res = await batch(db, stmts);
   if ((res[res.length - 1]!.meta.changes ?? 0) !== rows.length) throw stale();
-  if (totalsChanged) notifyTurnOpened(env, monthId, [childNodeId]);
+  if (totalsChanged) await notifyTurnOpened(env, monthId, [childNodeId]);
 }
 
 // ---------- push forward ----------

@@ -431,7 +431,7 @@ describe('bootstrap admin', () => {
   });
 
   it('is off when the secret is not set', async () => {
-    const res = await (await import('../../src/worker/index')).default.request(
+    const res = await (await import('../../src/worker/index')).app.request(
       '/api/auth/login',
       { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: 'anything' }) },
       { ...env, BOOTSTRAP_ADMIN_PASSWORD: undefined },
