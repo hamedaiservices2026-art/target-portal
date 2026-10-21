@@ -3,9 +3,11 @@ import { useEffect } from 'preact/hooks';
 import { AUTH_EXPIRED } from './api';
 import { Layout } from './components/Layout';
 import { t, useLang } from './i18n';
+import { Branch } from './pages/Branch';
+import { Home, MonthRedirect } from './pages/Home';
 import { Login, safeNext } from './pages/Login';
 import { Distribute } from './pages/Distribute';
-import { Admin, Branch, Home, NotFound } from './pages/Placeholders';
+import { Admin, NotFound } from './pages/Placeholders';
 import { expire, loadSession, useSession } from './session';
 
 function Routes() {
@@ -38,6 +40,7 @@ function Routes() {
     <Layout>
       <Router>
         <Route path="/" component={Home} />
+        <Route path="/m/:mid" component={MonthRedirect} />
         <Route path="/m/:mid/n/:nid" component={Distribute} />
         <Route path="/m/:mid/n/:nid/branch" component={Branch} />
         <Route path="/admin" component={Admin} />

@@ -13,27 +13,6 @@ function ComingSoon({ title, children }: { title: string; children?: ComponentCh
   );
 }
 
-export function Home() {
-  useLang();
-  const { user } = useSession();
-  return (
-    <section class="card" data-testid="home">
-      <h1>{t('homeTitle')}</h1>
-      <p>{t('homeWelcome')}, {user?.name}.</p>
-      <p class="muted">{t('homeText')}</p>
-    </section>
-  );
-}
-
-export function Branch({ mid, nid }: { mid?: string; nid?: string }) {
-  useLang();
-  return (
-    <ComingSoon title={t('branchTitle')}>
-      <p class="muted">{t('month')} {mid} · {t('node')} {nid}</p>
-    </ComingSoon>
-  );
-}
-
 const ADMIN_TITLES: Record<string, TextKey> = {
   users: 'navUsers',
   departments: 'navDepartments',

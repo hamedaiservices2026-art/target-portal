@@ -123,6 +123,7 @@ a { color: var(--brand); }
 
 .tablewrap { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: auto; max-block-size: 72vh; }
 .tablewrap table { border-collapse: separate; border-spacing: 0; inline-size: 100%; min-inline-size: 960px; }
+.tablewrap table.branch-table { min-inline-size: 720px; }
 .tablewrap th, .tablewrap td {
   padding: 7px 10px; border-block-end: 1px solid var(--line); text-align: end; white-space: nowrap; font-variant-numeric: tabular-nums;
 }
@@ -167,3 +168,14 @@ td.tgt { font-weight: 650; }
 .reset { border: none; background: none; color: var(--brand); cursor: pointer; font: inherit; font-size: 12px; }
 .foot { color: var(--muted); font-size: 12px; margin-block-start: 10px; }
 .empty { color: var(--muted); text-align: center !important; padding: 30px; }
+
+/* Manager home and branch view */
+.home h2 { font-size: 15px; margin: 0 0 8px; }
+.home .month { margin-block-end: 14px; }
+.tasks { list-style: none; margin: 0; padding: 0; }
+.task { display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; padding-block: 10px; border-block-start: 1px solid var(--line); }
+.task:first-child { border-block-start: 0; }
+.task .who { display: flex; flex-direction: column; min-inline-size: 140px; }
+.task .spacer { flex: 1; }
+.branch-table th.num, .branch-table td.num { text-align: end; }
+.branch-table th.branch-name { text-align: start; font-weight: 500; white-space: normal; }
