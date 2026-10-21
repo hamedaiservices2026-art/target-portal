@@ -83,17 +83,16 @@ function ident(name: string): string {
  * validated as plain identifiers. `onConflict` is trusted SQL appended after
  * the SELECT, e.g. "ON CONFLICT(code) DO UPDATE SET name = excluded.name".
  */
-export async function insertJson(
+export function insertJsonStatement(
   db: D1Database,
   table: string,
   columns: string[],
   rows: Record<string, unknown>[],
   opts: { onConflict?: string } = {},
-): Promise<void> {
+): D1PreparedStatement {
   if (rows.length > MAX_INSERT_ROWS) {
     throw new Error(`insertJson: ${rows.length} rows exceeds the ${MAX_INSERT_ROWS}-row batch limit`);
   }
-  if (rows.length === 0) return;
   const t = ident(table);
   const cols = columns.map(ident);
   const select = cols.map((c) => `json_extract(value, '$.${c}')`).join(', ');
@@ -102,5 +101,16 @@ export async function insertJson(
     `INSERT INTO ${t} (${cols.join(', ')}) SELECT ${select} FROM json_each(?) WHERE true` +
     (opts.onConflict ? ` ${opts.onConflict}` : '');
   const projected = rows.map((r) => Object.fromEntries(cols.map((c) => [c, r[c] ?? null])));
-  await db.prepare(sql).bind(JSON.stringify(projected)).run();
+  return db.prepare(sql).bind(JSON.stringify(projected));
+}
+
+export async function insertJson(
+  db: D1Database,
+  table: string,
+  columns: string[],
+  rows: Record<string, unknown>[],
+  opts: { onConflict?: string } = {},
+): Promise<void> {
+  if (rows.length === 0) return;
+  await insertJsonStatement(db, table, columns, rows, opts).run();
 }

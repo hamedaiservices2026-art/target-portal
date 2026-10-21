@@ -10,11 +10,13 @@ import { auditStatement } from './audit';
 /** Thrown for any client error; routes turn it into a JSON response. */
 export class ApiError extends Error {
   constructor(
-    readonly status: 400 | 404 | 409,
+    readonly status: 400 | 404 | 409 | 413,
     readonly body: {
-      error: 'invalid_request' | 'not_found' | 'conflict';
+      error: 'invalid_request' | 'not_found' | 'conflict' | 'too_many_rows';
       detail?: string;
       errors?: { line: number; detail: string }[];
+      /** Leaves a 409 is about (month uploads). */
+      leafIds?: number[];
     },
   ) {
     super(body.error + (body.detail ? `: ${body.detail}` : ''));
