@@ -476,6 +476,51 @@ describe('submit (top-down)', () => {
     expect((await nodeRow(m2, root)).status).toBe('in_progress');
   });
 
+  it('pack codes that cannot go in a JSON path (" and \\) are read and written correctly', async () => {
+    const odd = 'WE"IRD';
+    const slash = 'BACK\\SLASH';
+    const arabic = 'مياه 600 [x].y';
+    await run(env.DB, `INSERT INTO packs(code, grp, active, sort) VALUES (?, 'Water', 1, 10), (?, 'Water', 1, 11), (?, 'Water', 1, 12)`, odd, slash, arabic);
+    const mt = await mkDept('MT');
+    const u = await addUser('mthead');
+    const s = await login('mthead');
+    const root = await mkNode(mt, 'MT head', null, u);
+    const x = await mkNode(mt, 'X', root);
+    const y = await mkNode(mt, 'Y', root);
+    const x1 = await mkLeaf(mt, x, 'X1');
+    const x2 = await mkLeaf(mt, x, 'X2');
+    const y1 = await mkLeaf(mt, y, 'Y1');
+    const m2 = (await json(await api('POST', '/admin/months', admin, { period: '2026-11' }))).month.id;
+    const base = { [PET]: 100, [CAN]: 0, [WATER]: 0, [JUICE]: 0 };
+    await loadAndStart(admin, m2, mt, [
+      { leafId: x1, salesmanId: 'a', values: { ...base, [odd]: 700, [slash]: 10, [arabic]: 300 } },
+      { leafId: x2, salesmanId: 'b', values: { ...base, [odd]: 300, [slash]: 30, [arabic]: 100 } },
+      { leafId: y1, salesmanId: 'c', values: { ...base, [odd]: 1000, [slash]: 0, [arabic]: 400 } },
+    ]);
+    const before = await grandTotals(m2, mt);
+    const ws = await json(await getWs(s, m2, root));
+    expect(ws.children[0].starts).toEqual({ ...base, [PET]: 200, [odd]: 1000, [slash]: 40, [arabic]: 400 });
+    const v = valuesOf(ws);
+    v[`n:${x}`]![odd] = 950; // T = 2000, cap 100
+    v[`n:${y}`]![odd] = 1050;
+    v[`n:${x}`]![arabic] = 420; // T = 800, cap 40
+    v[`n:${y}`]![arabic] = 380;
+    const d = await putDraft(s, m2, root, v, ws.version);
+    expect((await submit(s, m2, root, (await json(d)).version)).status).toBe(200);
+    expect(await leafGrid(m2, x1)).toEqual({ ...base, [odd]: 665, [slash]: 10, [arabic]: 315 });
+    expect(await leafGrid(m2, x2)).toEqual({ ...base, [odd]: 285, [slash]: 30, [arabic]: 105 });
+    expect(await leafGrid(m2, y1)).toEqual({ ...base, [odd]: 1050, [slash]: 0, [arabic]: 380 });
+    expect(await grandTotals(m2, mt)).toEqual(before);
+    const xw = await json(await getWs(admin, m2, x));
+    expect(xw.totals).toEqual({ ...base, [PET]: 200, [odd]: 950, [slash]: 40, [arabic]: 420 });
+  });
+
+  it('rewritten values_json keeps every snapshot pack, in snapshot order', async () => {
+    await areaMoves50();
+    const raw = (await one<{ values_json: string }>(env.DB, `SELECT values_json FROM month_leaves WHERE month_id = ? AND leaf_id = ?`, month, r1))!.values_json;
+    expect(raw).toBe(JSON.stringify({ [PET]: 665, [CAN]: 120, [WATER]: 40, [JUICE]: 0 }));
+  });
+
   it('the last submit sets the department complete', async () => {
     await areaMoves50();
     expect(await deptState(month, tt)).toBe('running');

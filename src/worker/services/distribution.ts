@@ -12,23 +12,28 @@
 // node's version and status as read, so a racing request makes the whole batch
 // a no-op; the node's own UPDATE reports whether it applied (else 409 stale).
 //
-// CPU: maps are built once; subtree totals are one post-order pass; leaves are
-// loaded for the node's subtree only (a supervisor never parses the whole
-// department).
+// CPU (~10 ms per request on the free plan): the in-memory work lives in
+// plan.ts on pack-indexed vectors. SQLite turns each leaf's values_json into a
+// compact number array on read and rebuilds the object on write, so the Worker
+// never parses or builds the 42-key objects. Leaves are loaded for the node's
+// subtree only (a supervisor never touches the whole department).
 import { checkAll } from '../../shared/rules';
-import { rescale } from '../../shared/scaling';
 import { ancestors } from '../../shared/tree';
 import type { ChildKey, Grid, NodeStatus } from '../../shared/types';
 import type { SessionUser } from '../auth';
 import { all, batch, type Bindable } from '../db';
 import type { Env } from '../index';
 import { ApiError, bad, capPctFrom, forbidden, int, notFound, type Obj } from './masters';
+import {
+  buildTree, childGrids, childKeys, compactLeaves, gridOf, leafPayload, NoRoutesError, planSubmit, preorder, subtreeTotals, vecOf,
+  type MonthPack, type NodeRow, type RawLeaf, type Tree,
+} from './plan';
 
 /** Leaves per UPDATE statement (one bound JSON parameter, well under D1's value size limit). */
 export const LEAF_UPDATE_CHUNK = 500;
 const MAX_VALUE = 1_000_000_000;
 
-export type MonthPack = { code: string; grp: string; sort: number };
+export type { MonthPack } from './plan';
 
 export interface Workspace {
   month: { id: number; period: string; deadline: string | null };
@@ -62,29 +67,59 @@ export function notifyDeptComplete(_env: Env, _monthId: number, _deptId: number)
 
 // ---------- loading ----------
 
-type NodeRow = {
-  node_id: number; parent_id: number | null; name: string; manager_user_id: number | null; manager_name: string | null;
-  status: NodeStatus; held_status: string | null; baseline_json: string | null; draft_json: string | null; version: number;
-};
-type LeafRow = { leaf_id: number; node_id: number; route_code: string; salesman_id: string | null; values: Grid };
-
-interface Dept {
+interface Dept extends Tree {
   month: { id: number; period: string; deadline: string | null };
   deptId: number;
   deptCode: string;
   capPct: number;
   packs: MonthPack[];
-  codes: string[];
-  /** Every month_node of the department. */
-  nodes: Map<number, NodeRow>;
-  /** parent -> child node ids, ordered by name. */
-  childNodes: Map<number, number[]>;
-  /** node -> its direct leaves (only the leaves that were loaded), ordered by route code. */
-  leavesByNode: Map<number, LeafRow[]>;
-  leaves: LeafRow[];
 }
 
 type LeafScope = 'none' | 'direct' | 'subtree';
+
+/**
+ * A pack code can be put in a quoted JSON path (`$."code"`) unless it holds a
+ * double quote or a backslash (SQLite paths have no escapes). Leaves of a
+ * month with such a code are read as stored objects instead (slower, rare).
+ */
+const pathSafe = (code: string): boolean => !code.includes('"') && !code.includes('\\');
+
+/** Leaves per aggregated row of the compact read (keeps each row far below D1's 2 MB value limit). */
+const LEAF_READ_CHUNK = 500;
+
+function leafQuery(db: D1Database, monthId: number, nodeId: number, scope: 'direct' | 'subtree', compact: boolean): D1PreparedStatement {
+  const where = scope === 'direct' ? `l.month_id = ? AND l.node_id = ?` : `l.month_id = ? AND l.node_id IN (SELECT id FROM sub)`;
+  const sub = scope === 'direct' ? '' :
+    `sub(id) AS (SELECT ? UNION SELECT mn.node_id FROM month_nodes mn JOIN sub ON mn.parent_id = sub.id WHERE mn.month_id = ?),`;
+  const subArgs = scope === 'direct' ? [] : [nodeId, monthId];
+  const whereArgs = scope === 'direct' ? [monthId, nodeId] : [monthId];
+  if (!compact) {
+    return db.prepare(
+      `WITH RECURSIVE ${sub} x AS (SELECT 1)
+       SELECT l.leaf_id, l.node_id, l.route_code, l.salesman_id, l.values_json FROM month_leaves l
+       WHERE ${where} ORDER BY l.route_code, l.leaf_id`,
+    ).bind(...subArgs, ...whereArgs);
+  }
+  // Compact: rows of `[[leaf_id, node_id, route_code, salesman_id, [v0, v1, ...]], ...]`,
+  // up to LEAF_READ_CHUNK leaves each, values in snapshot pack order (missing
+  // pack -> 0), built by SQLite from months.packs_json, so the Worker parses a
+  // few compact strings instead of 2,000 objects. The path of an unsafe code is
+  // NULL so the query cannot fail (the caller then re-reads values_json).
+  return db.prepare(
+    `WITH RECURSIVE ${sub}
+     p(i, path) AS MATERIALIZED (
+       SELECT key, CASE WHEN instr(json_extract(value, '$.code'), '"') > 0 OR instr(json_extract(value, '$.code'), char(92)) > 0
+                        THEN NULL ELSE '$."' || json_extract(value, '$.code') || '"' END
+       FROM json_each((SELECT packs_json FROM months WHERE id = ?))),
+     r AS (
+       SELECT l.leaf_id, l.node_id, l.route_code, l.salesman_id,
+              (SELECT json_group_array(COALESCE(json_extract(l.values_json, p.path), 0) ORDER BY p.i) FROM p) AS v,
+              (ROW_NUMBER() OVER (ORDER BY l.route_code, l.leaf_id) - 1) / ${LEAF_READ_CHUNK} AS chunk
+       FROM month_leaves l WHERE ${where})
+     SELECT json_group_array(json_array(leaf_id, node_id, route_code, salesman_id, json(v)) ORDER BY route_code, leaf_id) AS rows
+     FROM r GROUP BY chunk ORDER BY chunk`,
+  ).bind(...subArgs, monthId, ...whereArgs);
+}
 
 /**
  * One batch of SELECTs: the month/department header, every month_node of the
@@ -108,21 +143,7 @@ async function loadDept(db: D1Database, monthId: number, nodeId: number, scope: 
        ORDER BY mn.name, mn.node_id`,
     ).bind(monthId, monthId, nodeId),
   ];
-  const leafCols = `leaf_id, node_id, route_code, salesman_id, values_json`;
-  if (scope === 'direct') {
-    stmts.push(db.prepare(
-      `SELECT ${leafCols} FROM month_leaves WHERE month_id = ? AND node_id = ? ORDER BY route_code, leaf_id`,
-    ).bind(monthId, nodeId));
-  } else if (scope === 'subtree') {
-    stmts.push(db.prepare(
-      `WITH RECURSIVE sub(id) AS (
-         SELECT ? UNION SELECT mn.node_id FROM month_nodes mn JOIN sub ON mn.parent_id = sub.id WHERE mn.month_id = ?
-       )
-       SELECT ${leafCols} FROM month_leaves
-       WHERE month_id = ? AND node_id IN (SELECT id FROM sub)
-       ORDER BY route_code, leaf_id`,
-    ).bind(nodeId, monthId, monthId));
-  }
+  if (scope !== 'none') stmts.push(leafQuery(db, monthId, nodeId, scope, true));
   const [head, nodesRes, leavesRes] = await batch(db, stmts);
   const h = head!.results[0] as
     | { id: number; period: string; deadline: string | null; packs_json: string; dept_id: number; dept_code: string; cap_pct: string | null }
@@ -130,97 +151,29 @@ async function loadDept(db: D1Database, monthId: number, nodeId: number, scope: 
   if (!h) throw notFound();
 
   const packs = JSON.parse(h.packs_json) as MonthPack[];
-  const nodes = new Map<number, NodeRow>();
-  const childNodes = new Map<number, number[]>();
-  for (const n of nodesRes!.results as NodeRow[]) {
-    nodes.set(n.node_id, n);
-    if (n.parent_id !== null) {
-      const list = childNodes.get(n.parent_id);
-      if (list) list.push(n.node_id);
-      else childNodes.set(n.parent_id, [n.node_id]);
-    }
+  const codes = packs.map((p) => p.code);
+  let leafRows: RawLeaf[] = [];
+  if (scope !== 'none') {
+    leafRows = codes.every(pathSafe)
+      ? compactLeaves((leavesRes!.results as { rows: string }[]).map((r) => r.rows))
+      : (await leafQuery(db, monthId, nodeId, scope, false).all<RawLeaf>()).results;
   }
-  const leaves: LeafRow[] = [];
-  const leavesByNode = new Map<number, LeafRow[]>();
-  for (const r of (leavesRes?.results ?? []) as (Omit<LeafRow, 'values'> & { values_json: string })[]) {
-    const leaf: LeafRow = { leaf_id: r.leaf_id, node_id: r.node_id, route_code: r.route_code, salesman_id: r.salesman_id, values: JSON.parse(r.values_json) as Grid };
-    leaves.push(leaf);
-    const list = leavesByNode.get(r.node_id);
-    if (list) list.push(leaf);
-    else leavesByNode.set(r.node_id, [leaf]);
-  }
+  const tree = buildTree(codes, nodesRes!.results as NodeRow[], leafRows);
   const d: Dept = {
+    ...tree,
     month: { id: h.id, period: h.period, deadline: h.deadline },
     deptId: h.dept_id,
     deptCode: h.dept_code,
     capPct: capPctFrom(h.cap_pct),
     packs,
-    codes: packs.map((p) => p.code),
-    nodes,
-    childNodes,
-    leavesByNode,
-    leaves,
   };
-  return { d, node: nodes.get(nodeId)! };
+  return { d, node: d.nodes.get(nodeId)! };
 }
 
-// ---------- in-memory grid helpers ----------
-
-const zero = (codes: string[]): Grid => Object.fromEntries(codes.map((c) => [c, 0]));
-
-/** A copy restricted to the snapshot packs (missing packs read as 0). */
+/** The grid for a child key of a stored baseline/draft, restricted to the snapshot packs (missing -> 0). */
 const pick = (g: Grid | undefined, codes: string[]): Grid => Object.fromEntries(codes.map((c) => [c, g?.[c] ?? 0]));
 
-function addInto(target: Grid, src: Grid, codes: string[]): void {
-  for (const c of codes) target[c] = target[c]! + (src[c] ?? 0);
-}
-
 const sameGrid = (a: Grid, b: Grid, codes: string[]): boolean => codes.every((c) => (a[c] ?? 0) === (b[c] ?? 0));
-
-type LeafValue = (leaf: LeafRow) => Grid;
-const stored: LeafValue = (l) => l.values;
-
-/** Node ids of `rootId`'s subtree in pre-order (children by name), including `rootId`. */
-function preorder(d: Dept, rootId: number): number[] {
-  const out: number[] = [];
-  const stack = [rootId];
-  while (stack.length) {
-    const id = stack.pop()!;
-    out.push(id);
-    const kids = d.childNodes.get(id);
-    if (kids) for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]!);
-  }
-  return out;
-}
-
-/** Σ of the loaded leaves per node, for every node of `rootId`'s subtree. One post-order pass. */
-function subtreeTotals(d: Dept, rootId: number, valueOf: LeafValue): Map<number, Grid> {
-  const order = preorder(d, rootId);
-  const totals = new Map<number, Grid>();
-  for (let i = order.length - 1; i >= 0; i--) {
-    const id = order[i]!;
-    const t = zero(d.codes);
-    for (const l of d.leavesByNode.get(id) ?? []) addInto(t, valueOf(l), d.codes);
-    for (const k of d.childNodes.get(id) ?? []) addInto(t, totals.get(k)!, d.codes);
-    totals.set(id, t);
-  }
-  return totals;
-}
-
-/** Child nodes (by name) then direct leaves (by route code). */
-function childKeys(d: Dept, nodeId: number): ChildKey[] {
-  return [
-    ...(d.childNodes.get(nodeId) ?? []).map((id) => `n:${id}` as ChildKey),
-    ...(d.leavesByNode.get(nodeId) ?? []).map((l) => `l:${l.leaf_id}` as ChildKey),
-  ];
-}
-
-function childTotalsOf(d: Dept, nodeId: number, totals: Map<number, Grid>, valueOf: LeafValue): Record<ChildKey, Grid> {
-  const out: Record<ChildKey, Grid> = {};
-  for (const id of d.childNodes.get(nodeId) ?? []) out[`n:${id}`] = { ...totals.get(id)! };
-  for (const l of d.leavesByNode.get(nodeId) ?? []) out[`l:${l.leaf_id}`] = pick(valueOf(l), d.codes);
-  return out;
-}
 
 const parseGrids = (json: string | null): Record<ChildKey, Grid> | null =>
   json === null ? null : (JSON.parse(json) as Record<ChildKey, Grid>);
@@ -275,28 +228,34 @@ function openTurnsIf(db: D1Database, g: Guard, monthId: number, items: { id: num
   ).bind(JSON.stringify(items), at, monthId, ...g.args);
 }
 
-/** Rewrites the packed grids of up to LEAF_UPDATE_CHUNK leaves in one statement. */
-function updateLeavesIf(db: D1Database, g: Guard, monthId: number, items: { id: number; v: Grid }[]): D1PreparedStatement {
+/**
+ * Rewrites the grids of up to LEAF_UPDATE_CHUNK leaves in one statement. The
+ * payload is compact rows (`[[leafId, v0, v1, ...], ...]`, see plan.ts);
+ * SQLite builds each values_json object from a row and the snapshot pack codes.
+ */
+function updateLeavesIf(db: D1Database, g: Guard, monthId: number, codes: string[], payload: string): D1PreparedStatement {
   return db.prepare(
-    `WITH j(id, v) AS MATERIALIZED (SELECT json_extract(value, '$.id'), json_extract(value, '$.v') FROM json_each(?))
-     UPDATE month_leaves SET values_json = j.v
+    `WITH c(i, code) AS MATERIALIZED (SELECT key, value FROM json_each(?)),
+          j(id, v) AS MATERIALIZED (SELECT json_extract(value, '$[0]'), value FROM json_each(?))
+     UPDATE month_leaves
+        SET values_json = (SELECT json_group_object(c.code, json_extract(j.v, '$[' || (c.i + 1) || ']') ORDER BY c.i) FROM c)
        FROM j
       WHERE month_leaves.month_id = ? AND month_leaves.leaf_id = j.id AND ${g.sql}`,
-  ).bind(JSON.stringify(items), monthId, ...g.args);
+  ).bind(JSON.stringify(codes), payload, monthId, ...g.args);
 }
 
 // ---------- reads ----------
 
 export async function childTotals(db: D1Database, monthId: number, nodeId: number): Promise<Record<ChildKey, Grid>> {
   const { d } = await loadDept(db, monthId, nodeId, 'subtree');
-  return childTotalsOf(d, nodeId, subtreeTotals(d, nodeId, stored), stored);
+  return childGrids(d, nodeId, subtreeTotals(d, nodeId));
 }
 
 export async function getWorkspace(db: D1Database, user: SessionUser, monthId: number, nodeId: number): Promise<Workspace> {
   const { d, node } = await loadDept(db, monthId, nodeId, 'subtree');
   if (!canView(d, user, nodeId)) throw forbidden();
-  const totals = subtreeTotals(d, nodeId, stored);
-  const starts = parseGrids(node.baseline_json) ?? childTotalsOf(d, nodeId, totals, stored);
+  const totals = subtreeTotals(d, nodeId);
+  const starts = parseGrids(node.baseline_json) ?? childGrids(d, nodeId, totals);
   const values = parseGrids(node.draft_json) ?? starts;
   const ownLeaves = new Map((d.leavesByNode.get(nodeId) ?? []).map((l) => [l.leaf_id, l]));
   const children = childKeys(d, nodeId).map((key) => {
@@ -319,7 +278,7 @@ export async function getWorkspace(db: D1Database, user: SessionUser, monthId: n
     node: { id: nodeId, name: node.name, status: node.status, deptCode: d.deptCode },
     capPct: d.capPct,
     packs: d.packs,
-    totals: totals.get(nodeId)!,
+    totals: gridOf(totals.get(nodeId)!, d.codes),
     children,
     version: node.version,
     editable: node.manager_user_id === user.id && node.status === 'in_progress',
@@ -329,10 +288,10 @@ export async function getWorkspace(db: D1Database, user: SessionUser, monthId: n
 export async function getBranch(db: D1Database, user: SessionUser, monthId: number, nodeId: number): Promise<BranchNode[]> {
   const { d } = await loadDept(db, monthId, nodeId, 'subtree');
   if (!canView(d, user, nodeId)) throw forbidden();
-  const totals = subtreeTotals(d, nodeId, stored);
+  const totals = subtreeTotals(d, nodeId);
   return preorder(d, nodeId).map((id) => {
     const n = d.nodes.get(id)!;
-    return { nodeId: id, parentId: n.parent_id, name: n.name, manager: n.manager_name ?? '', status: n.status, totals: totals.get(id)! };
+    return { nodeId: id, parentId: n.parent_id, name: n.name, manager: n.manager_name ?? '', status: n.status, totals: gridOf(totals.get(id)!, d.codes) };
   });
 }
 
@@ -358,7 +317,7 @@ export async function myTasks(db: D1Database, userId: number): Promise<TaskDto[]
 export async function openTurn(db: D1Database, env: Env, monthId: number, nodeId: number, actorId: number | null = null): Promise<void> {
   const { d, node } = await loadDept(db, monthId, nodeId, 'subtree');
   if (node.status === 'in_progress' && node.draft_json === null) return;
-  const baseline = childTotalsOf(d, nodeId, subtreeTotals(d, nodeId, stored), stored);
+  const baseline = childGrids(d, nodeId, subtreeTotals(d, nodeId));
   const now = new Date().toISOString();
   const g = guard(monthId, nodeId, node.version, node.status);
   const res = await batch(db, [
@@ -455,79 +414,41 @@ export async function submitNode(
   if (opts.expectedVersion !== undefined && opts.expectedVersion !== node.version) throw stale();
 
   const { codes } = d;
-  const totals = subtreeTotals(d, nodeId, stored);
+  const totals = subtreeTotals(d, nodeId);
   const keys = childKeys(d, nodeId);
-  const starts = parseGrids(node.baseline_json) ?? childTotalsOf(d, nodeId, totals, stored);
+  const starts = parseGrids(node.baseline_json) ?? childGrids(d, nodeId, totals);
   const values = source === 'draft' ? (parseGrids(node.draft_json) ?? starts) : starts;
   const startList = keys.map((k) => pick(starts[k], codes));
   const valueList = keys.map((k) => pick(values[k], codes));
-  const check = checkAll(totals.get(nodeId)!, startList, valueList, codes, d.capPct);
+  const check = checkAll(gridOf(totals.get(nodeId)!, codes), startList, valueList, codes, d.capPct);
   if (!check.ok) throw new ApiError(400, { error: 'rules_failed', detail: 'some packs do not pass the rules', byPack: check.byPack });
 
-  // ---- apply in memory ----
-  const leafById = new Map(d.leaves.map((l) => [l.leaf_id, l]));
-  const next = new Map<number, Grid>(); // leaf id -> new grid (copy-on-write)
-  const gridFor = (l: LeafRow): Grid => {
-    let g = next.get(l.leaf_id);
-    if (!g) next.set(l.leaf_id, (g = pick(l.values, codes)));
-    return g;
-  };
-  keys.forEach((key, i) => {
-    const want = valueList[i]!;
-    const id = Number(key.slice(2));
-    if (key.startsWith('l:')) {
-      const leaf = leafById.get(id)!;
-      if (!sameGrid(leaf.values, want, codes)) next.set(id, { ...want });
-      return;
-    }
-    const have = totals.get(id)!;
-    const changed = codes.filter((c) => have[c] !== want[c]);
-    if (changed.length === 0) return;
-    const under = preorder(d, id).flatMap((n) => d.leavesByNode.get(n) ?? []);
-    if (under.length === 0) throw bad(`${d.nodes.get(id)!.name} has no routes, so it cannot receive cases`);
-    const leafKeys = under.map((l) => String(l.leaf_id));
-    const grids = under.map(gridFor);
-    for (const c of changed) {
-      const scaled = rescale(under.map((l, j) => ({ key: leafKeys[j]!, value: l.values[c] ?? 0 })), want[c]!);
-      for (let j = 0; j < under.length; j++) grids[j]![c] = scaled[leafKeys[j]!]!;
-    }
-  });
-  const valueOf: LeafValue = (l) => next.get(l.leaf_id) ?? l.values;
-
-  // ---- invariants, before anything is written ----
-  // The subtree's leaves are every leaf loaded and the only leaves written, so
-  // its per-pack total unchanged means the department's total is unchanged.
-  const newTotals = subtreeTotals(d, nodeId, valueOf);
-  const before = totals.get(nodeId)!;
-  const after = newTotals.get(nodeId)!;
-  keys.forEach((key, i) => {
-    if (!key.startsWith('n:')) return;
-    if (!sameGrid(newTotals.get(Number(key.slice(2)))!, valueList[i]!, codes)) {
-      throw new Error(`submit invariant: ${key} does not add up to the submitted values`);
-    }
-  });
-  for (const c of codes) {
-    if (before[c] !== after[c]) throw new Error(`submit invariant: total of ${c} would change from ${before[c]} to ${after[c]}`);
+  // New leaf vectors and the invariants (child totals = submitted values,
+  // per-pack total of the subtree unchanged, whole cases >= 0), all in memory
+  // before anything is written. The subtree's leaves are every leaf loaded and
+  // the only leaves written, so its total unchanged means the department's is.
+  let plan: ReturnType<typeof planSubmit>;
+  try {
+    plan = planSubmit(d, nodeId, keys, valueList.map((g) => vecOf(g, codes)), totals);
+  } catch (e) {
+    if (e instanceof NoRoutesError) throw bad(e.message);
+    throw e;
   }
-  for (const g of next.values()) {
-    for (const c of codes) if (!Number.isInteger(g[c]) || g[c]! < 0) throw new Error(`submit invariant: invalid cases for ${c}`);
-  }
+  const { next, newTotals } = plan;
 
   // ---- write: ONE atomic batch, every statement guarded by the version read ----
   const now = new Date().toISOString();
   const g = guard(monthId, nodeId, node.version, 'in_progress');
   const stmts: D1PreparedStatement[] = [];
-  const changedLeaves = [...next.entries()]
-    .filter(([id, grid]) => !sameGrid(leafById.get(id)!.values, grid, codes))
-    .map(([id, v]) => ({ id, v }));
+  const changedLeaves = [...next.values()];
   for (let i = 0; i < changedLeaves.length; i += LEAF_UPDATE_CHUNK) {
-    stmts.push(updateLeavesIf(db, g, monthId, changedLeaves.slice(i, i + LEAF_UPDATE_CHUNK)));
+    stmts.push(updateLeavesIf(db, g, monthId, codes, leafPayload(changedLeaves.slice(i, i + LEAF_UPDATE_CHUNK))));
   }
   // Task 12: a child with a held_status (reopen path) goes through
   // restoreOrReopen instead; until then every child node gets a fresh turn.
   const childIds = d.childNodes.get(nodeId) ?? [];
   if (childIds.length) {
-    const items = childIds.map((id) => ({ id, b: childTotalsOf(d, id, newTotals, valueOf) }));
+    const items = childIds.map((id) => ({ id, b: childGrids(d, id, newTotals, next) }));
     stmts.push(auditOpensIf(db, g, actorId, monthId, childIds, { parentId: nodeId }, now));
     stmts.push(openTurnsIf(db, g, monthId, items, now));
   }

@@ -12,10 +12,10 @@ export interface RoundingItem {
 
 // Shares closer than this to an integer are treated as that integer, so float
 // error (0.1 + 0.2 style) can never flip a floor or a remainder comparison.
-const EPS = 1e-9;
-const FRAC_SCALE = 1e9;
+export const EPS = 1e-9;
+export const FRAC_SCALE = 1e9;
 
-function byKeyAsc(a: string, b: string): number {
+export function byKeyAsc(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
