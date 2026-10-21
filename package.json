@@ -15,7 +15,9 @@
   "dependencies": {
     "hono": "4.13.13",
     "preact": "11.0.1",
-    "preact-iso": "2.12.2"
+    "preact-iso": "2.12.2",
+    "read-excel-file": "9.3.12",
+    "write-excel-file": "4.1.1"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.4.5",
