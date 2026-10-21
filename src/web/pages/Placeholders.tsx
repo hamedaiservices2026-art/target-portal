@@ -25,15 +25,6 @@ export function Home() {
   );
 }
 
-export function Distribute({ mid, nid }: { mid?: string; nid?: string }) {
-  useLang();
-  return (
-    <ComingSoon title={t('distributeTitle')}>
-      <p class="muted">{t('month')} {mid} · {t('node')} {nid}</p>
-    </ComingSoon>
-  );
-}
-
 export function Branch({ mid, nid }: { mid?: string; nid?: string }) {
   useLang();
   return (

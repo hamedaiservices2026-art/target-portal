@@ -4,7 +4,8 @@ import { AUTH_EXPIRED } from './api';
 import { Layout } from './components/Layout';
 import { t, useLang } from './i18n';
 import { Login, safeNext } from './pages/Login';
-import { Admin, Branch, Distribute, Home, NotFound } from './pages/Placeholders';
+import { Distribute } from './pages/Distribute';
+import { Admin, Branch, Home, NotFound } from './pages/Placeholders';
 import { expire, loadSession, useSession } from './session';
 
 function Routes() {

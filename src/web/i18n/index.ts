@@ -79,7 +79,15 @@ export function t(key: TextKey): string {
   return tables[current][key];
 }
 
-export function useLang(): [Lang, (lang: Lang) => void] {
+/** `t` with `{name}` placeholders filled from `vars`. */
+export function tf(key: TextKey, vars: Record<string, string | number>): string {
+  return t(key).replace(/\{(\w+)\}/g, (m, name: string) => (name in vars ? String(vars[name]) : m));
+}
+
+/** Whole numbers are always shown with Western digits and en-US grouping (Arabic too). */
+export const fmtNum = (n: number): string => n.toLocaleString('en-US');
+
+export function useLang():[Lang, (lang: Lang) => void] {
   const [, force] = useState(0);
   useEffect(() => {
     const fn = () => force((n) => n + 1);
