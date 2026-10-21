@@ -2,13 +2,15 @@
 // Same conventions as masters.ts: validation here, routes only map HTTP onto
 // it, and every write is ONE db.batch() (change + audit row, atomic).
 //
-// After a successful move or manager change the open months are told through
-// applyTreeChangeToOpenMonths (stub until Task 12).
+// After a successful move or manager change (and bulk-map moves) the open
+// months are told through applyTreeChangeToOpenMonths (services/flow.ts). The
+// live change is committed first and stands even if that fails: the failure
+// is reported as `treeChange.error`, not as an error response.
 import { descendants } from '../../shared/tree';
 import { all, MAX_STATEMENTS_PER_REQUEST, one } from '../db';
 import { auditStatement } from './audit';
 import {
-  applyTreeChangeToOpenMonths, type TreeChange, type TreeChangeResult,
+  applyTreeChangeToOpenMonths, type LeafMove, type TreeChange, type TreeChangeResult,
 } from './flow';
 import { ApiError, bad, int, notFound, text, writeBatch, type Obj } from './masters';
 
@@ -36,9 +38,14 @@ function mergeChanges(results: TreeChangeResult[]): TreeChangeResult | null {
   };
 }
 
-async function notify(db: D1Database, changes: TreeChange[]): Promise<TreeChangeResult | null> {
+async function notify(db: D1Database, actorId: number, changes: TreeChange[]): Promise<TreeChangeResult | null> {
   const results: TreeChangeResult[] = [];
-  for (const c of changes) results.push(await applyTreeChangeToOpenMonths(db, c));
+  try {
+    for (const c of changes) results.push(await applyTreeChangeToOpenMonths(db, c, actorId));
+  } catch (e) {
+    const merged = mergeChanges(results) ?? { appliedMonths: [], skippedMonths: [] };
+    return { ...merged, error: e instanceof Error ? e.message : String(e) };
+  }
   return mergeChanges(results);
 }
 
@@ -148,7 +155,7 @@ export async function updateNode(
     events.push({ kind: 'move_node', id, fromParent: before.parent_id, toParent: after.parent_id });
   }
   if (managerChanges) events.push({ kind: 'manager', nodeId: id, userId: after.manager_user_id });
-  return { node: after, treeChange: await notify(db, events) };
+  return { node: after, treeChange: await notify(db, actorId, events) };
 }
 
 export async function deleteNode(db: D1Database, actorId: number, id: number): Promise<void> {
@@ -241,7 +248,7 @@ export async function updateLeaf(
   ], leafConflict);
 
   const treeChange = moves
-    ? await notify(db, [{ kind: 'move_leaf', id, fromParent: before.node_id, toParent: after.node_id }])
+    ? await notify(db, actorId, [{ kind: 'move_leaf', id, fromParent: before.node_id, toParent: after.node_id }])
     : null;
   return { leaf: after, treeChange };
 }
@@ -267,7 +274,7 @@ type LineError = { line: number; detail: string };
 
 export async function bulkMapLeaves(
   db: D1Database, actorId: number, body: Obj,
-): Promise<{ created: number; moved: number; unchanged: number }> {
+): Promise<{ created: number; moved: number; unchanged: number; treeChange: TreeChangeResult | null }> {
   const deptId = ref(body.deptId, 'deptId');
   if (!Array.isArray(body.rows) || body.rows.length === 0) throw bad('rows must be a non-empty array');
   if (body.rows.length > BULK_MAX_ROWS) throw bad(`rows must have at most ${BULK_MAX_ROWS} entries`);
@@ -319,22 +326,24 @@ export async function bulkMapLeaves(
 
   // Pass 2: compare with what is already mapped (one read) for the other-department check and the counts.
   const systems = [...new Set(parsed.map((r) => r.ds))];
-  const existing = systems.length === 0 ? [] : await all<{ delivery_system: string; route_code: string; dept_id: number; node_id: number }>(
+  const existing = systems.length === 0 ? [] : await all<{ id: number; delivery_system: string; route_code: string; dept_id: number; node_id: number }>(
     db,
-    `SELECT delivery_system, route_code, dept_id, node_id FROM leaves
+    `SELECT id, delivery_system, route_code, dept_id, node_id FROM leaves
      WHERE delivery_system IN (SELECT value FROM json_each(?))`,
     JSON.stringify(systems),
   );
   const current = new Map(existing.map((l) => [`${l.delivery_system}\u0000${l.route_code}`, l]));
-  let created = 0, moved = 0, unchanged = 0;
+  let created = 0, unchanged = 0;
+  const moves: LeafMove[] = [];
   for (const r of parsed) {
     const cur = current.get(`${r.ds}\u0000${r.rc}`);
     if (!cur) created++;
     else if (cur.dept_id !== deptId) {
       errors.push({ line: r.line, detail: 'route is already mapped in a different department' });
-    } else if (cur.node_id !== r.nodeId) moved++;
+    } else if (cur.node_id !== r.nodeId) moves.push({ leafId: cur.id, fromParent: cur.node_id, toParent: r.nodeId });
     else unchanged++;
   }
+  const moved = moves.length;
   if (errors.length) {
     errors.sort((a, b) => a.line - b.line);
     throw new ApiError(400, { error: 'invalid_request', detail: `${errors.length} row(s) have errors; nothing was saved`, errors });
@@ -359,5 +368,7 @@ export async function bulkMapLeaves(
   stmts.push(auditStatement(db, actorId, 'leaves.bulk_map', {}, { deptId, rows: parsed.length, created, moved, unchanged }));
   if (stmts.length > MAX_STATEMENTS_PER_REQUEST) throw bad('too many rows');
   await writeBatch(db, stmts, leafConflict);
-  return { created, moved, unchanged };
+  // Ruling R13: the moved leaves go to the open months as ONE set-based change.
+  const treeChange = moves.length ? await notify(db, actorId, [{ kind: 'move_leaves', moves }]) : null;
+  return { created, moved, unchanged, treeChange };
 }

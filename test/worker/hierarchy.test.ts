@@ -263,7 +263,7 @@ describe('bulk-map', () => {
       ],
     });
     expect(first.status).toBe(200);
-    expect(await json(first)).toEqual({ created: 3, moved: 0, unchanged: 0 });
+    expect(await json(first)).toEqual({ created: 3, moved: 0, unchanged: 0, treeChange: null });
     expect(await leafRows()).toEqual([
       { delivery_system: 'Presell – TT', route_code: 'R1', node_id: a, label: 'One' },
       { delivery_system: 'Presell – TT', route_code: 'R2', node_id: a, label: 'R2' },
@@ -278,7 +278,7 @@ describe('bulk-map', () => {
         { deliverySystem: 'Van Sales', routeCode: 'R9', nodeName: 'Area B', label: 'New' }, // created
       ],
     });
-    expect(await json(second)).toEqual({ created: 1, moved: 1, unchanged: 1 });
+    expect(await json(second)).toEqual({ created: 1, moved: 1, unchanged: 1, treeChange: { appliedMonths: [], skippedMonths: [] } });
     expect(await leafRows()).toEqual([
       { delivery_system: 'Presell – TT', route_code: 'R1', node_id: b, label: 'One' },
       { delivery_system: 'Presell – TT', route_code: 'R2', node_id: a, label: 'R2' },
@@ -345,12 +345,12 @@ describe('bulk-map', () => {
     }));
     const res = await call('POST', '/leaves/bulk-map', { deptId: tt, rows });
     expect(res.status).toBe(200);
-    expect(await json(res)).toEqual({ created: 2000, moved: 0, unchanged: 0 });
+    expect(await json(res)).toEqual({ created: 2000, moved: 0, unchanged: 0, treeChange: null });
     expect(await count('leaves')).toBe(2000);
     const again = await json(await call('POST', '/leaves/bulk-map', { deptId: tt, rows }));
-    expect(again).toEqual({ created: 0, moved: 0, unchanged: 2000 });
+    expect(again).toEqual({ created: 0, moved: 0, unchanged: 2000, treeChange: null });
     const flipped = rows.map((r) => ({ ...r, nodeName: r.nodeName === 'Area A' ? 'Area B' : 'Area A' }));
-    expect(await json(await call('POST', '/leaves/bulk-map', { deptId: tt, rows: flipped }))).toEqual({ created: 0, moved: 2000, unchanged: 0 });
+    expect(await json(await call('POST', '/leaves/bulk-map', { deptId: tt, rows: flipped }))).toEqual({ created: 0, moved: 2000, unchanged: 0, treeChange: { appliedMonths: [], skippedMonths: [] } });
     expect((await one<{ n: number }>(env.DB, `SELECT COUNT(*) n FROM leaves WHERE node_id = ?`, a))!.n).toBe(1000);
     expect((await one<{ n: number }>(env.DB, `SELECT COUNT(*) n FROM leaves WHERE node_id = ?`, b))!.n).toBe(1000);
   });

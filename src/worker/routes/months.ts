@@ -5,6 +5,7 @@ import type { AppEnv } from '../auth';
 import {
   addFile, createMonth, listMonths, monthContext, requiredDept, resetDept, startDept, updateMonth, uploadBatch,
 } from '../services/months';
+import { monthBoard, pushNode, reopenNode } from '../services/flow';
 import { parseId } from '../services/masters';
 import { h, p } from './handler';
 
@@ -29,5 +30,14 @@ months.post('/api/admin/months/:id/depts/:deptId/reset', h(async (c, db, me) => 
 }));
 months.post('/api/admin/months/:id/depts/:deptId/start', h(async (c, db, me) =>
   c.json(await startDept(db, c.env, me, parseId(p(c, 'id')), parseId(p(c, 'deptId'))))));
+
+// Flow control (spec section 8). The board's links point at the app: APP_URL
+// when set, else the origin the admin is using.
+months.get('/api/admin/months/:id/board', h(async (c, db) =>
+  c.json(await monthBoard(db, c.env.APP_URL || new URL(c.req.url).origin, parseId(p(c, 'id')), requiredDept(c.req.query('dept'))))));
+months.post('/api/admin/months/:id/nodes/:nid/reopen', h(async (c, db, me) =>
+  c.json(await reopenNode(db, c.env, me, parseId(p(c, 'id')), parseId(p(c, 'nid'))))));
+months.post('/api/admin/months/:id/nodes/:nid/push', h(async (c, db, me) =>
+  c.json(await pushNode(db, c.env, me, parseId(p(c, 'id')), parseId(p(c, 'nid'))))));
 
 export default months;

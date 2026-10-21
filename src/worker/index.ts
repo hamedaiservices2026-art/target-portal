@@ -9,6 +9,8 @@ export type Env = {
   ASSETS: Fetcher;
   /** Secret. First-run admin password; see routes/auth.ts. Unset once the admin exists. */
   BOOTSTRAP_ADMIN_PASSWORD?: string;
+  /** Var. Absolute base URL of the app (e.g. https://target-portal.example.workers.dev) for links; defaults to the request origin. */
+  APP_URL?: string;
 };
 
 const app = new Hono<AppEnv>();

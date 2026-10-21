@@ -11,6 +11,10 @@
 // Concurrency: every write in a submit/draft/open batch is guarded by the
 // node's version and status as read, so a racing request makes the whole batch
 // a no-op; the node's own UPDATE reports whether it applied (else 409 stale).
+// A submit also guards on every child month_node it rewrites being exactly as
+// read (version and status), and each child row is written only if it still
+// is: a racing reopen (which bumps every descendant's version) or a racing
+// tree move (which bumps the nodes on its paths) can never be clobbered.
 //
 // CPU (~10 ms per request on the free plan): the in-memory work lives in
 // plan.ts on pack-indexed vectors. SQLite turns each leaf's values_json into a
@@ -54,8 +58,8 @@ export type TaskDto = {
 
 export type SubmitResult = { version: number; status: 'submitted'; deptComplete: boolean };
 
-const conflict = (detail: string) => new ApiError(409, { error: 'conflict', detail });
-const stale = () => new ApiError(409, { error: 'stale' });
+export const conflict = (detail: string) => new ApiError(409, { error: 'conflict', detail });
+export const stale = () => new ApiError(409, { error: 'stale' });
 
 // ---------- notification hooks (Task 14 wires email here) ----------
 
@@ -67,7 +71,7 @@ export function notifyDeptComplete(_env: Env, _monthId: number, _deptId: number)
 
 // ---------- loading ----------
 
-interface Dept extends Tree {
+export interface Dept extends Tree {
   month: { id: number; period: string; deadline: string | null };
   deptId: number;
   deptCode: string;
@@ -126,7 +130,7 @@ function leafQuery(db: D1Database, monthId: number, nodeId: number, scope: 'dire
  * department, and the leaves in `scope` of `nodeId` (none, its direct leaves,
  * or its whole subtree via a recursive CTE on idx_month_nodes_parent).
  */
-async function loadDept(db: D1Database, monthId: number, nodeId: number, scope: LeafScope): Promise<{ d: Dept; node: NodeRow }> {
+export async function loadDept(db: D1Database, monthId: number, nodeId: number, scope: LeafScope): Promise<{ d: Dept; node: NodeRow }> {
   const deptOf = `(SELECT dept_id FROM month_nodes WHERE month_id = ? AND node_id = ?)`;
   const stmts: D1PreparedStatement[] = [
     db.prepare(
@@ -188,15 +192,15 @@ function canView(d: Dept, user: SessionUser, nodeId: number): boolean {
 // ---------- guarded write statements ----------
 
 /** `EXISTS(...)` true while the node still has the version and status that were read. */
-type Guard = { sql: string; args: Bindable[] };
-function guard(monthId: number, nodeId: number, version: number, status: string): Guard {
+export type Guard = { sql: string; args: Bindable[] };
+export function guard(monthId: number, nodeId: number, version: number, status: string): Guard {
   return {
     sql: `EXISTS (SELECT 1 FROM month_nodes g WHERE g.month_id = ? AND g.node_id = ? AND g.version = ? AND g.status = ?)`,
     args: [monthId, nodeId, version, status],
   };
 }
 
-function auditIf(
+export function auditIf(
   db: D1Database, g: Guard, userId: number | null, action: string, monthId: number, nodeId: number, detail: unknown, at: string,
 ): D1PreparedStatement {
   return db.prepare(
@@ -226,6 +230,71 @@ function openTurnsIf(db: D1Database, g: Guard, monthId: number, items: { id: num
        FROM j
       WHERE month_nodes.month_id = ? AND month_nodes.node_id = j.id AND ${g.sql}`,
   ).bind(JSON.stringify(items), at, monthId, ...g.args);
+}
+
+/** Both guards must hold. */
+const both = (a: Guard, b: Guard): Guard => ({ sql: `(${a.sql} AND ${b.sql})`, args: [...a.args, ...b.args] });
+
+/**
+ * True while every listed month_node still has the version and status that
+ * were read (`[[nodeId, version, status], ...]`). Always true for an empty list.
+ */
+function nodesAsRead(monthId: number, rows: NodeSet[]): Guard {
+  return {
+    sql: `NOT EXISTS (SELECT 1 FROM json_each(?) c LEFT JOIN month_nodes x
+                        ON x.month_id = ? AND x.node_id = json_extract(c.value, '$[0]')
+                      WHERE x.node_id IS NULL OR x.version IS NOT json_extract(c.value, '$[1]')
+                         OR x.status IS NOT json_extract(c.value, '$[2]'))`,
+    args: [JSON.stringify(rows.map((r) => [r.id, r.v, r.s])), monthId],
+  };
+}
+
+/**
+ * The new state of one month_node, written by setNodesIf. `v`/`s` are the
+ * version and status as read (the row is written only if it still has them).
+ *   open:  status in_progress, baseline `b`, draft cleared, opened now (a fresh turn);
+ *   keep:  status `ns` (the held status restored), baseline/draft/times kept;
+ *   clear: status waiting, baseline/draft/times cleared.
+ * Every mode clears held_status and bumps the version.
+ */
+export type NodeSet = { id: number; v: number; s: string; mode: 'open' | 'keep' | 'clear'; ns: string; b: Record<ChildKey, Grid> | null };
+
+/** Writes NodeSets in one statement; each row only if it is still as read, and only while `g` holds. */
+export function setNodesIf(db: D1Database, g: Guard, monthId: number, rows: NodeSet[], at: string): D1PreparedStatement {
+  return db.prepare(
+    `WITH j(id, v, s, mode, ns, b) AS MATERIALIZED (
+       SELECT json_extract(value, '$.id'), json_extract(value, '$.v'), json_extract(value, '$.s'),
+              json_extract(value, '$.mode'), json_extract(value, '$.ns'), json_extract(value, '$.b') FROM json_each(?))
+     UPDATE month_nodes
+        SET status = j.ns, held_status = NULL,
+            baseline_json = CASE j.mode WHEN 'keep' THEN month_nodes.baseline_json ELSE j.b END,
+            draft_json = CASE j.mode WHEN 'keep' THEN month_nodes.draft_json ELSE NULL END,
+            opened_at = CASE j.mode WHEN 'open' THEN ? WHEN 'clear' THEN NULL ELSE month_nodes.opened_at END,
+            submitted_at = CASE j.mode WHEN 'keep' THEN month_nodes.submitted_at ELSE NULL END,
+            version = month_nodes.version + 1
+       FROM j
+      WHERE month_nodes.month_id = ? AND month_nodes.node_id = j.id
+        AND month_nodes.version = j.v AND month_nodes.status = j.s AND ${g.sql}`,
+  ).bind(JSON.stringify(rows), at, monthId, ...g.args);
+}
+
+/**
+ * What resubmitting a parent does to a held child (one that was sent back to
+ * waiting by a reopen above it), given its new baseline:
+ *   totals unchanged -> every node of its subtree gets its held status back
+ *     with its work intact;
+ *   totals changed -> its subtree's held status, baseline and draft are
+ *     cleared (all waiting) and the child gets a fresh turn on `baseline`.
+ */
+export function heldChildPlan(d: Tree, childId: number, totalsChanged: boolean, baseline: Record<ChildKey, Grid>): NodeSet[] {
+  const ids = preorder(d, childId);
+  return ids.map((id) => {
+    const n = d.nodes.get(id)!;
+    const base = { id, v: n.version, s: n.status };
+    if (!totalsChanged) return { ...base, mode: 'keep' as const, ns: n.held_status ?? n.status, b: null };
+    if (id === childId) return { ...base, mode: 'open' as const, ns: 'in_progress', b: baseline };
+    return { ...base, mode: 'clear' as const, ns: 'waiting', b: null };
+  });
 }
 
 /**
@@ -407,6 +476,19 @@ export async function submitNode(
   db: D1Database, env: Env, monthId: number, nodeId: number, actorId: number, source: 'draft' | 'baseline',
   opts: { expectedVersion?: number; asManager?: boolean } = {},
 ): Promise<SubmitResult> {
+  return (await submitWith(db, env, monthId, nodeId, actorId, source, opts)).result;
+}
+
+/**
+ * The submit behind submitNode and the admin push. `source: 'auto'` (push)
+ * submits the draft when it passes the rules (and can be applied), else the
+ * baseline; `used` says which. `audit` adds an extra audit row in the same
+ * batch (the push's 'node.push').
+ */
+export async function submitWith(
+  db: D1Database, env: Env, monthId: number, nodeId: number, actorId: number, source: 'draft' | 'baseline' | 'auto',
+  opts: { expectedVersion?: number; asManager?: boolean; audit?: (used: 'draft' | 'baseline') => { action: string; detail: unknown } } = {},
+): Promise<{ result: SubmitResult; used: 'draft' | 'baseline' }> {
   const { d, node } = await loadDept(db, monthId, nodeId, 'subtree');
   if (opts.asManager && node.manager_user_id !== actorId) throw forbidden();
   if (node.status !== 'in_progress') throw conflict('not_in_progress');
@@ -417,48 +499,90 @@ export async function submitNode(
   const totals = subtreeTotals(d, nodeId);
   const keys = childKeys(d, nodeId);
   const starts = parseGrids(node.baseline_json) ?? childGrids(d, nodeId, totals);
-  const values = source === 'draft' ? (parseGrids(node.draft_json) ?? starts) : starts;
   const startList = keys.map((k) => pick(starts[k], codes));
-  const valueList = keys.map((k) => pick(values[k], codes));
-  const check = checkAll(gridOf(totals.get(nodeId)!, codes), startList, valueList, codes, d.capPct);
-  if (!check.ok) throw new ApiError(400, { error: 'rules_failed', detail: 'some packs do not pass the rules', byPack: check.byPack });
+  const total = gridOf(totals.get(nodeId)!, codes);
+  const draft = parseGrids(node.draft_json);
 
   // New leaf vectors and the invariants (child totals = submitted values,
   // per-pack total of the subtree unchanged, whole cases >= 0), all in memory
   // before anything is written. The subtree's leaves are every leaf loaded and
   // the only leaves written, so its total unchanged means the department's is.
-  let plan: ReturnType<typeof planSubmit>;
-  try {
-    plan = planSubmit(d, nodeId, keys, valueList.map((g) => vecOf(g, codes)), totals);
-  } catch (e) {
-    if (e instanceof NoRoutesError) throw bad(e.message);
-    throw e;
+  const attempt = (values: Record<ChildKey, Grid>) => {
+    const valueList = keys.map((k) => pick(values[k], codes));
+    const check = checkAll(total, startList, valueList, codes, d.capPct);
+    if (!check.ok) throw new ApiError(400, { error: 'rules_failed', detail: 'some packs do not pass the rules', byPack: check.byPack });
+    try {
+      return { valueList, plan: planSubmit(d, nodeId, keys, valueList.map((g) => vecOf(g, codes)), totals) };
+    } catch (e) {
+      if (e instanceof NoRoutesError) throw bad(e.message);
+      throw e;
+    }
+  };
+  let used: 'draft' | 'baseline' = source === 'draft' && draft !== null ? 'draft' : 'baseline';
+  let chosen: ReturnType<typeof attempt>;
+  if (source === 'auto' && draft !== null) {
+    try {
+      chosen = attempt(draft);
+      used = 'draft';
+    } catch (e) {
+      if (!(e instanceof ApiError) || e.status !== 400) throw e;
+      chosen = attempt(starts);
+    }
+  } else {
+    chosen = attempt(source === 'draft' ? (draft ?? starts) : starts);
   }
-  const { next, newTotals } = plan;
+  const { valueList, plan: { next, newTotals } } = chosen;
 
-  // ---- write: ONE atomic batch, every statement guarded by the version read ----
+  // The child month_nodes: a child that is not held gets a fresh turn; a
+  // held child (reopen path) gets its subtree restored when its totals did not
+  // change, else cleared and a fresh turn on its rescaled starts.
+  const childIds = d.childNodes.get(nodeId) ?? [];
+  const nodeSets: NodeSet[] = [];
+  const opened: number[] = [];
+  for (const id of childIds) {
+    const c = d.nodes.get(id)!;
+    const b = childGrids(d, id, newTotals, next);
+    if (c.held_status === null) {
+      nodeSets.push({ id, v: c.version, s: c.status, mode: 'open', ns: 'in_progress', b });
+      opened.push(id);
+      continue;
+    }
+    const before = totals.get(id)!;
+    const after = newTotals.get(id)!;
+    const totalsChanged = codes.some((_c, p) => before[p] !== after[p]);
+    nodeSets.push(...heldChildPlan(d, id, totalsChanged, b));
+    if (totalsChanged) opened.push(id);
+  }
+
+  // ---- write: ONE atomic batch ----
+  // Until the node's own UPDATE, every statement is guarded by the node's
+  // version and status AND every child row it rewrites being as read; the
+  // child rows are written after it, each only if still as read, and only
+  // once this node is submitted at the new version.
   const now = new Date().toISOString();
   const g = guard(monthId, nodeId, node.version, 'in_progress');
+  const childrenAsRead = nodesAsRead(monthId, nodeSets);
+  const gc = both(g, childrenAsRead);
   const stmts: D1PreparedStatement[] = [];
   const changedLeaves = [...next.values()];
   for (let i = 0; i < changedLeaves.length; i += LEAF_UPDATE_CHUNK) {
-    stmts.push(updateLeavesIf(db, g, monthId, codes, leafPayload(changedLeaves.slice(i, i + LEAF_UPDATE_CHUNK))));
+    stmts.push(updateLeavesIf(db, gc, monthId, codes, leafPayload(changedLeaves.slice(i, i + LEAF_UPDATE_CHUNK))));
   }
-  // Task 12: a child with a held_status (reopen path) goes through
-  // restoreOrReopen instead; until then every child node gets a fresh turn.
-  const childIds = d.childNodes.get(nodeId) ?? [];
-  if (childIds.length) {
-    const items = childIds.map((id) => ({ id, b: childGrids(d, id, newTotals, next) }));
-    stmts.push(auditOpensIf(db, g, actorId, monthId, childIds, { parentId: nodeId }, now));
-    stmts.push(openTurnsIf(db, g, monthId, items, now));
-  }
+  if (opened.length) stmts.push(auditOpensIf(db, gc, actorId, monthId, opened, { parentId: nodeId }, now));
   const changedChildren = keys.filter((_k, i) => !sameGrid(startList[i]!, valueList[i]!, codes));
-  stmts.push(auditIf(db, g, actorId, 'node.submit', monthId, nodeId, { changedChildren }, now));
+  stmts.push(auditIf(db, gc, actorId, 'node.submit', monthId, nodeId, { changedChildren }, now));
+  if (opts.audit) {
+    const a = opts.audit(used);
+    stmts.push(auditIf(db, gc, actorId, a.action, monthId, nodeId, a.detail, now));
+  }
   const submittedValues = Object.fromEntries(keys.map((k, i) => [k, valueList[i]!]));
   const nodeIdx = stmts.push(db.prepare(
     `UPDATE month_nodes SET status = 'submitted', submitted_at = ?, draft_json = ?, version = version + 1
-     WHERE month_id = ? AND node_id = ? AND version = ? AND status = 'in_progress'`,
-  ).bind(now, JSON.stringify(submittedValues), monthId, nodeId, node.version)) - 1;
+     WHERE month_id = ? AND node_id = ? AND version = ? AND status = 'in_progress' AND ${childrenAsRead.sql}`,
+  ).bind(now, JSON.stringify(submittedValues), monthId, nodeId, node.version, ...childrenAsRead.args)) - 1;
+  if (nodeSets.length) {
+    stmts.push(setNodesIf(db, guard(monthId, nodeId, node.version + 1, 'submitted'), monthId, nodeSets, now));
+  }
   // Evaluated inside the same transaction, after this node is submitted, so
   // concurrent sibling submits cannot both miss completing the department.
   const deptIdx = stmts.push(db.prepare(
@@ -470,7 +594,7 @@ export async function submitNode(
   const res = await batch(db, stmts);
   if ((res[nodeIdx]!.meta.changes ?? 0) !== 1) throw stale();
   const deptComplete = (res[deptIdx]!.meta.changes ?? 0) === 1;
-  if (childIds.length) notifyTurnOpened(env, monthId, childIds);
+  if (opened.length) notifyTurnOpened(env, monthId, opened);
   if (deptComplete) notifyDeptComplete(env, monthId, d.deptId);
-  return { version: node.version + 1, status: 'submitted', deptComplete };
+  return { result: { version: node.version + 1, status: 'submitted', deptComplete }, used };
 }
