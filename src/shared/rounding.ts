@@ -15,7 +15,7 @@ export interface RoundingItem {
 export const EPS = 1e-9;
 export const FRAC_SCALE = 1e9;
 
-export function byKeyAsc(a: string, b: string): number {
+function byKeyAsc(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
