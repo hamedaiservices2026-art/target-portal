@@ -114,7 +114,9 @@ export function parseImportSheet<K extends ImportKind>(kind: K, sheet: unknown[]
     const row: Record<string, string | number> = { line: r + 1 };
     let any = false;
     fields.forEach((f, i) => {
-      const v = cols[i]! >= 0 ? cellText(line[cols[i]!]) : '';
+      const raw = cols[i]! >= 0 ? line[cols[i]!] : null;
+      // A password is kept exactly as typed (spaces are part of it); every other cell is trimmed.
+      const v = f === 'password' && typeof raw === 'string' ? (raw.trim() ? raw : '') : cellText(raw);
       if (v) any = true;
       row[f] = v;
     });
@@ -382,6 +384,8 @@ export const HIERARCHY_MAX_LEVELS = 8;
  */
 export const HIERARCHY_MAX_OPEN_MOVES = 4;
 const NODE_NAME_MAX = 200;
+/** Names shown in a cycle message before it is cut with '…'. */
+const CYCLE_PATH_MAX = 10;
 
 export type ExistingDept = { id: number; code: string; name: string };
 export type ExistingNode = { id: number; dept_id: number; parent_id: number | null; name: string; manager_user_id: number | null };
@@ -492,34 +496,57 @@ export function planHierarchy(rows: NodeImportRow[], ctx: {
   for (const n of ctx.nodes) parentOf.set(key(n.dept_id, n.name), n.parent_id === null ? null : key(n.dept_id, nameOfId.get(n.parent_id) ?? ''));
   for (const g of ok) parentOf.set(key(g.deptId, g.name), g.parent === null ? null : key(g.deptId, g.parent));
   const label = (k: string) => k.slice(k.indexOf('\u0000') + 1);
-  const inCycle = new Set<string>();
+  const lineOf = new Map(ok.map((g) => [key(g.deptId, g.name), g.line]));
+  // One linear pass: a colouring DFS up the parent links (every node has at
+  // most one parent, so each walk is a chain). grey = on the current walk,
+  // black = done. Reaching a grey node closes a loop. While unwinding, each
+  // new node gets its level (0 under an existing node or as root, else its
+  // parent's + 1), memoised, and too_deep is checked here too.
+  const GREY = 1;
+  const BLACK = 2;
+  const colour = new Map<string, number>();
+  const level = new Map<string, number>(); // new nodes only; Infinity = in a loop
+  const walk: string[] = [];
+  const onWalk = new Map<string, number>();
   for (const g of ok) {
-    const start = key(g.deptId, g.name);
-    const path = [start];
-    const seenK = new Set([start]);
-    let cur = parentOf.get(start) ?? null;
-    while (cur !== null && !seenK.has(cur)) {
-      seenK.add(cur);
-      path.push(cur);
-      cur = parentOf.get(cur) ?? null;
+    let k: string | null = key(g.deptId, g.name);
+    walk.length = 0;
+    onWalk.clear();
+    while (k !== null && !colour.has(k)) {
+      colour.set(k, GREY);
+      onWalk.set(k, walk.length);
+      walk.push(k);
+      k = parentOf.get(k) ?? null;
     }
-    if (cur === start) {
-      is.err(g.line, 'cycle', C[2], { path: [...path, start].map(label).join(' → ') });
-      inCycle.add(start);
+    if (k !== null && colour.get(k) === GREY) {
+      const loop = walk.splice(onWalk.get(k)!);
+      loop.forEach((m, i) => {
+        colour.set(m, BLACK);
+        level.set(m, Infinity);
+        const line = lineOf.get(m);
+        if (line === undefined) return;
+        const names = [...loop.slice(i), ...loop.slice(0, i)].map(label);
+        const path = names.length <= CYCLE_PATH_MAX
+          ? [...names, names[0]].join(' → ')
+          : [...names.slice(0, CYCLE_PATH_MAX), '…'].join(' → ');
+        is.err(line, 'cycle', C[2], { path });
+      });
+    }
+    for (let i = walk.length - 1; i >= 0; i--) {
+      const m = walk[i]!;
+      colour.set(m, BLACK);
+      if (existing.has(m)) continue;
+      const p = parentOf.get(m) ?? null;
+      const pl = p === null || existing.has(p) ? -1 : level.get(p) ?? -1;
+      const lvl = Number.isFinite(pl) ? pl + 1 : 0;
+      level.set(m, lvl);
+      const line = lineOf.get(m);
+      if (line !== undefined && lvl >= maxLevels) is.err(line, 'too_deep', C[2], { max: maxLevels });
     }
   }
 
-  // Pass 4: actions, levels of new nodes, moves into open months.
+  // Pass 4: actions and moves into open months (rows with any error are left out).
   const valid = good.filter((g) => !is.failed(g.line));
-  const newLevel = new Map<string, number>();
-  const levelOf = (k: string, depth = 0): number => {
-    const known = newLevel.get(k);
-    if (known !== undefined) return known;
-    const p = parentOf.get(k) ?? null;
-    const lvl = p === null || existing.has(p) || depth > rows.length ? 0 : levelOf(p, depth + 1) + 1;
-    newLevel.set(k, lvl);
-    return lvl;
-  };
   const actions: NodeAction[] = [];
   let levels = 0;
   let openMoves = 0;
@@ -529,15 +556,11 @@ export function planHierarchy(rows: NodeImportRow[], ctx: {
     const parentNode = g.parent === null ? null : existing.get(key(g.deptId, g.parent));
     const parentId = g.parent === null ? null : parentNode ? parentNode.id : undefined;
     if (!cur) {
-      const level = levelOf(k);
-      if (level >= maxLevels) {
-        is.err(g.line, 'too_deep', C[2], { max: maxLevels });
-        continue;
-      }
-      levels = Math.max(levels, level + 1);
+      const lvl = level.get(k) ?? 0;
+      levels = Math.max(levels, lvl + 1);
       actions.push({
         line: g.line, kind: 'create', deptId: g.deptId, name: g.name, parent: g.parent, parentId,
-        managerId: g.managerId ?? null, level, moved: false, managerChanged: false, openMonth: false, changes: [],
+        managerId: g.managerId ?? null, level: lvl, moved: false, managerChanged: false, openMonth: false, changes: [],
       });
       continue;
     }

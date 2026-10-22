@@ -4,6 +4,7 @@ import type { ComponentChildren } from 'preact';
 import { useCallback, useEffect, useState } from 'preact/hooks';
 import { api, ApiError } from '../api';
 import { fmtPeriod } from '../format';
+import { importErrorKey } from '../importFlow';
 import { t, tf, useLang } from '../i18n';
 
 export type TreeChange = { appliedMonths: number[]; skippedMonths: number[]; error?: string };
@@ -11,6 +12,8 @@ export type TreeChange = { appliedMonths: number[]; skippedMonths: number[]; err
 /** What the person reads when a call fails: a plain sentence in their language, plus the server's reason (English) when it gave one. */
 export function errText(e: unknown): string {
   if (e instanceof ApiError) {
+    const own = importErrorKey(e.status, e.body);
+    if (own) return t(own);
     const detail = typeof e.body.detail === 'string' ? ` (${e.body.detail})` : '';
     if (e.status === 400) return `${t('adErrInvalid')}${detail}`;
     if (e.status === 404) return t('adErrGone');

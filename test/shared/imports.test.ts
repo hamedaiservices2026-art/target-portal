@@ -24,6 +24,11 @@ describe('parseImportSheet', () => {
     });
   });
 
+  it('keeps the Password cell exactly as typed (spaces are part of a password)', () => {
+    const r = parseImportSheet('users', [['Username', 'Full name', 'Role', 'Password'], [' ali ', 'Ali', 'manager', '  my pass 1  ']]);
+    expect(r.ok && r.rows[0]).toMatchObject({ username: 'ali', password: '  my pass 1  ' });
+  });
+
   it('optional columns may be missing; numbers and booleans become text', () => {
     const r = parseImportSheet('packs', [['Code', 'Group'], ['CSD_X', 'CSD'], [330, 'Water']]);
     expect(r).toEqual({ ok: true, rows: [
@@ -240,6 +245,32 @@ describe('planHierarchy', () => {
     // Area under Sup A (its own child) closes a loop through the live tree.
     const q = planHierarchy([N(2, 'Area', 'Sup A')], ctx());
     expect(codes(q.issues)).toEqual(['2:error:cycle']);
+  });
+
+  it('a 2000-deep chain of new nodes is checked in one linear pass: too_deep, quickly', () => {
+    const rows = Array.from({ length: 2000 }, (_, i) => N(i + 2, `C${i}`, i === 0 ? '' : `C${i - 1}`, 'ali', 'MT'));
+    const t0 = performance.now();
+    const p = planHierarchy(rows, ctx());
+    expect(performance.now() - t0).toBeLessThan(250);
+    const deep = p.issues.filter((i) => i.code === 'too_deep');
+    expect(deep).toHaveLength(2000 - 8);
+    expect(deep[0]).toMatchObject({ line: 10, vars: { max: 8 } });
+    expect(p.levels).toBe(8);
+  });
+
+  it('a 2000-node cycle is reported on each row with a shortened path', () => {
+    const rows = Array.from({ length: 2000 }, (_, i) => N(i + 2, `C${i}`, `C${(i + 1999) % 2000}`, 'ali', 'MT'));
+    const t0 = performance.now();
+    const p = planHierarchy(rows, ctx());
+    expect(performance.now() - t0).toBeLessThan(250);
+    expect(p.issues.filter((i) => i.code === 'cycle')).toHaveLength(2000);
+    expect(String(p.issues[0]!.vars!.path)).toBe('C0 → C1999 → C1998 → C1997 → C1996 → C1995 → C1994 → C1993 → C1992 → C1991 → …');
+  });
+
+  it('a node whose parent chain runs into a loop is not itself in the loop', () => {
+    const p = planHierarchy([N(2, 'A', 'B', 'ali', 'MT'), N(3, 'B', 'C', 'ali', 'MT'), N(4, 'C', 'B', 'ali', 'MT')], ctx());
+    expect(codes(p.issues)).toEqual(['3:error:cycle', '4:error:cycle']);
+    expect(p.issues[0]!.vars!.path).toBe('B → C → B');
   });
 
   it('one root per department: the root cannot be replaced or moved by an import', () => {

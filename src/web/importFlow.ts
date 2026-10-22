@@ -63,3 +63,21 @@ export async function stagePasswords(
 export function isolate(vars: Record<string, string | number>): Record<string, string> {
   return Object.fromEntries(Object.entries(vars).map(([k, v]) => [k, `⁨${v}⁩`]));
 }
+
+/** Generated passwords to show: only for users whose password the apply really set (a user created meanwhile kept their own). */
+export function shownGenerated(generated: Generated[], passwordsSet: string[] | undefined): Generated[] {
+  const set = new Set(passwordsSet ?? []);
+  return generated.filter((g) => set.has(g.username));
+}
+
+/** The i18n key for an import-specific server answer, or null for the general error texts. */
+export function importErrorKey(
+  status: number, body: { error?: string; detail?: unknown },
+): 'imErrPasswordsPending' | 'imErrChanged' | 'imErrSlotTaken' | 'errTooManyAttempts' | null {
+  if (status === 429) return 'errTooManyAttempts';
+  if (status !== 409) return null;
+  if (body.detail === 'passwords_pending') return 'imErrPasswordsPending';
+  if (body.detail === 'import_changed') return 'imErrChanged';
+  if (body.detail === 'import_slot_taken') return 'imErrSlotTaken';
+  return null;
+}

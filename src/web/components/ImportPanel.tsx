@@ -8,12 +8,12 @@ import {
 } from '../../shared/imports';
 import { api, ApiError } from '../api';
 import { readSheet, writeXlsx } from '../excel';
-import { isolate, stagePasswords, templateFor, type Generated } from '../importFlow';
+import { isolate, shownGenerated, stagePasswords, templateFor, type Generated } from '../importFlow';
 import { fmtNum, t, tf, useLang, type TextKey } from '../i18n';
 import { errText, TreeChangeBanner, type TreeChange } from './AdminBits';
 
 type Preview = { create: number; update: number; unchanged: number; issues: ImportIssue[]; pending?: PasswordOp[] };
-type Applied = { created: number; updated: number; unchanged: number; treeChange?: TreeChange | null };
+type Applied = { created: number; updated: number; unchanged: number; treeChange?: TreeChange | null; passwordsSet?: string[] };
 type Checked = { fileName: string; rows: ImportRowOf<ImportKind>[]; importId: string; preview: Preview; generated: Generated[] };
 type State =
   | { kind: 'idle' }
@@ -125,7 +125,8 @@ export function ImportPanel({ kind, example = {}, onApplied }: {
     set({ kind: 'applying', c });
     try {
       const result = await api<Applied>('POST', `${base}/apply`, kind === 'users' ? { importId: c.importId, rows: c.rows } : { rows: c.rows });
-      set({ kind: 'done', fileName: c.fileName, result, generated: c.generated });
+      // Only for users whose password this apply set: one created meanwhile by someone else kept their own.
+      set({ kind: 'done', fileName: c.fileName, result, generated: shownGenerated(c.generated, result.passwordsSet) });
       onApplied();
     } catch (x) {
       // The server found problems the preview did not (data changed meanwhile): show them like a preview.

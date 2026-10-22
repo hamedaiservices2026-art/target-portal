@@ -4,7 +4,7 @@ import writeXlsxFile from 'write-excel-file/node';
 import { ISSUE_CODES, parseImportSheet } from '../../src/shared/imports';
 import { ar } from '../../src/web/i18n/ar';
 import { en } from '../../src/web/i18n/en';
-import { isolate, stagePasswords, templateFor } from '../../src/web/importFlow';
+import { importErrorKey, isolate, shownGenerated, stagePasswords, templateFor } from '../../src/web/importFlow';
 import { toCells } from '../../src/web/excel';
 
 describe('templateFor', () => {
@@ -66,5 +66,24 @@ describe('issue texts', () => {
       const holes = (s: string) => [...s.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort();
       expect(holes(ar[key]), code).toEqual(holes(en[key]));
     }
+  });
+});
+
+describe('shownGenerated', () => {
+  it('shows a generated password only for users whose password the apply actually set', () => {
+    const gen = [{ username: 'a', password: 'P1' }, { username: 'b', password: 'P2' }];
+    expect(shownGenerated(gen, ['a', 'c'])).toEqual([{ username: 'a', password: 'P1' }]);
+    expect(shownGenerated(gen, undefined)).toEqual([]);
+  });
+});
+
+describe('importErrorKey', () => {
+  it('maps the import-specific server answers to their own texts', () => {
+    expect(importErrorKey(409, { error: 'conflict', detail: 'passwords_pending' })).toBe('imErrPasswordsPending');
+    expect(importErrorKey(409, { error: 'conflict', detail: 'import_changed' })).toBe('imErrChanged');
+    expect(importErrorKey(409, { error: 'conflict', detail: 'import_slot_taken' })).toBe('imErrSlotTaken');
+    expect(importErrorKey(429, { error: 'too_many_attempts' })).toBe('errTooManyAttempts');
+    expect(importErrorKey(409, { error: 'conflict', detail: 'other' })).toBeNull();
+    expect(importErrorKey(400, { error: 'invalid_request' })).toBeNull();
   });
 });
