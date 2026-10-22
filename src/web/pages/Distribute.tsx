@@ -81,6 +81,7 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
   const [stale, setStale] = useState(false);
   const [failed, setFailed] = useState<Record<string, PackCheck> | null>(null);
   const [error, setError] = useState<TextKey | null>(null);
+  const [noRoutesNode, setNoRoutesNode] = useState<string | null>(null);
 
   const [tab, setTab] = useState<GroupTab>('all');
   const [q, setQ] = useState('');
@@ -297,6 +298,10 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
       if (e.status === 400 && e.body.error === 'rules_failed' && e.body.byPack && typeof e.body.byPack === 'object') {
         return setFailed(e.body.byPack as Record<string, PackCheck>);
       }
+      if (e.status === 400 && e.body.error === 'no_routes' && typeof e.body.node === 'string') {
+        setNoRoutesNode(e.body.node);
+        return setError('errNoRoutes');
+      }
       return setError('errGeneric');
     }
     setError('errNetwork');
@@ -419,7 +424,7 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
           <ul>{failedPacks.map(([p, c]) => <li key={p}><bdi>{p}</bdi>: {statusText(c)}</li>)}</ul>
         </div>
       )}
-      {error && <div class="alert" role="alert">{t(error)}</div>}
+      {error && <div class="alert" role="alert">{error === 'errNoRoutes' ? tf(error, { node: noRoutesNode ?? '' }) : t(error)}</div>}
       {notice && <div class="banner ok" role="status" data-testid="notice">{t(notice)}</div>}
 
       <GroupTabs value={tab} onChange={setTab} />

@@ -186,11 +186,18 @@ test('admin opens a month, uploads the checked forecast, starts, pushes, exports
   await expect(card.getByTestId('dept-state')).toHaveText('Loading');
   await expect(card.getByTestId('dept-files')).toContainText('0');
 
+  // --- Refresh tree is offered while loading and reports what it did.
+  await card.getByRole('button', { name: 'Refresh tree' }).click();
+  await expect(card.getByRole('status')).toContainText('0 added, 0 removed');
+
   // --- History, filtered to this month, newest first.
   await page.getByRole('link', { name: 'History' }).click();
   await page.getByLabel('Month', { exact: true }).selectOption({ value: String(monthId) });
   const first = page.getByTestId('audit-row').first();
-  await expect(first).toContainText('Department reset');
+  await expect(first).toContainText('Tree refreshed');
+  await expect(page.getByTestId('audit-row').filter({ hasText: 'Department reset' })).toHaveCount(1);
   await expect(page.getByTestId('audit-row').filter({ hasText: 'Forecast rows uploaded' })).toHaveCount(1);
-  await expect(page.getByRole('link', { name: 'Download backup' })).toHaveAttribute('href', '/api/admin/backup');
+  const backupDl = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Download backup' }).click();
+  expect((await backupDl).suggestedFilename()).toMatch(/^target-portal-backup-\d{4}-\d{2}-\d{2}\.json$/);
 });

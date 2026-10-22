@@ -12,7 +12,9 @@ export class ApiError extends Error {
   constructor(
     readonly status: 400 | 403 | 404 | 409 | 413,
     readonly body: {
-      error: 'invalid_request' | 'forbidden' | 'not_found' | 'conflict' | 'stale' | 'too_many_rows' | 'rules_failed';
+      error: 'invalid_request' | 'forbidden' | 'not_found' | 'conflict' | 'stale' | 'too_many_rows' | 'rules_failed' | 'no_routes';
+      /** Name of the node a no_routes error is about. */
+      node?: string;
       detail?: string;
       errors?: { line: number; detail: string }[];
       /** Leaves a 409 is about (month uploads). */

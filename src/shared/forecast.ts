@@ -77,6 +77,8 @@ function periodText(cell: unknown): string {
   const s = text(cell);
   const m = /^(\d{4})[-/](\d{1,2})(?:[-/]\d{1,2})?$/.exec(s);
   if (m) return `${m[1]}-${pad2(Number(m[2]))}`;
+  const compact = /^(\d{4})(\d{2})$/.exec(s); // 202610, the TT DMM file's own spelling
+  if (compact) return `${compact[1]}-${compact[2]}`;
   return s; // anything else stays as text and fails the period check
 }
 

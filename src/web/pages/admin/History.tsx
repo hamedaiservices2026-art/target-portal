@@ -5,7 +5,7 @@ import type { MonthListDto } from '../../../worker/services/months';
 import { api } from '../../api';
 import { errText, Field, LoadError, PageHead, useResource } from '../../components/AdminBits';
 import { fmtDateTime, fmtPeriod } from '../../format';
-import { t, useLang, type TextKey } from '../../i18n';
+import { fmtNum, t, tf, useLang, type TextKey } from '../../i18n';
 
 const PAGE = 50;
 
@@ -13,12 +13,77 @@ const ACTION_KEY: Record<string, TextKey> = {
   'backup.download': 'hiBackupDownload', 'dept.create': 'hiDeptCreate', 'dept.update': 'hiDeptUpdate',
   'leaf.create': 'hiLeafCreate', 'leaf.delete': 'hiLeafDelete', 'leaf.update': 'hiLeafUpdate', 'leaves.bulk_map': 'hiLeavesBulkMap',
   'month.batch': 'hiMonthBatch', 'month.create': 'hiMonthCreate', 'month.dept_reset': 'hiDeptReset',
-  'month.dept_start': 'hiDeptStart', 'month.export': 'hiMonthExport', 'month.file_add': 'hiFileAdd', 'month.update': 'hiMonthUpdate',
+  'month.dept_start': 'hiDeptStart', 'month.export': 'hiMonthExport', 'month.file_add': 'hiFileAdd', 'month.update': 'hiMonthUpdate', 'month.tree_refresh': 'hiTreeRefresh',
   'node.create': 'hiNodeCreate', 'node.delete': 'hiNodeDelete', 'node.draft': 'hiNodeDraft', 'node.open': 'hiNodeOpen',
   'node.push': 'hiNodePush', 'node.reopen': 'hiNodeReopen', 'node.submit': 'hiNodeSubmit', 'node.update': 'hiNodeUpdate',
   'pack.create': 'hiPackCreate', 'pack.update': 'hiPackUpdate', 'settings.update': 'hiSettingsUpdate',
   'tree.apply_month': 'hiTreeApply', 'user.create': 'hiUserCreate', 'user.password': 'hiUserPassword', 'user.update': 'hiUserUpdate',
 };
+
+type BackupIndex = { exportedAt: string; limit: number; tables: { name: string; rows: number }[] };
+type BackupPage = { rows: unknown[]; next: string | number | (string | number)[] | null };
+
+/** Fetches the backup page by page (one request at a time) and saves it as one JSON file. */
+async function downloadBackup(onProgress: (done: number, total: number) => void): Promise<void> {
+  const index = await api<BackupIndex>('GET', '/api/admin/backup');
+  const total = index.tables.reduce((n, x) => n + x.rows, 0);
+  const out: Record<string, unknown> = { exportedAt: index.exportedAt };
+  let done = 0;
+  onProgress(0, total);
+  for (const tbl of index.tables) {
+    const rows: unknown[] = [];
+    let after: string | null = null;
+    do {
+      const q: URLSearchParams = new URLSearchParams({ table: tbl.name, limit: String(index.limit) });
+      if (after !== null) q.set('after', after);
+      const page: BackupPage = await api<BackupPage>('GET', `/api/admin/backup?${q}`);
+      rows.push(...page.rows);
+      done += page.rows.length;
+      onProgress(done, total);
+      after = page.next === null ? null : JSON.stringify(page.next);
+    } while (after !== null);
+    out[tbl.name] = rows;
+  }
+  const blob = new Blob([JSON.stringify(out)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `target-portal-backup-${index.exportedAt.slice(0, 10)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function BackupButton() {
+  useLang();
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  async function go() {
+    setErr(null);
+    setSaved(false);
+    setProgress({ done: 0, total: 0 });
+    try {
+      await downloadBackup((done, total) => setProgress({ done, total }));
+      setSaved(true);
+    } catch (x) {
+      setErr(errText(x));
+    } finally {
+      setProgress(null);
+    }
+  }
+  return (
+    <span class="export">
+      <button type="button" class="btn" disabled={progress !== null} data-testid="backup-button" onClick={() => void go()}>
+        {progress ? tf('hiBackupProgress', { done: fmtNum(progress.done), total: fmtNum(progress.total) }) : t('hiBackup')}
+      </button>
+      {saved && <span class="muted small" role="status">{t('hiBackupDownload')}</span>}
+      {err && <span class="alert" role="alert">{t('hiBackupFailed')} {err}</span>}
+    </span>
+  );
+}
 
 export function History() {
   const [lang] = useLang();
@@ -60,7 +125,7 @@ export function History() {
   return (
     <section data-testid="admin-history">
       <PageHead title={t('navHistory')} intro={t('hiIntro')}>
-        <a class="btn" href="/api/admin/backup" download>{t('hiBackup')}</a>
+        <BackupButton />
       </PageHead>
       <p class="muted small">{t('hiBackupNote')}</p>
       <div class="card ad-form">

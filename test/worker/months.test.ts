@@ -102,7 +102,7 @@ describe('access control', () => {
     const routes: [string, string][] = [
       ['GET', '/months'], ['POST', '/months'], ['PATCH', '/months/1'], ['GET', '/months/1/context?dept=1'],
       ['POST', '/months/1/files'], ['POST', '/months/1/files/1/batch'],
-      ['POST', '/months/1/depts/1/reset'], ['POST', '/months/1/depts/1/start'],
+      ['POST', '/months/1/depts/1/reset'], ['POST', '/months/1/depts/1/refresh-tree'], ['POST', '/months/1/depts/1/start'],
     ];
     for (const [m, p] of routes) {
       expect((await call(m, p, {}, null)).status, `${m} ${p} anon`).toBe(401);
@@ -492,5 +492,137 @@ describe('reset', () => {
     expect((await call('POST', `/months/${id}/depts/${tt}/reset`)).status).toBe(200);
     expect((await call('POST', `/months/${id}/depts/9999/reset`)).status).toBe(404);
     expect((await call('POST', `/months/999/depts/${tt}/reset`)).status).toBe(404);
+  });
+});
+
+describe('refresh tree', () => {
+  const refresh = (month: number, dept: number) => call('POST', `/months/${month}/depts/${dept}/refresh-tree`);
+  const monthNodes = async (month: number, dept = tt) =>
+    all<Json>(env.DB, `SELECT node_id, parent_id, name, manager_user_id, status FROM month_nodes WHERE month_id = ? AND dept_id = ? ORDER BY node_id`, month, dept);
+
+  it('a node and route added after the month opened can then be uploaded', async () => {
+    const month = await openMonth();
+    const area2 = await mkNode(tt, 'TT area 2', ttRoot);
+    const r4 = await mkLeaf(tt, area2, 'R4');
+    const file = await mkFile(month, tt);
+    const before = await batchOf(month, file, [grid(r4)]);
+    expect(before.status).toBe(409);
+    expect((await json(before)).detail).toBe('leaf_node_not_in_month');
+
+    const res = await refresh(month, tt);
+    expect(res.status).toBe(200);
+    expect(await json(res)).toEqual({ added: 1, removed: 0 });
+    expect((await monthNodes(month)).map((n) => n.node_id)).toEqual([ttRoot, ttArea, area2]);
+    expect((await batchOf(month, file, [grid(r4)])).status).toBe(200);
+    expect(await auditActions()).toContain('month.tree_refresh');
+  });
+
+  it('start requires the new node routes after a refresh', async () => {
+    const month = await openMonth();
+    const file = await mkFile(month, tt);
+    const area2 = await mkNode(tt, 'TT area 2', ttRoot);
+    const r4 = await mkLeaf(tt, area2, 'R4');
+    await refresh(month, tt);
+    expect((await batchOf(month, file, [grid(r1), grid(r2), grid(r3)])).status).toBe(200);
+    const start = await call('POST', `/months/${month}/depts/${tt}/start`);
+    expect(start.status).toBe(409);
+    expect((await json(start)).leafIds).toEqual([r4]);
+  });
+
+  it('updates names, managers and parents of existing month nodes', async () => {
+    const month = await openMonth();
+    const other = await mkNode(tt, 'Other', ttRoot);
+    await run(env.DB, `UPDATE nodes SET name = 'Renamed', manager_user_id = ?, parent_id = ? WHERE id = ?`, mgrId, other, ttArea);
+    expect((await refresh(month, tt)).status).toBe(200);
+    const area = (await monthNodes(month)).find((n) => n.node_id === ttArea)!;
+    expect(area).toMatchObject({ name: 'Renamed', manager_user_id: mgrId, parent_id: other, status: 'waiting' });
+  });
+
+  it('adds a department created after the month and its root', async () => {
+    const month = await openMonth();
+    const nd = await mkDept('ND');
+    const root = await mkNode(nd, 'ND head', null);
+    expect((await refresh(month, nd)).status).toBe(200);
+    expect(await one(env.DB, `SELECT state FROM month_depts WHERE month_id = ? AND dept_id = ?`, month, nd)).toEqual({ state: 'loading' });
+    expect((await monthNodes(month, nd)).map((n) => [n.node_id, n.parent_id])).toEqual([[root, null]]);
+  });
+
+  it('is refused unless the department is loading', async () => {
+    const month = await openMonth();
+    const file = await mkFile(month, tt);
+    await batchOf(month, file, [grid(r1), grid(r2), grid(r3)]);
+    expect((await call('POST', `/months/${month}/depts/${tt}/start`)).status).toBe(200);
+    const res = await refresh(month, tt);
+    expect(res.status).toBe(409);
+    expect((await json(res)).detail).toBe('department_not_loading');
+    expect((await refresh(month, 999999)).status).toBe(404);
+    expect((await refresh(999999, tt)).status).toBe(404);
+  });
+
+  it('removes a stale empty node but keeps one that has month leaves', async () => {
+    const empty = await mkNode(tt, 'Empty', ttRoot);
+    const used = await mkNode(tt, 'Used', ttRoot);
+    const usedLeaf = await mkLeaf(tt, used, 'RU');
+    const month = await openMonth();
+    const file = await mkFile(month, tt);
+    expect((await batchOf(month, file, [grid(usedLeaf)])).status).toBe(200);
+    await run(env.DB, `DELETE FROM nodes WHERE id = ?`, empty);
+    await run(env.DB, `DELETE FROM leaves WHERE id = ?`, usedLeaf);
+    await run(env.DB, `DELETE FROM nodes WHERE id = ?`, used);
+    const res = await refresh(month, tt);
+    expect(res.status).toBe(200);
+    expect((await json(res)).removed).toBe(1);
+    const ids = (await monthNodes(month)).map((n) => n.node_id);
+    expect(ids).not.toContain(empty);
+    expect(ids).toContain(used);
+  });
+
+  it('keeps the ancestors of a kept stale node', async () => {
+    const mid = await mkNode(tt, 'Mid', ttRoot);
+    const deep = await mkNode(tt, 'Deep', mid);
+    const deepLeaf = await mkLeaf(tt, deep, 'RD');
+    const month = await openMonth();
+    const file = await mkFile(month, tt);
+    await batchOf(month, file, [grid(deepLeaf)]);
+    await run(env.DB, `DELETE FROM leaves WHERE id = ?`, deepLeaf);
+    await run(env.DB, `DELETE FROM nodes WHERE id IN (?, ?)`, deep, mid);
+    expect((await refresh(month, tt)).status).toBe(200);
+    const ids = (await monthNodes(month)).map((n) => n.node_id);
+    expect(ids).toEqual(expect.arrayContaining([mid, deep]));
+  });
+
+  it('refuses when a removed root that still has month leaves would stay beside the new root', async () => {
+    const month = await openMonth();
+    const file = await mkFile(month, tt);
+    await batchOf(month, file, [grid(r1), grid(r2), grid(r3)]);
+    await run(env.DB, `DELETE FROM leaves WHERE dept_id = ?`, tt);
+    await run(env.DB, `DELETE FROM nodes WHERE id = ?`, ttArea);
+    await run(env.DB, `DELETE FROM nodes WHERE id = ?`, ttRoot);
+    await mkNode(tt, 'New head', null);
+    const res = await refresh(month, tt);
+    expect(res.status).toBe(409);
+    expect((await json(res)).detail).toBe('stale_root_has_leaves');
+    const roots = await all(env.DB, `SELECT node_id FROM month_nodes WHERE month_id = ? AND dept_id = ? AND parent_id IS NULL`, month, tt);
+    expect(roots).toHaveLength(1);
+  });
+
+  it('reset re-copies the live tree', async () => {
+    const month = await openMonth();
+    const file = await mkFile(month, tt);
+    await batchOf(month, file, [grid(r1), grid(r2), grid(r3)]);
+    const area2 = await mkNode(tt, 'TT area 2', ttRoot);
+    await run(env.DB, `UPDATE nodes SET name = 'Renamed' WHERE id = ?`, ttArea);
+    expect((await call('POST', `/months/${month}/depts/${tt}/reset`)).status).toBe(200);
+    const nodes = await monthNodes(month);
+    expect(nodes.map((n) => n.node_id)).toEqual([ttRoot, ttArea, area2]);
+    expect(nodes.find((n) => n.node_id === ttArea)!.name).toBe('Renamed');
+  });
+
+  it('stays within the statement budget on a large tree', async () => {
+    const month = await openMonth();
+    await run(env.DB, `INSERT INTO nodes(dept_id, parent_id, name) WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 300) SELECT ?, ?, 'sub' || i FROM n`, tt, ttRoot);
+    const res = await refresh(month, tt);
+    expect(res.status).toBe(200);
+    expect((await json(res)).added).toBe(300);
   });
 });

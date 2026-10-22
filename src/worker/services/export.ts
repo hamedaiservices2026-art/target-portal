@@ -103,29 +103,80 @@ export async function listAudit(
 }
 
 // ---------- backup ----------
+//
+// Paged: one request returns at most BACKUP_MAX_LIMIT rows of ONE table, in a
+// fixed key order, with a `next` cursor. The History page stitches the pages.
+
+type BackupTable = { select: string; key: string[] };
 
 /** Every table except sessions and login_failures; users get explicit columns (no pw_hash / pw_salt). */
-export const BACKUP_TABLES: Record<string, string> = {
-  users: 'SELECT id, username, name, email, role, lang, active FROM users',
-  departments: 'SELECT * FROM departments',
-  packs: 'SELECT * FROM packs',
-  settings: 'SELECT * FROM settings',
-  nodes: 'SELECT * FROM nodes',
-  leaves: 'SELECT * FROM leaves',
-  months: 'SELECT * FROM months',
-  month_files: 'SELECT * FROM month_files',
-  month_depts: 'SELECT * FROM month_depts',
-  month_nodes: 'SELECT * FROM month_nodes',
-  month_leaves: 'SELECT * FROM month_leaves',
-  audit: 'SELECT * FROM audit',
-  email_log: 'SELECT * FROM email_log',
+export const BACKUP_TABLES: Record<string, BackupTable> = {
+  users: { select: 'SELECT id, username, name, email, role, lang, active FROM users', key: ['id'] },
+  departments: { select: 'SELECT * FROM departments', key: ['id'] },
+  packs: { select: 'SELECT * FROM packs', key: ['code'] },
+  settings: { select: 'SELECT * FROM settings', key: ['key'] },
+  nodes: { select: 'SELECT * FROM nodes', key: ['id'] },
+  leaves: { select: 'SELECT * FROM leaves', key: ['id'] },
+  months: { select: 'SELECT * FROM months', key: ['id'] },
+  month_files: { select: 'SELECT * FROM month_files', key: ['id'] },
+  month_depts: { select: 'SELECT * FROM month_depts', key: ['month_id', 'dept_id'] },
+  month_nodes: { select: 'SELECT * FROM month_nodes', key: ['month_id', 'node_id'] },
+  month_leaves: { select: 'SELECT * FROM month_leaves', key: ['month_id', 'leaf_id'] },
+  audit: { select: 'SELECT * FROM audit', key: ['id'] },
+  email_log: { select: 'SELECT * FROM email_log', key: ['id'] },
 };
 
-export async function backup(db: D1Database, actorId: number): Promise<Record<string, unknown>> {
+export const BACKUP_DEFAULT_LIMIT = 200;
+export const BACKUP_MAX_LIMIT = 500;
+
+export type BackupIndex = { exportedAt: string; limit: number; tables: { name: string; rows: number }[] };
+export type BackupPage = { table: string; rows: Record<string, unknown>[]; next: string | number | (string | number)[] | null };
+
+function cursorOf(raw: string | undefined, width: number): (string | number)[] | null {
+  if (raw === undefined || raw === '') return null;
+  let v: unknown;
+  try { v = JSON.parse(raw); } catch { throw bad('after is not a valid cursor'); }
+  const parts = Array.isArray(v) ? v : [v];
+  if (parts.length !== width || !parts.every((x) => typeof x === 'string' || (typeof x === 'number' && Number.isFinite(x)))) {
+    throw bad('after is not a valid cursor for this table');
+  }
+  return parts as (string | number)[];
+}
+
+/** Table list with row counts (audited once: this is the start of a download). */
+export async function backupIndex(db: D1Database, actorId: number): Promise<BackupIndex> {
   const names = Object.keys(BACKUP_TABLES);
-  const results = await batch(db, names.map((n) => db.prepare(BACKUP_TABLES[n]!)));
-  const out: Record<string, unknown> = { exportedAt: new Date().toISOString() };
-  names.forEach((n, i) => { out[n] = results[i]!.results; });
+  // One row of scalar subqueries (a UNION ALL of 13 terms exceeds D1's compound-select limit).
+  const counts = await one<Record<string, number>>(
+    db, `SELECT ${names.map((n) => `(SELECT COUNT(*) FROM ${n}) AS ${n}`).join(', ')}`) ?? {};
   await auditStatement(db, actorId, 'backup.download', {}, undefined).run();
-  return out;
+  return {
+    exportedAt: new Date().toISOString(),
+    limit: BACKUP_MAX_LIMIT,
+    tables: names.map((name) => ({ name, rows: counts[name] ?? 0 })),
+  };
+}
+
+export async function backupPage(
+  db: D1Database, q: { table: string; after?: string; limit?: string },
+): Promise<BackupPage> {
+  const def = Object.prototype.hasOwnProperty.call(BACKUP_TABLES, q.table) ? BACKUP_TABLES[q.table]! : null;
+  if (!def) throw bad('unknown table');
+  const limit = Math.min(posInt(q.limit, 'limit') ?? BACKUP_DEFAULT_LIMIT, BACKUP_MAX_LIMIT);
+  const after = cursorOf(q.after, def.key.length);
+  const keyList = def.key.join(', ');
+  const rows = await all<Record<string, unknown>>(
+    db,
+    `SELECT * FROM (${def.select}) ${after ? `WHERE (${keyList}) > (${def.key.map(() => '?').join(', ')})` : ''}
+     ORDER BY ${keyList} LIMIT ?`,
+    ...(after ?? []), limit + 1,
+  );
+  const page = rows.slice(0, limit);
+  let next: BackupPage['next'] = null;
+  if (rows.length > limit) {
+    const last = page[page.length - 1]!;
+    const k = def.key.map((c) => last[c] as string | number);
+    next = k.length === 1 ? k[0]! : k;
+  }
+  return { table: q.table, rows: page, next };
 }

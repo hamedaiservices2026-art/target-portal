@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { hashPassword } from '../../src/worker/auth';
 import { all, one, run } from '../../src/worker/db';
 import { saveDraft, submitNode } from '../../src/worker/services/distribution';
-import { applyTreeChangeToOpenMonths, reopenNode, restoreOrReopen } from '../../src/worker/services/flow';
+import { applyTreeChangeToOpenMonths, reopenNode } from '../../src/worker/services/flow';
 
 type Json = Record<string, any>;
 type Grid = Record<string, number>;
@@ -302,20 +302,6 @@ describe('reopen', () => {
     expect((await submit(headS, month, head, ws.version)).status).toBe(200);
     expect(await all<Json>(env.DB, `SELECT node_id, status, draft_json, baseline_json FROM month_nodes WHERE month_id = ? ORDER BY node_id`, month)).toEqual(sub);
     expect(await one<Json>(env.DB, `SELECT COUNT(*) n FROM month_nodes WHERE held_status IS NOT NULL`)).toEqual({ n: 0 });
-    expect(await grandTotals(month, tt)).toEqual(start);
-  });
-
-  it('restoreOrReopen(changed) clears a held subtree and opens the child with fresh starts', async () => {
-    await supsWork();
-    expect((await reopen(month, head)).status).toBe(200);
-    await restoreOrReopen(env.DB, env, month, area, true);
-    const a = await nodeRow(month, area);
-    expect([a.status, a.held_status, a.draft_json]).toEqual(['in_progress', null, null]);
-    expect(JSON.parse(a.baseline_json)).toEqual({ [`n:${supA}`]: V(950, 200), [`n:${supB}`]: V(1050, 300), [`n:${supC}`]: V(1000, 100) });
-    for (const n of [supA, supB, supC]) {
-      const r = await nodeRow(month, n);
-      expect([r.status, r.held_status, r.baseline_json, r.draft_json]).toEqual(['waiting', null, null, null]);
-    }
     expect(await grandTotals(month, tt)).toEqual(start);
   });
 

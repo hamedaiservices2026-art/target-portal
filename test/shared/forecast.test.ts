@@ -47,6 +47,12 @@ describe('normalizeForecastRows', () => {
     expect(out.map((r) => [r.period, r.cases])).toEqual([['2026-10', 3]]);
   });
 
+  it('normalises a six-digit Period (text or number) to YYYY-MM', () => {
+    const header = ['Period (YYYYMM)', 'Delivery System', 'Route Code', 'Salesman ID', 'Sales Target Category', 'Cases'];
+    const out = normalizeForecastRows([header, ['202610', DS, 1, 2, 'PEP', 3], [202611, DS, 1, 2, 'PEP', 4], ['20261', DS, 1, 2, 'PEP', 5]]);
+    expect(out.map((r) => r.period)).toEqual(['2026-10', '2026-11', '20261']);
+  });
+
   it('throws ForecastHeaderError listing the missing columns of the best-matching row', () => {
     const garbled = ['Period (YYYY-MM)', 'Delivery Sistem', 'Route Code', 'Salesman ID', 'Sales Target Category', 'Case'];
     let caught: unknown;
@@ -77,7 +83,7 @@ describe('normalizeForecastRows', () => {
     expect(r.grids).toEqual([]);
   });
 
-  it('blank cases become null, unusable cases NaN; non-date, non-string periods stay text that will mismatch', () => {
+  it('blank cases become null, unusable cases NaN; a six-digit number period is read as YYYYMM', () => {
     const out = normalizeForecastRows([
       HEADER,
       ['2026-10', DS, '1', 'x', 'PEP', 'abc'],
@@ -88,7 +94,7 @@ describe('normalizeForecastRows', () => {
       ['2026-10', DS, '6', 'x', 'PEP', '  '],
     ]);
     expect(out.map((r) => r.cases)).toEqual([Number.NaN, Number.NaN, -4, 1, null, null]);
-    expect(out[3]!.period).toBe('202610');
+    expect(out[3]!.period).toBe('2026-10');
   });
 });
 

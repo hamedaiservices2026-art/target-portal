@@ -31,7 +31,7 @@ const CONFLICT_KEY: Record<string, TextKey> = {
   department_not_loading: 'mcErrNotLoading', leaf_in_other_file: 'mcErrLeafOtherFile',
   leaf_node_not_in_month: 'mcErrLeafNodeNotInMonth', no_files: 'mcErrNoFiles', no_root_node: 'mcErrNoRoot',
   missing_leaves: 'mcErrMissingLeaves', reopen_pending_below: 'mcErrReopenPending', not_submitted: 'mcErrNotSubmitted',
-  stale: 'mcErrStale',
+  stale: 'mcErrStale', stale_root_has_leaves: 'mcErrStaleRoot',
 };
 
 const plural = (n: number, one: TextKey, many: TextKey) => tf(n === 1 ? one : many, { n: fmtNum(n) });
@@ -534,6 +534,20 @@ function DeptCard({ month, dept, onChanged }: { month: Month; dept: Dept; onChan
       onChanged();
     }
   }
+  async function refreshTree() {
+    setBusy(true);
+    setErr(null);
+    setFlash(null);
+    try {
+      const r = await api<{ added: number; removed: number }>('POST', `/api/admin/months/${month.id}/depts/${dept.deptId}/refresh-tree`);
+      say(() => tf('mcRefreshTreeDone', { dept: dept.name, added: fmtNum(r.added), removed: fmtNum(r.removed) }));
+    } catch (x) {
+      setErr(monthErr(x));
+    } finally {
+      setBusy(false);
+      onChanged();
+    }
+  }
   async function reset() {
     setErr(null);
     setFlash(null);
@@ -567,6 +581,11 @@ function DeptCard({ month, dept, onChanged }: { month: Month; dept: Dept; onChan
         {loading && (
           <button type="button" class="btn primary" disabled={busy || sending || dept.files === 0} title={dept.files === 0 ? t('mcErrNoFiles') : undefined} onClick={start}>
             {t('mcStart')}
+          </button>
+        )}
+        {loading && (
+          <button type="button" class="btn" disabled={busy || sending} data-testid="refresh-tree" onClick={refreshTree}>
+            {t('mcRefreshTree')}
           </button>
         )}
         <ExportButton month={month} dept={dept} label={t('mcExport')} />

@@ -510,7 +510,7 @@ export async function submitWith(
     try {
       return { valueList, plan: planSubmit(d, nodeId, keys, valueList.map((g) => vecOf(g, codes)), totals) };
     } catch (e) {
-      if (e instanceof NoRoutesError) throw bad(e.message);
+      if (e instanceof NoRoutesError) throw new ApiError(400, { error: 'no_routes', detail: e.message, node: e.nodeName });
       throw e;
     }
   };

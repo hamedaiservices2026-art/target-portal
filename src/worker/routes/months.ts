@@ -3,7 +3,7 @@
 import { Hono } from 'hono';
 import type { AppEnv } from '../auth';
 import {
-  addFile, createMonth, listMonths, monthContext, requiredDept, resetDept, startDept, updateMonth, uploadBatch,
+  addFile, createMonth, listMonths, monthContext, refreshTree, requiredDept, resetDept, startDept, updateMonth, uploadBatch,
 } from '../services/months';
 import { monthBoard, pushNode, reopenNode } from '../services/flow';
 import { exportDept, exportMonth } from '../services/export';
@@ -32,6 +32,8 @@ months.post('/api/admin/months/:id/depts/:deptId/reset', h(async (c, db, me) => 
   await resetDept(db, me, parseId(p(c, 'id')), parseId(p(c, 'deptId')));
   return c.json({ state: 'loading' });
 }));
+months.post('/api/admin/months/:id/depts/:deptId/refresh-tree', h(async (c, db, me) =>
+  c.json(await refreshTree(db, me, parseId(p(c, 'id')), parseId(p(c, 'deptId'))))));
 months.post('/api/admin/months/:id/depts/:deptId/start', h(async (c, db, me) =>
   c.json(await startDept(db, c.env, me, parseId(p(c, 'id')), parseId(p(c, 'deptId'))))));
 

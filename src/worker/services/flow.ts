@@ -119,32 +119,6 @@ export async function reopenNode(
   return { status: 'in_progress', version: v + 1 };
 }
 
-/**
- * The held child's side of a parent's resubmit, on its own (the submit does
- * the same inside its own batch): unchanged totals -> the whole subtree gets
- * its held statuses back; changed -> held status, baseline and draft cleared
- * across the subtree, then the child's turn opens on its current totals.
- * Every row is written only if still as read (else 409 stale).
- */
-export async function restoreOrReopen(
-  db: D1Database, env: Env, monthId: number, childNodeId: number, totalsChanged: boolean,
-): Promise<void> {
-  const { d } = await loadDept(db, monthId, childNodeId, 'subtree');
-  const baseline = childGrids(d, childNodeId, subtreeTotals(d, childNodeId));
-  const rows = heldChildPlan(d, childNodeId, totalsChanged, baseline);
-  const now = new Date().toISOString();
-  const child = d.nodes.get(childNodeId)!;
-  const stmts = [setNodesIf(db, { sql: '1', args: [] }, monthId, rows, now)];
-  if (totalsChanged) {
-    // First, so its guard still sees the child as read.
-    stmts.unshift(auditIf(db, guard(monthId, childNodeId, child.version, child.status),
-      null, 'node.open', monthId, childNodeId, { parentId: child.parent_id }, now));
-  }
-  const res = await batch(db, stmts);
-  if ((res[res.length - 1]!.meta.changes ?? 0) !== rows.length) throw stale();
-  if (totalsChanged) await notifyTurnOpened(env, monthId, [childNodeId]);
-}
-
 // ---------- push forward ----------
 
 /**

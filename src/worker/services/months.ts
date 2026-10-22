@@ -303,6 +303,91 @@ export async function uploadBatch(
   return { count: rows.length };
 }
 
+// ---------- tree refresh ----------
+
+const LOADING = `EXISTS (SELECT 1 FROM month_depts WHERE month_id = ? AND dept_id = ? AND state = 'loading')`;
+
+/**
+ * Re-copies the live tree of ONE department into a month, in four set-based
+ * statements (never per row), each guarded so it only acts while the
+ * department is 'loading':
+ *  0. month_depts rows for any live department the month does not have yet;
+ *  1. name / manager / parent of existing month nodes follow the live tree;
+ *  2. live nodes the month lacks are inserted as waiting;
+ *  3. month nodes that are gone live are removed, unless they hold month
+ *     leaves (or are an ancestor of a node that does).
+ * Statement 0 has no guard (it is what creates the row the guard looks for).
+ * The month only ever holds the live root (parent NULL) unless a kept stale
+ * node is a root; refreshTree refuses that case up front.
+ */
+export function treeSyncStatements(db: D1Database, monthId: number, deptId: number): D1PreparedStatement[] {
+  return [
+    db.prepare(
+      `INSERT INTO month_depts(month_id, dept_id, state)
+       SELECT ?, d.id, 'loading' FROM departments d
+       WHERE NOT EXISTS (SELECT 1 FROM month_depts md WHERE md.month_id = ? AND md.dept_id = d.id)`,
+    ).bind(monthId, monthId),
+    db.prepare(
+      `UPDATE month_nodes SET
+         name = (SELECT n.name FROM nodes n WHERE n.id = month_nodes.node_id),
+         manager_user_id = (SELECT n.manager_user_id FROM nodes n WHERE n.id = month_nodes.node_id),
+         parent_id = (SELECT n.parent_id FROM nodes n WHERE n.id = month_nodes.node_id)
+       WHERE month_id = ? AND dept_id = ? AND node_id IN (SELECT id FROM nodes WHERE dept_id = ?) AND ${LOADING}`,
+    ).bind(monthId, deptId, deptId, monthId, deptId),
+    db.prepare(
+      `INSERT INTO month_nodes(month_id, node_id, dept_id, parent_id, name, manager_user_id, status, version)
+       SELECT ?, n.id, n.dept_id, n.parent_id, n.name, n.manager_user_id, 'waiting', 0 FROM nodes n
+       WHERE n.dept_id = ? AND ${LOADING}
+         AND NOT EXISTS (SELECT 1 FROM month_nodes mn WHERE mn.month_id = ? AND mn.node_id = n.id)`,
+    ).bind(monthId, deptId, monthId, deptId, monthId),
+    db.prepare(
+      `WITH RECURSIVE keep(id) AS (
+         SELECT DISTINCT ml.node_id FROM month_leaves ml WHERE ml.month_id = ? AND ml.dept_id = ?
+         UNION
+         SELECT mn.parent_id FROM month_nodes mn JOIN keep ON mn.node_id = keep.id
+         WHERE mn.month_id = ? AND mn.parent_id IS NOT NULL
+       )
+       DELETE FROM month_nodes
+       WHERE month_id = ? AND dept_id = ? AND ${LOADING}
+         AND node_id NOT IN (SELECT id FROM nodes WHERE dept_id = ?)
+         AND node_id NOT IN (SELECT id FROM keep)`,
+    ).bind(monthId, deptId, monthId, monthId, deptId, monthId, deptId, deptId),
+  ];
+}
+
+/** Admin action: refresh the month's copy of a department's tree from the live tree (only while 'loading'). */
+export async function refreshTree(
+  db: D1Database, actorId: number, monthId: number, deptId: number,
+): Promise<{ added: number; removed: number }> {
+  await getMonth(db, monthId);
+  const dept = await one<{ id: number }>(db, `SELECT id FROM departments WHERE id = ?`, deptId);
+  if (!dept) throw notFound();
+  const cur = await one<{ state: string }>(db, `SELECT state FROM month_depts WHERE month_id = ? AND dept_id = ?`, monthId, deptId);
+  if (cur && cur.state !== 'loading') throw conflict('department_not_loading');
+
+  // A removed live root that still holds month leaves would stay as a second root next to the new one.
+  const staleRoot = await one<{ n: number }>(
+    db,
+    `WITH RECURSIVE keep(id) AS (
+       SELECT DISTINCT ml.node_id FROM month_leaves ml WHERE ml.month_id = ? AND ml.dept_id = ?
+       UNION
+       SELECT mn.parent_id FROM month_nodes mn JOIN keep ON mn.node_id = keep.id
+       WHERE mn.month_id = ? AND mn.parent_id IS NOT NULL
+     )
+     SELECT COUNT(*) AS n FROM month_nodes mn
+     WHERE mn.month_id = ? AND mn.dept_id = ? AND mn.parent_id IS NULL
+       AND mn.node_id NOT IN (SELECT id FROM nodes WHERE dept_id = ?) AND mn.node_id IN (SELECT id FROM keep)
+       AND EXISTS (SELECT 1 FROM nodes WHERE dept_id = ? AND parent_id IS NULL)`,
+    monthId, deptId, monthId, monthId, deptId, deptId, deptId);
+  if (staleRoot && staleRoot.n > 0) throw conflict('stale_root_has_leaves');
+
+  const res = await writeBatch(db, [
+    ...treeSyncStatements(db, monthId, deptId),
+    auditStatement(db, actorId, 'month.tree_refresh', { monthId }, { deptId }),
+  ], 'conflict');
+  return { added: res[2]!.meta.changes ?? 0, removed: res[3]!.meta.changes ?? 0 };
+}
+
 // ---------- reset / start ----------
 
 export async function resetDept(db: D1Database, actorId: number, monthId: number, deptId: number): Promise<void> {
@@ -323,6 +408,8 @@ export async function resetDept(db: D1Database, actorId: number, monthId: number
        WHERE month_id = ? AND dept_id = ?`,
     ).bind(monthId, deptId),
     db.prepare(`UPDATE month_depts SET state = 'loading' WHERE month_id = ? AND dept_id = ?`).bind(monthId, deptId),
+    // The reset department starts again from the live tree.
+    ...treeSyncStatements(db, monthId, deptId),
     auditStatement(db, actorId, 'month.dept_reset', { monthId },
       { deptId, previousState: cur.state, files: cur.files, leaves: cur.leaves }),
   ], 'conflict');

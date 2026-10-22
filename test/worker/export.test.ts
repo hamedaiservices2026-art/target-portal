@@ -133,28 +133,80 @@ describe('audit history', () => {
   });
 });
 
-describe('backup', () => {
-  it('has every table except sessions/login_failures, no password fields, and a dated attachment header', async () => {
+describe('backup (paged)', () => {
+  const listed = async (): Promise<Json> => json(await get('/backup'));
+
+  it('lists every table except sessions/login_failures with row counts and audits once', async () => {
     const res = await get('/backup');
     expect(res.status).toBe(200);
-    expect(res.headers.get('content-disposition')).toMatch(/^attachment; filename="target-portal-backup-\d{4}-\d{2}-\d{2}\.json"$/);
-    const text = await res.text();
-    expect(text).not.toMatch(/pw_hash|pw_salt/);
-    const body = JSON.parse(text) as Json;
+    const body = await json(res);
     expect(Number.isNaN(Date.parse(body.exportedAt))).toBe(false);
-    const tables = (await all<{ name: string }>(env.DB, `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name NOT LIKE 'd1_%'`))
+    expect(body.limit).toBeGreaterThan(0);
+    const names = (await all<{ name: string }>(env.DB, `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name NOT LIKE 'd1_%'`))
       .map((t) => t.name).filter((n) => !['sessions', 'login_failures'].includes(n));
-    for (const t of tables) expect(body, t).toHaveProperty(t);
-    expect(body).not.toHaveProperty('sessions');
-    expect(body).not.toHaveProperty('login_failures');
-    expect(body.users.map((u: Json) => u.username).sort()).toEqual(['boss', 'mgr']);
-    expect(body.month_leaves).toHaveLength(3);
+    expect(body.tables.map((t: Json) => t.name).sort()).toEqual(names.sort());
+    expect(body.tables.find((t: Json) => t.name === 'month_leaves').rows).toBe(3);
+    expect(await all(env.DB, `SELECT id FROM audit WHERE action = 'backup.download'`)).toHaveLength(1);
+    await get('/backup?table=users');
+    expect(await all(env.DB, `SELECT id FROM audit WHERE action = 'backup.download'`)).toHaveLength(1);
   });
 
-  it('audits backup.download; admin only', async () => {
-    await get('/backup');
-    expect((await all(env.DB, `SELECT id FROM audit WHERE action = 'backup.download'`))).toHaveLength(1);
+  it('pages a table by key with a next cursor, no overlap and no gaps', async () => {
+    const seen: number[] = [];
+    let after: string | null = null;
+    let pages = 0;
+    do {
+      const q: string = `/backup?table=audit&limit=2${after === null ? '' : `&after=${encodeURIComponent(after)}`}`;
+      const page = await json(await get(q));
+      expect(page.table).toBe('audit');
+      expect(page.rows.length).toBeLessThanOrEqual(2);
+      seen.push(...page.rows.map((r: Json) => r.id));
+      after = page.next === null ? null : JSON.stringify(page.next);
+      pages++;
+    } while (after !== null && pages < 100);
+    const ids = (await all<{ id: number }>(env.DB, `SELECT id FROM audit ORDER BY id`)).map((r) => r.id);
+    expect(pages).toBeGreaterThan(1);
+    expect(seen).toEqual(ids);
+  });
+
+  it('pages composite-key and text-key tables', async () => {
+    const first = await json(await get('/backup?table=month_leaves&limit=2'));
+    expect(first.rows).toHaveLength(2);
+    expect(Array.isArray(first.next)).toBe(true);
+    const second = await json(await get(`/backup?table=month_leaves&limit=2&after=${encodeURIComponent(JSON.stringify(first.next))}`));
+    expect(second.rows).toHaveLength(1);
+    expect(second.next).toBeNull();
+    const keys = [...first.rows, ...second.rows].map((r: Json) => `${r.month_id}:${r.leaf_id}`);
+    expect(new Set(keys).size).toBe(3);
+    const packs = await json(await get('/backup?table=packs&limit=1'));
+    expect(packs.rows.map((r: Json) => r.code)).toEqual(['A']);
+    expect(packs.next).toBe('A');
+    const more = await json(await get(`/backup?table=packs&limit=5&after=${encodeURIComponent(JSON.stringify(packs.next))}`));
+    expect(more.rows.map((r: Json) => r.code)).toEqual(['B', 'C']);
+  });
+
+  it('caps the page size and rejects unknown tables and bad cursors', async () => {
+    const lim = (await listed()).limit;
+    const page = await json(await get('/backup?table=users&limit=99999'));
+    expect(page.rows.length).toBeLessThanOrEqual(lim);
+    expect((await get('/backup?table=sessions')).status).toBe(400);
+    expect((await get('/backup?table=nope')).status).toBe(400);
+    expect((await get('/backup?table=users&after=%7Bbad')).status).toBe(400);
+    expect((await get('/backup?table=month_leaves&after=5')).status).toBe(400);
+    expect((await get('/backup?table=users&limit=0')).status).toBe(400);
+  });
+
+  it('never exposes password hashes, salts or sessions', async () => {
+    const texts: string[] = [];
+    for (const t of (await listed()).tables) texts.push(await (await get(`/backup?table=${t.name}`)).text());
+    expect(texts.join('')).not.toMatch(/pw_hash|pw_salt/);
+    const users = JSON.parse(texts[0]!) as Json;
+    expect(users.rows.map((u: Json) => u.username).sort()).toEqual(['boss', 'mgr']);
+  });
+
+  it('is admin only', async () => {
     expect((await call('GET', '/backup', undefined, await sidFor('mgr'))).status).toBe(403);
+    expect((await call('GET', '/backup?table=users', undefined, await sidFor('mgr'))).status).toBe(403);
     expect((await call('GET', '/backup', undefined, null)).status).toBe(401);
   });
 });

@@ -471,7 +471,9 @@ describe('submit (top-down)', () => {
     const d = await putDraft(s, m2, root, v, ws.version);
     const res = await submit(s, m2, root, (await json(d)).version);
     expect(res.status).toBe(400);
-    expect((await json(res)).detail).toContain('MT empty');
+    const body = await json(res);
+    expect(body).toMatchObject({ error: 'no_routes', node: 'MT empty' });
+    expect(body.detail).toContain('MT empty');
     expect((await leafGrid(m2, q1))[PET]).toBe(1000);
     expect((await nodeRow(m2, root)).status).toBe('in_progress');
   });
