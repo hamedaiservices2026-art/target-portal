@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { requireAdmin, requireUser, type AppEnv } from '../auth';
 import { h, p } from './handler';
 import { backupIndex, backupPage, listAudit } from '../services/export';
+import importRoutes from './imports';
 import monthRoutes from './months';
 import {
   bulkMapLeaves, createLeaf, createNode, deleteLeaf, deleteNode, listLeaves, listNodes, optionalDept,
@@ -76,7 +77,8 @@ admin.get('/api/admin/backup', h(async (c, db, me) => {
   return c.json(await backupPage(db, { table, after: c.req.query('after'), limit: c.req.query('limit') }));
 }));
 
-// Month routes sit behind the guard registered above (registered after it).
+// Month and import routes sit behind the guard registered above (registered after it).
 admin.route('/', monthRoutes);
+admin.route('/', importRoutes);
 
 export default admin;

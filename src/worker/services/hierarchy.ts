@@ -43,7 +43,7 @@ function mergeChanges(results: TreeChangeResult[]): TreeChangeResult | null {
  * the others (say a manager reassignment, which must reach open months so a
  * replaced manager loses his edit rights). Failures are joined into `error`.
  */
-async function notify(db: D1Database, actorId: number, changes: TreeChange[]): Promise<TreeChangeResult | null> {
+export async function notify(db: D1Database, actorId: number, changes: TreeChange[]): Promise<TreeChangeResult | null> {
   const results: TreeChangeResult[] = [];
   const errors: string[] = [];
   for (const c of changes) {

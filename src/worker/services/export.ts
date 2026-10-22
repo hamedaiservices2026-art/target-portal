@@ -109,7 +109,7 @@ export async function listAudit(
 
 type BackupTable = { select: string; key: string[] };
 
-/** Every table except sessions and login_failures; users get explicit columns (no pw_hash / pw_salt). */
+/** Every table except sessions, login_failures and import_passwords (transient staged hashes); users get explicit columns (no pw_hash / pw_salt). */
 export const BACKUP_TABLES: Record<string, BackupTable> = {
   users: { select: 'SELECT id, username, name, email, role, lang, active FROM users', key: ['id'] },
   departments: { select: 'SELECT * FROM departments', key: ['id'] },

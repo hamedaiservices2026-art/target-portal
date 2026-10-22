@@ -21,6 +21,8 @@ export class ApiError extends Error {
       leafIds?: number[];
       /** Per-pack rule results when a submit fails the cap rules (distribution). */
       byPack?: Record<string, unknown>;
+      /** Import preview problems by sheet row (services/imports.ts). */
+      issues?: unknown[];
     },
   ) {
     super(body.error + (body.detail ? `: ${body.detail}` : ''));

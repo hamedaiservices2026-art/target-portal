@@ -136,14 +136,14 @@ describe('audit history', () => {
 describe('backup (paged)', () => {
   const listed = async (): Promise<Json> => json(await get('/backup'));
 
-  it('lists every table except sessions/login_failures with row counts and audits once', async () => {
+  it('lists every table except sessions/login_failures/import_passwords with row counts and audits once', async () => {
     const res = await get('/backup');
     expect(res.status).toBe(200);
     const body = await json(res);
     expect(Number.isNaN(Date.parse(body.exportedAt))).toBe(false);
     expect(body.limit).toBeGreaterThan(0);
     const names = (await all<{ name: string }>(env.DB, `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name NOT LIKE 'd1_%'`))
-      .map((t) => t.name).filter((n) => !['sessions', 'login_failures'].includes(n));
+      .map((t) => t.name).filter((n) => !['sessions', 'login_failures', 'import_passwords'].includes(n));
     expect(body.tables.map((t: Json) => t.name).sort()).toEqual(names.sort());
     expect(body.tables.find((t: Json) => t.name === 'month_leaves').rows).toBe(3);
     expect(await all(env.DB, `SELECT id FROM audit WHERE action = 'backup.download'`)).toHaveLength(1);

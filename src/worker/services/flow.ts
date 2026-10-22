@@ -143,7 +143,9 @@ export type LeafMove = { leafId: number; fromParent: number; toParent: number };
 export type TreeChange =
   | { kind: 'move_leaf' | 'move_node'; id: number; fromParent: number; toParent: number }
   | { kind: 'move_leaves'; moves: LeafMove[] }
-  | { kind: 'manager'; nodeId: number; userId: number | null };
+  | { kind: 'manager'; nodeId: number; userId: number | null }
+  /** Bulk variant of 'manager' (bulk import): same rule, one set-based batch for every node. */
+  | { kind: 'managers'; changes: { nodeId: number; userId: number | null }[] };
 
 export type TreeChangeResult = { appliedMonths: number[]; skippedMonths: number[]; error?: string };
 
@@ -167,6 +169,7 @@ export async function applyTreeChangeToOpenMonths(
   db: D1Database, change: TreeChange, actorId: number | null = null,
 ): Promise<TreeChangeResult> {
   if (change.kind === 'manager') return applyManager(db, change.nodeId, change.userId, actorId);
+  if (change.kind === 'managers') return applyManagers(db, change.changes, actorId);
   if (change.kind === 'move_node') return applyMoves(db, 'node', [{ id: change.id, to: change.toParent }], actorId, change.id);
   const moves = change.kind === 'move_leaves'
     ? change.moves.map((m) => ({ id: m.leafId, to: m.toParent }))
@@ -195,6 +198,40 @@ async function applyManager(db: D1Database, nodeId: number, userId: number | nul
        WHERE node_id = ? AND EXISTS (SELECT 1 FROM month_depts md WHERE md.month_id = month_nodes.month_id
                                        AND md.dept_id = month_nodes.dept_id AND md.state IN ('running', 'loading'))`,
     ).bind(userId, nodeId),
+  ]);
+  const row = audit!.results[0] as { detail_json: string } | undefined;
+  return row ? parseResult(row.detail_json) : { ...EMPTY };
+}
+
+/**
+ * applyManager for many nodes at once: two statements whatever the count (the
+ * audit row, node_id NULL, listing the months; then the UPDATE). Applied to
+ * every running and loading month containing the node, like a single change.
+ */
+async function applyManagers(
+  db: D1Database, changes: { nodeId: number; userId: number | null }[], actorId: number | null,
+): Promise<TreeChangeResult> {
+  if (changes.length === 0) return { ...EMPTY };
+  const payload = JSON.stringify(changes.map((c) => ({ n: c.nodeId, u: c.userId })));
+  const nodeIds = `(SELECT json_extract(value, '$.n') FROM json_each(?))`;
+  const months = (state: string) =>
+    `json((SELECT json_group_array(month_id) FROM (
+       SELECT DISTINCT mn.month_id FROM month_nodes mn JOIN month_depts md ON md.month_id = mn.month_id AND md.dept_id = mn.dept_id
+       WHERE mn.node_id IN ${nodeIds} AND md.state ${state} ORDER BY mn.month_id)))`;
+  const [audit] = await batch(db, [
+    db.prepare(
+      `INSERT INTO audit(at, user_id, action, month_id, node_id, detail_json)
+       SELECT ?, ?, 'tree.apply_month', NULL, NULL,
+              json_object('appliedMonths', ${months(`IN ('running', 'loading')`)}, 'skippedMonths', ${months(`= 'complete'`)})
+       WHERE EXISTS (SELECT 1 FROM month_nodes WHERE node_id IN ${nodeIds})
+       RETURNING detail_json`,
+    ).bind(new Date().toISOString(), actorId, payload, payload, payload),
+    db.prepare(
+      `WITH j AS MATERIALIZED (SELECT json_extract(value, '$.n') AS n, json_extract(value, '$.u') AS u FROM json_each(?))
+       UPDATE month_nodes SET manager_user_id = j.u FROM j
+       WHERE month_nodes.node_id = j.n AND EXISTS (SELECT 1 FROM month_depts md WHERE md.month_id = month_nodes.month_id
+                                                     AND md.dept_id = month_nodes.dept_id AND md.state IN ('running', 'loading'))`,
+    ).bind(payload),
   ]);
   const row = audit!.results[0] as { detail_json: string } | undefined;
   return row ? parseResult(row.detail_json) : { ...EMPTY };
