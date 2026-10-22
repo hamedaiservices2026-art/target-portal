@@ -224,6 +224,10 @@ describe('planHierarchy', () => {
     ]);
   });
 
+  it('reports every problem of a row: an unknown manager does not hide an unknown parent', () => {
+    expect(codes(planHierarchy([N(2, 'Sup B', 'Ghost', 'nobody')], ctx()).issues)).toEqual(['2:error:unknown_manager', '2:error:unknown_parent']);
+  });
+
   it('a node name that differs from an existing one only by letter case is refused', () => {
     const p = planHierarchy([N(2, 'sup a', 'Area')], ctx());
     expect(codes(p.issues)).toEqual(['2:error:case_mismatch']);

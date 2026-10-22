@@ -45,12 +45,15 @@ export type NodeImportRow = { line: number; dept: string; node: string; parent: 
 export type ImportRowOf<K extends ImportKind> =
   K extends 'users' ? UserImportRow : K extends 'packs' ? PackImportRow : NodeImportRow;
 
-export type IssueCode =
-  | 'required' | 'too_long' | 'invalid_value' | 'invalid_username' | 'invalid_email'
-  | 'password_short' | 'password_long' | 'duplicate' | 'self_demote' | 'user_disabled'
-  | 'case_mismatch' | 'unknown_department' | 'unknown_manager' | 'manager_disabled'
-  | 'unknown_parent' | 'parent_self' | 'cycle' | 'root_exists' | 'root_parent' | 'two_roots'
-  | 'too_deep' | 'too_many_moves' | 'no_manager';
+export const ISSUE_CODES = [
+  'required', 'too_long', 'invalid_value', 'invalid_username', 'invalid_email',
+  'password_short', 'password_long', 'duplicate', 'self_demote', 'user_disabled',
+  'case_mismatch', 'unknown_department', 'unknown_manager', 'manager_disabled',
+  'unknown_parent', 'parent_self', 'cycle', 'root_exists', 'root_parent', 'two_roots',
+  'too_deep', 'too_many_moves', 'no_manager',
+] as const;
+/** Each code has the text `imIssue_<code>` in src/web/i18n. */
+export type IssueCode = (typeof ISSUE_CODES)[number];
 
 /** `line` is the sheet row (null: about the whole file). `column` is the template header. */
 export type ImportIssue = {
@@ -476,7 +479,7 @@ export function planHierarchy(rows: NodeImportRow[], ctx: {
 
   // Pass 2: parents exist (in the file or the live tree of the same department).
   for (const g of good) {
-    if (g.parent === null || g.parent === g.name || is.failed(g.line)) continue;
+    if (g.parent === null || g.parent === g.name) continue; // checked even on a row with other errors: report them all
     if (!fileNodes.has(key(g.deptId, g.parent)) && !existing.has(key(g.deptId, g.parent))) {
       is.err(g.line, 'unknown_parent', C[2], { value: g.parent });
     }
