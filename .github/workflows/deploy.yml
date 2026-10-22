@@ -32,3 +32,4 @@ jobs:
           BOOTSTRAP_ADMIN_PASSWORD: ${{ secrets.BOOTSTRAP_ADMIN_PASSWORD }}
           BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
           MAIL_FROM: ${{ secrets.MAIL_FROM }}
+          APP_URL: ${{ secrets.APP_URL }}

@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 
 const DB_NAME = 'target-portal';
 const CONFIG_PATH = 'wrangler.jsonc';
-const OPTIONAL_SECRETS = ['BOOTSTRAP_ADMIN_PASSWORD', 'BREVO_API_KEY', 'MAIL_FROM'];
+const OPTIONAL_SECRETS = ['BOOTSTRAP_ADMIN_PASSWORD', 'BREVO_API_KEY', 'MAIL_FROM', 'APP_URL'];
 
 /** Strip // and /* *\/ comments and trailing commas from JSONC, respecting strings. */
 function stripJsonc(text) {

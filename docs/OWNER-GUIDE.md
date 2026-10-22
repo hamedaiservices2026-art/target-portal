@@ -29,7 +29,7 @@ Go to GitHub > your repository > **Settings** > **Secrets and variables** > **Ac
 | `MAIL_FROM` | The verified sender email address in Brevo (section 4). Optional. |
 | `APP_URL` | `https://target-portal.hamedaiservices2026.workers.dev` |
 
-Note on `APP_URL`: the current deploy script does not read this secret yet. Links in emails use the address the site was opened from, and the daily reminder emails (sent by the schedule, not by a click) have no link. If you want those links, ask Claude to wire `APP_URL` into the deploy.
+Note on `APP_URL`: it is used for the links in emails, including the daily deadline reminders. Set it exactly as shown, with no slash at the end.
 
 Rules for secrets:
 
@@ -121,7 +121,7 @@ The Deploy workflow currently also runs on pushes to the preview branch `build/p
 | `MAIL_FROM` | عنوان المرسل الذي تم توثيقه في Brevo (القسم ٤). اختياري. |
 | `APP_URL` | `https://target-portal.hamedaiservices2026.workers.dev` |
 
-ملاحظة عن `APP_URL`: سكربت النشر الحالي لا يقرأ هذا السرّ بعد. الروابط في رسائل البريد تستخدم العنوان الذي فُتح منه الموقع، أما رسائل التذكير اليومية (التي يرسلها الجدول الزمني وليس نقرة مستخدم) فتصل بلا رابط. إذا أردت هذه الروابط فاطلب من Claude ربط `APP_URL` بالنشر.
+ملاحظة عن `APP_URL`: يُستخدم للروابط في رسائل البريد، ومنها رسائل التذكير اليومية بالموعد النهائي. اكتبه كما هو تمامًا ودون شرطة مائلة في آخره.
 
 قواعد الأسرار:
 
