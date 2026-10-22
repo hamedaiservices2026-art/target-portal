@@ -61,6 +61,25 @@ The free plan allows 300 emails per day, which is enough for this portal.
 
 Other setup screens in the top menu: **Departments**, **Packs**, **Settings** (the distribution cap), **Hierarchy** (the tree of managers and the route mapping upload).
 
+### Bulk import from Excel (users, packs, hierarchy)
+
+The **Users**, **Packs** and **Hierarchy** screens each have an **Import from Excel** button.
+
+1. Press **Download template**. Keep the header row, delete the example row, and fill in one row per record.
+2. Press **Choose Excel file**. Nothing is saved yet: you see how many rows will be added, updated or left unchanged, and every problem with its Excel row number.
+3. Fix any **errors** in the file and choose it again. **Warnings** can be accepted.
+4. Press **Apply**. The whole file is saved together, or nothing is.
+
+Rules: the import only adds and updates. It never deletes or disables anything, and records that are not in the file stay as they are. Importing the same file again changes nothing. At most 2,000 rows per file.
+
+Template columns:
+
+| Screen | Columns | Notes |
+|---|---|---|
+| Users | `Username`, `Full name`, `Role`, `Password`, `Language`, `Email` | Role is `admin` or `manager`. Language (`en`/`ar`) and Email are optional. New user with a blank Password: the portal generates one and shows it **once** after Apply, with a **Download passwords** button. Existing user: blank Password keeps the current one; a value resets it and signs that user out. Passwords are never stored in History. Users with passwords are prepared one by one, so a big file takes a little while. |
+| Packs | `Code`, `Group`, `Sort order`, `Active` | Group is exactly `CSD`, `Water` or `LRB-Others`. Sort order and Active (`yes`/`no`) are optional. |
+| Hierarchy | `Department`, `Node name`, `Parent node name`, `Manager username` | Department is the department code. A row matches a node by department + node name, so node names must be unique in a department. Leave Parent node name blank only for the department head. Manager username must be an existing active user (import users first); blank keeps the current manager. Rows can be in any order. Moves and manager changes reach open months the same way as edits in the tree; at most 4 moves of nodes in an open month per file. |
+
 ## 6. Monthly checklist
 
 1. **Months** > **Open a new month**. Enter the month as YYYY-MM (for example 2026-11) and an optional deadline.
@@ -152,6 +171,25 @@ The Deploy workflow currently also runs on pushes to the preview branch `build/p
 3. غيّر كلمة مرور `admin` من **Users** > **Reset password** واحفظها سرًّا. دخول البداية ينشئ أول مدير فقط عندما لا يوجد مستخدمون، وبعد ذلك يصبح الحساب عاديًا.
 
 شاشات الإعداد الأخرى في القائمة العلوية: **Departments** (الأقسام)، **Packs** (العبوات)، **Settings** (الإعدادات: سقف التوزيع)، **Hierarchy** (الهيكل: شجرة المديرين ورفع ربط المسارات).
+
+### الاستيراد الجماعي من إكسل (المستخدمون، العبوات، الهيكل)
+
+في كل من شاشات **Users** و**Packs** و**Hierarchy** زر **Import from Excel** (استيراد من إكسل).
+
+1. اضغط **Download template** (تحميل النموذج). أبقِ صف العناوين، واحذف صف المثال، واكتب صفًا واحدًا لكل سجل.
+2. اضغط **Choose Excel file** (اختيار ملف إكسل). لن يُحفظ شيء بعد: سترى عدد الصفوف التي ستُضاف أو تُحدَّث أو تبقى دون تغيير، وكل مشكلة مع رقم صفها في ملف Excel.
+3. صحّح أي **أخطاء** في الملف ثم اختره من جديد. يمكن قبول **التنبيهات**.
+4. اضغط **Apply** (تطبيق). يُحفظ الملف كله معًا، أو لا يُحفظ منه شيء.
+
+القواعد: الاستيراد يضيف ويحدّث فقط. لا يحذف شيئًا ولا يعطّل شيئًا، وتبقى السجلات غير الموجودة في الملف كما هي. استيراد الملف نفسه مرة أخرى لا يغيّر شيئًا. الحد الأقصى 2,000 صف لكل ملف.
+
+أعمدة النماذج (تُكتب العناوين بالإنجليزية كما هي):
+
+| الشاشة | الأعمدة | ملاحظات |
+|---|---|---|
+| Users | `Username`، `Full name`، `Role`، `Password`، `Language`، `Email` | الدور `admin` أو `manager`. اللغة (`en`/`ar`) والبريد اختياريان. مستخدم جديد بكلمة مرور فارغة: تُنشئ البوابة كلمة مرور وتعرضها **مرة واحدة فقط** بعد التطبيق، مع زر **Download passwords** لتحميلها. مستخدم موجود: الفراغ يُبقي كلمة المرور الحالية، وأي قيمة تعيد تعيينها وتُخرج المستخدم من جلساته. لا تُحفظ كلمات المرور أبدًا في السجل (History). تُجهَّز كلمات المرور واحدة تلو الأخرى، لذا يستغرق الملف الكبير بعض الوقت. |
+| Packs | `Code`، `Group`، `Sort order`، `Active` | المجموعة إحدى القيم التالية تمامًا: `CSD` أو `Water` أو `LRB-Others`. ترتيب العرض والحالة Active (`yes`/`no`) اختياريان. |
+| Hierarchy | `Department`، `Node name`، `Parent node name`، `Manager username` | Department هو رمز القسم. يُطابَق الصف مع المستوى بالقسم واسم المستوى، لذا يجب ألا يتكرر اسم المستوى داخل القسم. اترك Parent node name فارغًا لرأس القسم فقط. يجب أن يكون Manager username مستخدمًا موجودًا ونشطًا (استورد المستخدمين أولًا)، والفراغ يُبقي المدير الحالي. ترتيب الصفوف حر. تنتقل عمليات النقل وتغيير المديرين إلى الأشهر المفتوحة كما يحدث عند التعديل في الشجرة، وبحد أقصى 4 عمليات نقل لمستويات داخل شهر مفتوح في كل ملف. |
 
 ## ٦. قائمة العمل الشهرية
 
