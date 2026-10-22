@@ -70,6 +70,8 @@ The **Users**, **Packs** and **Hierarchy** screens each have an **Import from Ex
 3. Fix any **errors** in the file and choose it again. **Warnings** can be accepted.
 4. Press **Apply**. The whole file is saved together, or nothing is.
 
+Tip: in Excel, format the **Username** and **Password** columns as **Text** before typing (Home > Number format > Text), so values like `00123456` keep their leading zeros. Passwords are used exactly as typed, spaces included.
+
 Rules: the import only adds and updates. It never deletes or disables anything, and records that are not in the file stay as they are. Importing the same file again changes nothing. At most 2,000 rows per file.
 
 Template columns:
@@ -180,6 +182,8 @@ The Deploy workflow currently also runs on pushes to the preview branch `build/p
 2. اضغط **Choose Excel file** (اختيار ملف إكسل). لن يُحفظ شيء بعد: سترى عدد الصفوف التي ستُضاف أو تُحدَّث أو تبقى دون تغيير، وكل مشكلة مع رقم صفها في ملف Excel.
 3. صحّح أي **أخطاء** في الملف ثم اختره من جديد. يمكن قبول **التنبيهات**.
 4. اضغط **Apply** (تطبيق). يُحفظ الملف كله معًا، أو لا يُحفظ منه شيء.
+
+نصيحة: في Excel نسّق عمودي **Username** و**Password** بتنسيق **نص** (Text) قبل الكتابة (الصفحة الرئيسية > تنسيق الأرقام > نص)، حتى تحتفظ القيم مثل `00123456` بالأصفار في أولها. تُستخدم كلمات المرور كما كُتبت تمامًا، بما فيها المسافات.
 
 القواعد: الاستيراد يضيف ويحدّث فقط. لا يحذف شيئًا ولا يعطّل شيئًا، وتبقى السجلات غير الموجودة في الملف كما هي. استيراد الملف نفسه مرة أخرى لا يغيّر شيئًا. الحد الأقصى 2,000 صف لكل ملف.
 
