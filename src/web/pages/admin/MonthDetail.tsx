@@ -23,7 +23,7 @@ const MAX_SHOWN = 300;
 const ISSUE_KEY: Record<IssueCode, TextKey> = {
   unknown_pack: 'mcIssueUnknownPack', period_mismatch: 'mcIssuePeriod', bad_cases: 'mcIssueBadCases',
   duplicate: 'mcIssueDuplicate', unmapped_leaf: 'mcIssueUnmapped', leaf_in_other_file: 'mcIssueOtherFile',
-  blank_salesman: 'mcIssueBlankSalesman', split_salesman: 'mcIssueSplitSalesman', all_zero_leaf: 'mcIssueAllZero',
+  blank_salesman: 'mcIssueBlankSalesman', blank_cases: 'mcIssueBlankCases', split_salesman: 'mcIssueSplitSalesman', all_zero_leaf: 'mcIssueAllZero',
   missing_pack: 'mcIssueMissingPack', no_rows: 'mcIssueNoRows',
 };
 

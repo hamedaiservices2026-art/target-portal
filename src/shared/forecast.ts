@@ -14,6 +14,7 @@ export interface RawRow {
   routeCode: string;
   salesmanId: string;
   pack: string;
+  /** null = blank cell (counts as 0, warning blank_cases); NaN = not a number (error bad_cases). */
   cases: number | null;
 }
 
@@ -79,15 +80,15 @@ function periodText(cell: unknown): string {
   return s; // anything else stays as text and fails the period check
 }
 
+/** null for a blank cell, NaN for anything that is not a number. */
 function casesValue(cell: unknown): number | null {
-  if (typeof cell === 'number') return Number.isFinite(cell) ? cell : null;
+  if (isBlank(cell)) return null;
+  if (typeof cell === 'number') return Number.isFinite(cell) ? cell : Number.NaN;
   if (typeof cell === 'string') {
-    const s = cell.trim();
-    if (s === '') return null;
-    const n = Number(s);
-    return Number.isFinite(n) ? n : null;
+    const n = Number(cell.trim());
+    return Number.isFinite(n) ? n : Number.NaN;
   }
-  return null;
+  return Number.NaN;
 }
 
 /** Thrown when no row of the sheet contains all six expected column names. */
@@ -155,6 +156,7 @@ interface LeafAcc {
   values: Map<PackCode, number>;
   salesmen: Map<string, number>; // non-blank ID -> row count, insertion order = first appearance
   hasBlankSalesman: boolean;
+  blankCases: number;
 }
 
 export function checkForecast(rows: RawRow[], ctx: ForecastContext): ForecastCheck {
@@ -212,10 +214,12 @@ export function checkForecast(rows: RawRow[], ctx: ForecastContext): ForecastChe
       leafUsable = true;
     }
 
-    const c = r.cases;
-    if (c === null || typeof c !== 'number' || !Number.isFinite(c) || c < 0) {
+    // A blank cell counts as 0 (warned once per route below); text and negatives are errors.
+    const blankCases = r.cases === null;
+    const c = blankCases ? 0 : r.cases;
+    if (typeof c !== 'number' || !Number.isFinite(c) || c < 0) {
       ok = false;
-      err('bad_cases', r.line, `Cases must be a number of zero or more, got ${c === null ? 'blank/non-numeric' : String(c)}.`);
+      err('bad_cases', r.line, `Cases must be a number of zero or more, got ${Number.isNaN(c) ? 'text that is not a number' : String(c)}.`);
     }
 
     if (leafUsable && packKnown) {
@@ -233,10 +237,11 @@ export function checkForecast(rows: RawRow[], ctx: ForecastContext): ForecastChe
 
     let acc = leaves.get(leafId);
     if (!acc) {
-      acc = { leafId, deliverySystem: ds, routeCode: route, firstLine: r.line, values: new Map(), salesmen: new Map(), hasBlankSalesman: false };
+      acc = { leafId, deliverySystem: ds, routeCode: route, firstLine: r.line, values: new Map(), salesmen: new Map(), hasBlankSalesman: false, blankCases: 0 };
       leaves.set(leafId, acc);
     }
     acc.values.set(pack, c as number);
+    if (blankCases) acc.blankCases += 1;
     if (salesman === '') acc.hasBlankSalesman = true;
     else acc.salesmen.set(salesman, (acc.salesmen.get(salesman) ?? 0) + 1);
   }
@@ -270,6 +275,9 @@ export function checkForecast(rows: RawRow[], ctx: ForecastContext): ForecastChe
 
     const label = `Route ${a.routeCode} (${a.deliverySystem})`;
     if (a.hasBlankSalesman) warn('blank_salesman', `${label} has a blank Salesman ID.`, a.firstLine);
+    if (a.blankCases > 0) {
+      warn('blank_cases', `${label} has ${a.blankCases} blank Cases cell${a.blankCases === 1 ? '' : 's'}, counted as 0.`, a.firstLine);
+    }
     if (a.salesmen.size > 1) {
       warn('split_salesman', `${label} has rows under ${a.salesmen.size} Salesman IDs (${[...a.salesmen.keys()].join(', ')}); using ${salesmanId}.`, a.firstLine);
     }

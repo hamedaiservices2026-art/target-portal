@@ -365,6 +365,7 @@ export const ar: Record<TextKey, string> = {
   mcIssueUnmapped: 'المسار غير مربوط بالهيكل التنظيمي',
   mcIssueOtherFile: 'المسار موجود في ملف آخر لهذا الشهر',
   mcIssueBlankSalesman: 'رقم المندوب فارغ',
+  mcIssueBlankCases: 'خانات كراتين فارغة (تُحسب صفراً)',
   mcIssueSplitSalesman: 'المسار مسجّل تحت رقمي مندوب',
   mcIssueAllZero: 'مسار قيمته صفر في كل العبوات',
   mcIssueMissingPack: 'عبوة غير موجودة في الملف',

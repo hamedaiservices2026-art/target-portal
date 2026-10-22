@@ -363,6 +363,7 @@ export const en = {
   mcIssueUnmapped: 'Route not placed in the hierarchy',
   mcIssueOtherFile: 'Route already in another file this month',
   mcIssueBlankSalesman: 'Blank Salesman ID',
+  mcIssueBlankCases: 'Blank Cases cells (counted as 0)',
   mcIssueSplitSalesman: 'Route under two Salesman IDs',
   mcIssueAllZero: 'Route with 0 in every pack',
   mcIssueMissingPack: 'Pack missing from the file',

@@ -77,15 +77,17 @@ describe('normalizeForecastRows', () => {
     expect(r.grids).toEqual([]);
   });
 
-  it('keeps unusable cases as null and non-date, non-string periods as text that will mismatch', () => {
+  it('blank cases become null, unusable cases NaN; non-date, non-string periods stay text that will mismatch', () => {
     const out = normalizeForecastRows([
       HEADER,
       ['2026-10', DS, '1', 'x', 'PEP', 'abc'],
       ['2026-10', DS, '2', 'x', 'PEP', true],
       ['2026-10', DS, '3', 'x', 'PEP', -4],
       [202610, DS, '4', 'x', 'PEP', 1],
+      ['2026-10', DS, '5', 'x', 'PEP', null],
+      ['2026-10', DS, '6', 'x', 'PEP', '  '],
     ]);
-    expect(out.map((r) => r.cases)).toEqual([null, null, -4, 1]);
+    expect(out.map((r) => r.cases)).toEqual([Number.NaN, Number.NaN, -4, 1, null, null]);
     expect(out[3]!.period).toBe('202610');
   });
 });
@@ -110,9 +112,15 @@ describe('checkForecast errors', () => {
     expect(r.errors).toMatchObject([{ code: 'period_mismatch', line: 7 }]);
   });
 
-  it.each([[null], [-1], [Number.NaN], [Number.POSITIVE_INFINITY]])('bad_cases for %s', (cases) => {
+  it.each([[-1], [-3], [Number.NaN], [Number.POSITIVE_INFINITY]])('bad_cases for %s', (cases) => {
     const r = checkForecast([row(7, '314019', 'PEP', cases)], ctx());
     expect(r.errors).toMatchObject([{ code: 'bad_cases', line: 7 }]);
+  });
+
+  it("text cases ('abc') and negatives (-3) from the sheet are errors", () => {
+    const rows = normalizeForecastRows([HEADER, ['2026-10', DS, '314019', 'S1', 'PEP', 'abc'], ['2026-10', DS, '314019', 'S1', 'MIR', -3]]);
+    const r = checkForecast(rows, ctx());
+    expect(r.errors.map((e) => [e.code, e.line])).toEqual([['bad_cases', 2], ['bad_cases', 3]]);
   });
 
   it('duplicate (same leaf + pack twice) flags the later row', () => {
@@ -153,6 +161,23 @@ describe('checkForecast errors', () => {
 });
 
 describe('checkForecast warnings', () => {
+  it('blank_cases: a blank Cases cell counts as 0, one warning per route at its first line with the count', () => {
+    const rows = normalizeForecastRows([
+      HEADER,
+      ['2026-10', DS, '314019', 'S1', 'PEP', 7],
+      ['2026-10', DS, '314019', 'S1', 'MIR', null],
+      ['2026-10', DS, '314019', 'S1', 'AQUA', ''],
+      ['2026-10', DS, '314037', 'S2', 'PEP', 3],
+    ]);
+    const r = checkForecast(rows, ctx());
+    expect(r.errors).toEqual([]);
+    const w = r.warnings.filter((x) => x.code === 'blank_cases');
+    expect(w).toMatchObject([{ level: 'warning', code: 'blank_cases', line: 2 }]);
+    expect(w[0]!.detail).toContain('2 blank');
+    expect(r.grids.find((g) => g.routeCode === '314019')!.values).toEqual({ PEP: 7, MIR: 0, AQUA: 0, LIPTON: 0 });
+  });
+
+
   it('blank_salesman: stores an empty ID', () => {
     const r = checkForecast([row(2, '314050', 'PEP', 5, '')], ctx());
     expect(r.warnings.filter((w) => w.code === 'blank_salesman')).toMatchObject([{ level: 'warning', line: 2 }]);
