@@ -10,13 +10,13 @@ import {
   SESSION_TTL_SECONDS,
   sha256Hex,
   verifyPassword,
+  LOGIN_MAX_FAILURES as MAX_FAILURES,
+  LOGIN_WINDOW_MS as WINDOW_MS,
   type AppEnv,
   type SessionUser,
 } from '../auth';
 import { batch, one, run } from '../db';
 
-const MAX_FAILURES = 5;
-const WINDOW_MS = 15 * 60 * 1000;
 const MAX_USERNAME = 100;
 const MAX_PASSWORD = 1024;
 

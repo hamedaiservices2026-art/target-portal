@@ -10,9 +10,11 @@
 // D1 budget per request (Free: 50 queries per invocation, ruling R10; each
 // statement of a batch counted): session 1 + reads 1-4 + ONE atomic write batch
 // of set-based statements (json_each, at most IMPORT_CHUNK rows each) + audit.
-// Worst cases: packs 1+1+10+1; users 1+2+(5+5)+4; hierarchy 1+4+14, then the
-// open-month propagation 2 (managers, set-based) + 6 per moved node (at most
-// HIERARCHY_MAX_OPEN_MOVES = 4) = 45.
+// Worst cases (measured with a query-counting test, test/worker/imports.test.ts):
+// packs 1+1+10+1 = 13; users 1+2+(5 chunks+2+1+1) = 13; password step 1+4+2 = 7;
+// hierarchy 1+4+(11 insert chunks+1 update+1 audit) + open-month propagation
+// 2 (managers, set-based) + 6 per moved node (at most HIERARCHY_MAX_OPEN_MOVES = 4)
+// = 44.
 //
 // Users: PBKDF2 (~5.3 ms CPU measured for 10,000 iterations) allows ONE hash or
 // check per request on the Free plan's ~10 ms. The browser calls the password
@@ -22,7 +24,7 @@ import {
   coerceImportRows, hasErrors, IMPORT_MAX_ROWS, PASSWORD_MAX, PASSWORD_MIN, planHierarchy, planPacks, planUsers,
   type ImportIssue, type ImportKind, type ImportRowOf, type StagedPassword,
 } from '../../shared/imports';
-import { hashPassword, verifyPassword } from '../auth';
+import { hashPassword, LOGIN_MAX_FAILURES, LOGIN_WINDOW_MS, verifyPassword } from '../auth';
 import { batch, insertJsonStatement, MAX_INSERT_ROWS } from '../db';
 import { auditStatement } from './audit';
 import { type TreeChange, type TreeChangeResult } from './flow';
@@ -62,7 +64,7 @@ async function writeAll(db: D1Database, stmts: D1PreparedStatement[]): Promise<D
   } catch (e) {
     const msg = e instanceof Error ? `${e.message} ${(e.cause as Error | undefined)?.message ?? ''}` : '';
     if (/UNIQUE constraint|FOREIGN KEY constraint|NOT NULL constraint/i.test(msg)) {
-      throw new ApiError(409, { error: 'conflict', detail: 'the data changed while importing; check the file again and re-apply' });
+      throw new ApiError(409, { error: 'conflict', detail: 'import_changed' });
     }
     throw e;
   }
@@ -108,18 +110,25 @@ function importId(v: unknown): string {
   return v;
 }
 
+/** Staged rows older than this instant are ignored everywhere (even before they are pruned). */
+const stageCutoff = (now = Date.now()): string => new Date(now - STAGE_TTL_MS).toISOString();
+
 async function usersPlan(db: D1Database, actorId: number, body: Obj) {
   const id = importId(body.importId);
   const rows = rowsOf('users', body);
+  const cutoff = stageCutoff();
   const [u, s] = await batch(db, [
     db.prepare(`SELECT id, username, name, email, role, lang, active FROM users`),
-    db.prepare(`SELECT username, pw_hash IS NOT NULL AS has_hash FROM import_passwords WHERE import_id = ? AND actor_id = ?`).bind(id, actorId),
+    db.prepare(
+      `SELECT username, pw_hash IS NOT NULL AS has_hash FROM import_passwords
+       WHERE import_id = ? AND actor_id = ? AND created_at >= ?`,
+    ).bind(id, actorId, cutoff),
   ]);
   const users = (u!.results as { id: number; username: string; name: string; email: string | null; role: 'admin' | 'manager'; lang: 'en' | 'ar'; active: number }[])
     .map((r) => ({ ...r, active: r.active === 1 }));
   const staged = new Map((s!.results as { username: string; has_hash: number }[])
     .map((r) => [r.username, (r.has_hash ? 'hash' : 'same') as StagedPassword]));
-  return { id, rows, plan: planUsers(rows, { users, actorId, staged }) };
+  return { id, rows, cutoff, plan: planUsers(rows, { users, actorId, staged }) };
 }
 
 export async function previewUsers(db: D1Database, actorId: number, body: Obj) {
@@ -145,6 +154,15 @@ export function generatePassword(length = 12): string {
  * current one (same -> staged as "no change"); 'hash' hashes it, or generates
  * one for a new user whose cell is blank. The generated password is returned
  * here, once, and never stored or logged.
+ *
+ * 'verify' answers whether a password is right, so it goes through the login
+ * throttle (ruling R4): the attempt is recorded in login_failures before the
+ * check (insert-first, atomic, like the login), removed again when the answer
+ * is "same", and more than LOGIN_MAX_FAILURES in the window is 429. A normal
+ * re-import checks each user once, so it never comes near the limit.
+ *
+ * A staged slot (import id + username) belongs to the admin who staged it:
+ * another admin's write to the same slot is refused (409 import_slot_taken).
  */
 export async function stagePassword(
   db: D1Database, actorId: number, body: Obj,
@@ -158,22 +176,38 @@ export async function stagePassword(
   if (given.length > PASSWORD_MAX) throw bad(`password must be at most ${PASSWORD_MAX} characters`);
 
   const now = new Date();
+  const nowIso = now.toISOString();
   const [, cur] = await batch(db, [
-    db.prepare(`DELETE FROM import_passwords WHERE created_at < ?`).bind(new Date(now.getTime() - STAGE_TTL_MS).toISOString()),
+    db.prepare(`DELETE FROM import_passwords WHERE created_at < ?`).bind(stageCutoff(now.getTime())),
     db.prepare(`SELECT pw_hash, pw_salt FROM users WHERE username = ?`).bind(username),
   ]);
   const user = cur!.results[0] as { pw_hash: string; pw_salt: string } | undefined;
-  const stage = (hash: string | null, salt: string | null) => db.prepare(
-    `INSERT INTO import_passwords(import_id, username, actor_id, pw_hash, pw_salt, created_at) VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(import_id, username) DO UPDATE SET actor_id = excluded.actor_id, pw_hash = excluded.pw_hash,
-       pw_salt = excluded.pw_salt, created_at = excluded.created_at`,
-  ).bind(id, username, actorId, hash, salt, now.toISOString()).run();
+  const stage = async (hash: string | null, salt: string | null) => {
+    const res = await db.prepare(
+      `INSERT INTO import_passwords(import_id, username, actor_id, pw_hash, pw_salt, created_at) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(import_id, username) DO UPDATE SET pw_hash = excluded.pw_hash, pw_salt = excluded.pw_salt,
+         created_at = excluded.created_at
+       WHERE import_passwords.actor_id = excluded.actor_id`,
+    ).bind(id, username, actorId, hash, salt, nowIso).run();
+    if ((res.meta.changes ?? 0) !== 1) throw new ApiError(409, { error: 'conflict', detail: 'import_slot_taken' });
+  };
 
   if (body.op === 'verify') {
     if (!user) throw bad('username does not exist; new users need op hash');
     if (!given) throw bad('a blank password keeps the current one; nothing to check');
+    const [attempt, counted] = await batch(db, [
+      db.prepare(`INSERT INTO login_failures(username, at) VALUES (?, ?) RETURNING rowid AS id`).bind(username, nowIso),
+      db.prepare(`SELECT COUNT(*) AS n FROM login_failures WHERE username = ? AND at > ?`)
+        .bind(username, new Date(now.getTime() - LOGIN_WINDOW_MS).toISOString()),
+    ]);
+    if (((counted!.results[0] as { n: number }).n) > LOGIN_MAX_FAILURES) {
+      throw new ApiError(429, { error: 'too_many_attempts' });
+    }
     const same = await verifyPassword(given, user.pw_hash, user.pw_salt); // the only PBKDF2 of this request
-    if (same) await stage(null, null);
+    if (same) {
+      await batch(db, [db.prepare(`DELETE FROM login_failures WHERE rowid = ?`).bind((attempt!.results[0] as { id: number }).id)]);
+      await stage(null, null);
+    }
     return { same };
   }
   if (user && !given) throw bad('a blank password keeps the current one; nothing to hash');
@@ -183,16 +217,21 @@ export async function stagePassword(
   return given ? { ok: true } : { ok: true, generated: password };
 }
 
-export async function applyUsers(db: D1Database, actorId: number, body: Obj): Promise<ApplyResult> {
-  const { id, rows, plan } = await usersPlan(db, actorId, body);
+export async function applyUsers(
+  db: D1Database, actorId: number, body: Obj,
+): Promise<ApplyResult & { passwordsSet: string[] }> {
+  const { id, rows, cutoff, plan } = await usersPlan(db, actorId, body);
   refuseErrors(plan.issues);
   if (plan.pending.length) {
     throw new ApiError(409, { error: 'conflict', detail: 'passwords_pending' });
   }
-  const result = { created: plan.create, updated: plan.update, unchanged: plan.unchanged, issues: plan.issues };
   const creates = plan.actions.filter((a) => a.kind === 'create');
   const updates = plan.actions.filter((a) => a.kind === 'update');
-  const resets = updates.filter((a) => a.setPassword).map((a) => a.id!);
+  const resetRows = updates.filter((a) => a.setPassword);
+  const resets = resetRows.map((a) => a.id!);
+  // Exactly the users whose password this apply sets (the browser shows generated passwords only for them).
+  const passwordsSet = [...creates, ...resetRows].sort((a, b) => a.line - b.line).map((a) => a.username);
+  const result = { created: plan.create, updated: plan.update, unchanged: plan.unchanged, issues: plan.issues, passwordsSet };
   const stmts: D1PreparedStatement[] = [];
   // A missing staged hash leaves pw_hash NULL: the NOT NULL constraint fails the whole batch (409).
   for (const part of chunks(creates)) {
@@ -201,9 +240,9 @@ export async function applyUsers(db: D1Database, actorId: number, body: Obj): Pr
        SELECT j.u, j.n, j.e, s.pw_hash, s.pw_salt, j.r, j.l, 1
        FROM (SELECT json_extract(value, '$.u') AS u, json_extract(value, '$.n') AS n, json_extract(value, '$.e') AS e,
                     json_extract(value, '$.r') AS r, json_extract(value, '$.l') AS l FROM json_each(?)) j
-       LEFT JOIN import_passwords s ON s.import_id = ? AND s.actor_id = ? AND s.username = j.u
+       LEFT JOIN import_passwords s ON s.import_id = ? AND s.actor_id = ? AND s.username = j.u AND s.created_at >= ?
        WHERE true`,
-    ).bind(JSON.stringify(part.map((a) => ({ u: a.username, n: a.name, e: a.email, r: a.role, l: a.lang }))), id, actorId));
+    ).bind(JSON.stringify(part.map((a) => ({ u: a.username, n: a.name, e: a.email, r: a.role, l: a.lang }))), id, actorId, cutoff));
   }
   for (const part of chunks(updates)) {
     stmts.push(db.prepare(
@@ -216,9 +255,9 @@ export async function applyUsers(db: D1Database, actorId: number, body: Obj): Pr
     const ids = JSON.stringify(resets);
     stmts.push(db.prepare(
       `UPDATE users SET pw_hash = s.pw_hash, pw_salt = s.pw_salt FROM import_passwords s
-       WHERE s.import_id = ? AND s.actor_id = ? AND s.pw_hash IS NOT NULL AND s.username = users.username
+       WHERE s.import_id = ? AND s.actor_id = ? AND s.created_at >= ? AND s.pw_hash IS NOT NULL AND s.username = users.username
          AND users.id IN (SELECT value FROM json_each(?))`,
-    ).bind(id, actorId, ids));
+    ).bind(id, actorId, cutoff, ids));
     // Like a single reset: the user is signed out everywhere; the admin's own sessions stay.
     stmts.push(db.prepare(`DELETE FROM sessions WHERE user_id IN (SELECT value FROM json_each(?)) AND user_id <> ?`).bind(ids, actorId));
   }

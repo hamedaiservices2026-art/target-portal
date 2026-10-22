@@ -15,6 +15,10 @@ export type AppEnv = { Bindings: Env; Variables: { user: SessionUser } };
 export const SESSION_COOKIE = 'sid';
 export const SESSION_TTL_SECONDS = 12 * 60 * 60;
 
+/** Ruling R4 throttle: more than this many failed password checks per username in the window -> 429. */
+export const LOGIN_MAX_FAILURES = 5;
+export const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+
 /**
  * Ruling R4 (docs/decisions.md): 10,000, not the 100,000 Workers allows,
  * because the Free plan gives ~10 ms CPU per request. The count is stored

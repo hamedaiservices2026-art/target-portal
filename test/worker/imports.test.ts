@@ -144,7 +144,7 @@ describe('users import', () => {
     expect(await one(env.DB, `SELECT COUNT(*) n FROM users`)).toEqual({ n: 2 }); // still nothing written to users
     expect((await post('/users/preview', { importId: ID, rows })).pending).toEqual([]);
 
-    expect(await post('/users/apply', { importId: ID, rows })).toMatchObject({ created: 2, updated: 0, unchanged: 1 });
+    expect(await post('/users/apply', { importId: ID, rows })).toMatchObject({ created: 2, updated: 0, unchanged: 1, passwordsSet: ['sara', 'omar'] });
     expect(await all(env.DB, `SELECT username, name, email, role, lang, active FROM users WHERE username IN ('sara', 'omar') ORDER BY username`)).toEqual([
       { username: 'omar', name: 'Omar', email: null, role: 'admin', lang: 'en', active: 1 },
       { username: 'sara', name: 'Sara Q', email: 'sara@x.com', role: 'manager', lang: 'ar', active: 1 },
@@ -198,6 +198,52 @@ describe('users import', () => {
     expect((await post('/users/password', { importId: ID, username: 'ali', password: '', op: 'hash' }, 400)).detail).toMatch(/blank/);
     expect((await post('/users/password', { importId: ID, username: 'nobody', password: 'secret-123', op: 'verify' }, 400)).detail).toMatch(/does not exist/);
     expect((await post('/users/password', { importId: ID, username: 'ali', password: 'secret-123', op: 'other' }, 400)).detail).toMatch(/op/);
+  });
+
+  it('wrong passwords in the verify step count as failed logins: the 6th is refused (429)', async () => {
+    await addUser('ali', 'right-password-1');
+    for (let i = 0; i < 5; i++) expect(await pw('ali', `wrong-password-${i}`, 'verify')).toEqual({ same: false });
+    const res = await post('/users/password', { importId: ID, username: 'ali', password: 'right-password-1', op: 'verify' }, 429);
+    expect(res.error).toBe('too_many_attempts');
+    // Insert-first like the login: the refused attempt is recorded too (5 wrong + the refused one).
+    expect(await one(env.DB, `SELECT COUNT(*) n FROM login_failures WHERE username = 'ali'`)).toEqual({ n: 6 });
+    expect((await login('ali', 'right-password-1')).status).toBe(429); // the same throttle as the login
+    // A right answer is not a failure.
+    await addUser('sara', 'sara-password');
+    expect(await pw('sara', 'sara-password', 'verify')).toEqual({ same: true });
+    expect(await one(env.DB, `SELECT COUNT(*) n FROM login_failures WHERE username = 'sara'`)).toEqual({ n: 0 });
+  });
+
+  it('a staged password older than an hour is ignored by preview and apply even before it is pruned', async () => {
+    const rows = [{ line: 2, username: 'newbie', name: 'N', role: 'manager', password: 'newbie-pass', lang: '', email: '' }];
+    await pw('newbie', 'newbie-pass', 'hash');
+    await run(env.DB, `UPDATE import_passwords SET created_at = ?`, new Date(Date.now() - 61 * 60 * 1000).toISOString());
+    expect((await post('/users/preview', { importId: ID, rows })).pending).toEqual([{ line: 2, username: 'newbie', op: 'hash' }]);
+    expect((await post('/users/apply', { importId: ID, rows }, 409)).detail).toBe('passwords_pending');
+    expect(await one(env.DB, `SELECT COUNT(*) n FROM users WHERE username = 'newbie'`)).toEqual({ n: 0 });
+  });
+
+  it('another admin cannot take over a staged slot (same import id and username)', async () => {
+    await addUser('boss2', 'boss2-password', 'admin');
+    const other = await sidFor('boss2', 'boss2-password');
+    await pw('newbie', 'newbie-pass', 'hash');
+    const before = await one(env.DB, `SELECT actor_id, pw_hash FROM import_passwords`);
+    const res = await call('POST', '/admin/import/users/password', { importId: ID, username: 'newbie', password: 'other-pass-1', op: 'hash' }, other);
+    expect(res.status).toBe(409);
+    expect((await json(res)).detail).toBe('import_slot_taken');
+    expect(await one(env.DB, `SELECT actor_id, pw_hash FROM import_passwords`)).toEqual(before);
+    expect(before!.actor_id).toBe(adminId);
+  });
+
+  it('apply reports whose password it set: a user created after the password step does not get the generated one', async () => {
+    const rows = [{ line: 2, username: 'newbie', name: 'N', role: 'manager', password: '', lang: '', email: '' }];
+    const gen = await pw('newbie', '', 'hash');
+    expect(gen.generated).toBeTruthy();
+    await addUser('newbie', 'own-password-1'); // created elsewhere meanwhile
+    const out = await post('/users/apply', { importId: ID, rows });
+    expect(out).toMatchObject({ created: 0, passwordsSet: [] });
+    expect((await login('newbie', 'own-password-1')).status).toBe(200);
+    expect((await login('newbie', gen.generated)).status).toBe(401);
   });
 
   it('server-side checks: duplicate usernames, self-demotion; nothing is written', async () => {
@@ -291,6 +337,20 @@ describe('hierarchy import', () => {
     expect((await auditOf('tree.apply_month')).length).toBe(2); // one for the manager changes, one for the move
   });
 
+  it('an open-month node moved under a node created by the same import: live tree moves, the month skips it (R20)', async () => {
+    await post('/hierarchy/apply', { rows: [R(2, 'Head', ''), R(3, 'Area 1', 'Head'), R(4, 'Sup', 'Area 1')] });
+    await run(env.DB, `INSERT INTO packs(code, grp, active, sort) VALUES ('P', 'CSD', 1, 0)`);
+    const m = (await json(await call('POST', '/admin/months', { period: '2026-11' }))).month.id;
+    const out = await post('/hierarchy/apply', { rows: [R(2, 'Area 3', 'Head'), R(3, 'Sup', 'Area 3')] });
+    expect(out).toMatchObject({ created: 1, updated: 1 });
+    expect(out.treeChange).toEqual({ appliedMonths: [], skippedMonths: [m] });
+    expect(await nodes()).toContainEqual({ name: 'Sup', parent: 'Area 3', manager: 'ali' });
+    const mn = await one<{ parent: string }>(env.DB,
+      `SELECT p.name AS parent FROM month_nodes s JOIN month_nodes p ON p.month_id = s.month_id AND p.node_id = s.parent_id
+       WHERE s.month_id = ? AND s.name = 'Sup'`, m);
+    expect(mn).toEqual({ parent: 'Area 1' });
+  });
+
   it('at most 4 moves of nodes that are in open months per import', async () => {
     const base = [R(2, 'Head', ''), R(3, 'Area', 'Head'), ...Array.from({ length: 5 }, (_, i) => R(4 + i, `S${i}`, 'Head'))];
     await post('/hierarchy/apply', { rows: base });
@@ -341,7 +401,72 @@ function counting(db: D1Database): { db: D1Database; n: () => number } {
   return { db: proxy, n: () => n };
 }
 
+/** Runs `before` against the real database just before the write batch (a concurrent change). */
+function racing(db: D1Database, before: () => Promise<unknown>): D1Database {
+  return new Proxy(db, {
+    get(target, prop) {
+      if (prop === 'batch') {
+        return async (stmts: D1PreparedStatement[]) => {
+          if (stmts.length > 1 || (stmts[0] as any)?.__write) await before();
+          return target.batch(stmts);
+        };
+      }
+      const v = (target as any)[prop];
+      return typeof v === 'function' ? v.bind(target) : v;
+    },
+  });
+}
+
+describe('apply is atomic: a concurrent change rolls the whole batch back (409)', () => {
+  it('hierarchy: a node with one of the new names appears meanwhile -> nothing of the file is written', async () => {
+    const tt = (await run(env.DB, `INSERT INTO departments(code, name) VALUES ('TT', 'TT')`)).lastRowId;
+    await addUser('ali');
+    const rows = [{ line: 2, dept: 'TT', node: 'Head', parent: '', manager: 'ali' }, { line: 3, dept: 'TT', node: 'Area', parent: 'Head', manager: 'ali' }];
+    let reads = 0;
+    const db = racing(env.DB, async () => {
+      if (reads++ === 1) await run(env.DB, `INSERT INTO nodes(dept_id, parent_id, name) VALUES (?, NULL, 'Other root')`, tt);
+    });
+    await expect(applyHierarchy(db, adminId, { rows })).rejects.toMatchObject({ status: 409, body: { error: 'conflict', detail: 'import_changed' } });
+    expect(await all(env.DB, `SELECT name FROM nodes`)).toEqual([{ name: 'Other root' }]);
+    expect(await auditOf('import.hierarchy')).toEqual([]);
+  });
+
+  it('users: the staged hash vanishes meanwhile -> no user of the file is created', async () => {
+    const ID = 'race-0001';
+    const rows = ['a1', 'a2'].map((u, i) => ({ line: i + 2, username: u, name: u, role: 'manager', password: 'password-123', lang: '', email: '' }));
+    for (const r of rows) await stagePassword(env.DB, adminId, { importId: ID, username: r.username, password: r.password, op: 'hash' });
+    let reads = 0;
+    const db = racing(env.DB, async () => {
+      if (reads++ === 1) await run(env.DB, `DELETE FROM import_passwords WHERE username = 'a2'`);
+    });
+    await expect(applyUsers(db, adminId, { importId: ID, rows })).rejects.toMatchObject({ status: 409 });
+    expect(await one(env.DB, `SELECT COUNT(*) n FROM users WHERE username IN ('a1', 'a2')`)).toEqual({ n: 0 });
+  });
+});
+
 describe('D1 query budget (50 per request on the Free plan; the session lookup costs 1 more)', () => {
+  it('maximum statements: 4 open-month moves, manager changes, 8 levels with 11 insert chunks (2000 rows)', async () => {
+    await run(env.DB, `INSERT INTO departments(code, name) VALUES ('TT', 'TT')`);
+    await addUser('ali');
+    await addUser('sara');
+    const R = (line: number, node: string, parent: string, manager = 'ali') => ({ line, dept: 'TT', node, parent, manager });
+    await post('/hierarchy/apply', { rows: [R(2, 'Head', ''), R(3, 'Area', 'Head'), ...Array.from({ length: 6 }, (_, i) => R(4 + i, `S${i}`, 'Head'))] });
+    await run(env.DB, `INSERT INTO packs(code, grp, active, sort) VALUES ('P', 'CSD', 1, 0)`);
+    expect((await call('POST', '/admin/months', { period: '2026-11' })).status).toBe(201);
+    const rows = [...Array.from({ length: 4 }, (_, i) => R(2 + i, `S${i}`, 'Area', 'sara')), R(6, 'S4', 'Head', 'sara'), R(7, 'S5', 'Head', 'sara')];
+    // Level sizes 501, 501, 501, 487, 1, 1, 1, 1 -> 2+2+2+1+1+1+1+1 = 11 insert statements (500 rows each at most).
+    const sizes = [501, 501, 501, 487, 1, 1, 1, 1];
+    sizes.forEach((n, lvl) => {
+      for (let i = 0; i < n; i++) rows.push(R(rows.length + 2, `L${lvl}-${i}`, lvl === 0 ? 'Area' : `L${lvl - 1}-0`));
+    });
+    expect(rows.length).toBe(2000);
+    const c = counting(env.DB);
+    const out = await applyHierarchy(c.db, adminId, { rows });
+    expect(out).toMatchObject({ created: 1994, updated: 6 });
+    expect(out.treeChange?.error).toBeUndefined();
+    expect(c.n() + 1).toBe(44); // the figure in services/imports.ts and docs/decisions.md
+  });
+
   it('worst-case hierarchy apply: 4 open-month moves, manager changes, 8 levels of new nodes, ~2000 rows', async () => {
     await run(env.DB, `INSERT INTO departments(code, name) VALUES ('TT', 'TT')`);
     await addUser('ali');
