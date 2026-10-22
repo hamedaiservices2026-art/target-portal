@@ -17,6 +17,7 @@ const ACTION_KEY: Record<string, TextKey> = {
   'node.create': 'hiNodeCreate', 'node.delete': 'hiNodeDelete', 'node.draft': 'hiNodeDraft', 'node.open': 'hiNodeOpen',
   'node.push': 'hiNodePush', 'node.reopen': 'hiNodeReopen', 'node.submit': 'hiNodeSubmit', 'node.update': 'hiNodeUpdate',
   'pack.create': 'hiPackCreate', 'pack.update': 'hiPackUpdate', 'settings.update': 'hiSettingsUpdate',
+  'import.hierarchy': 'hiImportHierarchy', 'import.packs': 'hiImportPacks', 'import.users': 'hiImportUsers',
   'tree.apply_month': 'hiTreeApply', 'user.create': 'hiUserCreate', 'user.password': 'hiUserPassword', 'user.update': 'hiUserUpdate',
 };
 

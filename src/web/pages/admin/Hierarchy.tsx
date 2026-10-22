@@ -7,6 +7,7 @@ import { api, ApiError } from '../../api';
 import {
   ConfirmButton, errText, Field, LoadError, PageHead, TreeChangeBanner, useResource, type TreeChange,
 } from '../../components/AdminBits';
+import { ImportPanel } from '../../components/ImportPanel';
 import { writeXlsx, readSheet } from '../../excel';
 import { explainErrors, MAPPING_COLUMNS, MAPPING_MAX_ROWS, parseMappingSheet, type ExplainedError, type LineError } from '../../mapping';
 import { t, tf, fmtNum, useLang, type TextKey } from '../../i18n';
@@ -161,6 +162,7 @@ export function Hierarchy() {
   const [flash, setFlash] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [map, setMap] = useState<MapState>({ kind: 'idle' });
+  const [importing, setImporting] = useState(false);
 
   useEffect(() => {
     setEditor(null);
@@ -288,7 +290,15 @@ export function Hierarchy() {
 
   return (
     <section data-testid="admin-hierarchy">
-      <PageHead title={t('navHierarchy')} intro={t('adHierIntro')} />
+      <PageHead title={t('navHierarchy')} intro={t('adHierIntro')}>
+        <button type="button" class="btn" aria-expanded={importing} onClick={() => setImporting(!importing)}>
+          {importing ? t('imClose') : t('imOpen')}
+        </button>
+      </PageHead>
+      {importing && (
+        <ImportPanel kind="hierarchy" example={{ dept: dept?.code, parent: nodes.find((n) => n.parent_id === null)?.name }}
+          onApplied={() => { reloadTree(); users.reload(); }} />
+      )}
       <div class="toolbar">
         <label for="h-dept">{t('adDepartment')}</label>
         <select id="h-dept" value={deptId ?? ''} onChange={(e) => pickDept(Number(e.currentTarget.value))}>

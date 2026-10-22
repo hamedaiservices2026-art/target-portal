@@ -3,6 +3,7 @@ import { useState } from 'preact/hooks';
 import type { PackDto } from '../../../worker/services/masters';
 import { api } from '../../api';
 import { errText, Field, LoadError, PageHead, useResource } from '../../components/AdminBits';
+import { ImportPanel } from '../../components/ImportPanel';
 import { t, useLang } from '../../i18n';
 
 export const PACK_GROUPS = ['CSD', 'Water', 'LRB-Others'] as const;
@@ -69,6 +70,7 @@ export function Packs() {
   const [err, setErr] = useState<string | null>(null);
   const [flash, setFlash] = useState('');
   const [busy, setBusy] = useState(false);
+  const [importing, setImporting] = useState(false);
 
   async function add(e: Event) {
     e.preventDefault();
@@ -92,7 +94,12 @@ export function Packs() {
 
   return (
     <section data-testid="admin-packs">
-      <PageHead title={t('navPacks')} intro={t('adPacksIntro')} />
+      <PageHead title={t('navPacks')} intro={t('adPacksIntro')}>
+        <button type="button" class="btn" aria-expanded={importing} onClick={() => setImporting(!importing)}>
+          {importing ? t('imClose') : t('imOpen')}
+        </button>
+      </PageHead>
+      {importing && <ImportPanel kind="packs" onApplied={res.reload} />}
       <form class="card ad-form" onSubmit={add} noValidate>
         <h2>{t('adPackAdd')}</h2>
         <div class="grid">

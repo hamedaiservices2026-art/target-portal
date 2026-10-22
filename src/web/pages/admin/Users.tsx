@@ -3,6 +3,7 @@ import { useState } from 'preact/hooks';
 import type { UserDto } from '../../../worker/services/masters';
 import { api } from '../../api';
 import { ConfirmButton, errText, Field, LoadError, PageHead, useResource } from '../../components/AdminBits';
+import { ImportPanel } from '../../components/ImportPanel';
 import { t, useLang } from '../../i18n';
 import { useSession } from '../../session';
 
@@ -122,6 +123,7 @@ export function Users() {
   const [resetting, setResetting] = useState<number | null>(null);
   const [flash, setFlash] = useState('');
   const [err, setErr] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
 
   const done = (msg: string) => {
     setForm(null);
@@ -148,8 +150,14 @@ export function Users() {
   return (
     <section data-testid="admin-users">
       <PageHead title={t('navUsers')} intro={t('adUsersIntro')}>
-        <button type="button" class="btn primary" onClick={() => { setFlash(''); setForm('new'); }}>{t('adUserAddBtn')}</button>
+        <span class="act">
+          <button type="button" class="btn" aria-expanded={importing} onClick={() => setImporting(!importing)}>
+            {importing ? t('imClose') : t('imOpen')}
+          </button>
+          <button type="button" class="btn primary" onClick={() => { setFlash(''); setForm('new'); }}>{t('adUserAddBtn')}</button>
+        </span>
       </PageHead>
+      {importing && <ImportPanel kind="users" onApplied={res.reload} />}
       {flash && <div class="banner ok" role="status">{flash}</div>}
       {err && <div class="alert" role="alert">{err}</div>}
       {form !== null && <UserForm key={String(form)} editing={editing} me={me?.id} onDone={done} />}
