@@ -153,8 +153,8 @@ export async function createUser(db: D1Database, actorId: number, body: Obj): Pr
   const { hash, salt } = await hashPassword(pw); // the only PBKDF2 of this request
   const [ins] = await writeBatch(db, [
     db.prepare(
-      `INSERT INTO users(username, name, email, pw_hash, pw_salt, role, lang, active)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING ${USER_COLS}`,
+      `INSERT INTO users(username, name, email, pw_hash, pw_salt, role, lang, active, must_change_pw)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1) RETURNING ${USER_COLS}`,
     ).bind(v.username, v.name, v.email, hash, salt, v.role, v.lang, v.active ? 1 : 0),
     auditStatement(db, actorId, 'user.create', {}, v, { lastInsertIdAs: 'id' }),
   ], 'username already exists');
@@ -200,7 +200,8 @@ export async function setUserPassword(db: D1Database, actorId: number, id: numbe
   if (!row) throw notFound();
   const { hash, salt } = await hashPassword(pw); // the only PBKDF2 of this request
   const stmts = [
-    db.prepare(`UPDATE users SET pw_hash = ?, pw_salt = ? WHERE id = ?`).bind(hash, salt, id),
+    // A reset by the admin of someone else's password must be changed at the next login.
+    db.prepare(`UPDATE users SET pw_hash = ?, pw_salt = ?, must_change_pw = ? WHERE id = ?`).bind(hash, salt, id === actorId ? 0 : 1, id),
   ];
   // Resetting someone else's password signs them out everywhere; the admin
   // changing their own keeps the current session.
@@ -211,14 +212,14 @@ export async function setUserPassword(db: D1Database, actorId: number, id: numbe
 
 // ---------- departments ----------
 
-export type DepartmentDto = { id: number; code: string; name: string };
+export type DepartmentDto = { id: number; code: string; name: string; workspace?: 'ops' | 'ka'; sort?: number };
 
 function deptCode(v: unknown): string {
   return text(v, 'code', 50).toUpperCase();
 }
 
 export async function listDepartments(db: D1Database): Promise<DepartmentDto[]> {
-  return all<DepartmentDto>(db, `SELECT id, code, name FROM departments ORDER BY code`);
+  return all<DepartmentDto>(db, `SELECT id, code, name, workspace, sort FROM departments ORDER BY workspace DESC, sort, code`);
 }
 
 export async function createDepartment(db: D1Database, actorId: number, body: Obj): Promise<DepartmentDto> {
@@ -323,6 +324,10 @@ export async function setCapPct(db: D1Database, actorId: number, body: Obj): Pro
       `INSERT INTO settings(key, value) VALUES ('cap_pct', ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
     ).bind(String(v)),
+    // The single cap sets every level's cap of the distribution rules.
+    db.prepare(
+      `UPDATE settings SET value = json_set(value, '$.caps.head', ?, '$.caps.manager', ?, '$.caps.supervisor', ?) WHERE key = 'rules_json'`,
+    ).bind(v, v, v),
     auditStatement(db, actorId, 'settings.update', {}, { changes: { capPct: { from: before, to: v } } }),
   ], 'conflict');
   return v;

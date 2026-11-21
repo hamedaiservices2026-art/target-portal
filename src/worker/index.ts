@@ -3,6 +3,7 @@ import type { AppEnv } from './auth';
 import adminRoutes from './routes/admin';
 import authRoutes from './routes/auth';
 import workRoutes from './routes/work';
+import cycleRoutes from './routes/cycle';
 import { sendDeadlineReminders } from './email';
 
 export type Env = {
@@ -52,6 +53,8 @@ app.get('/api/health', (c) => c.json({ ok: true }));
 app.route('/', authRoutes);
 app.route('/', adminRoutes);
 app.route('/', workRoutes);
+// After admin and work: their /api/admin/*, /api/my/* and /api/months/* guards cover these routes too.
+app.route('/', cycleRoutes);
 
 // Anything else under /api is an unknown endpoint. Non-/api paths never reach
 // the Worker: Static Assets serves them, falling back to index.html (SPA).

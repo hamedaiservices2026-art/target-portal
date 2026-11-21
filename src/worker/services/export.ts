@@ -124,6 +124,13 @@ export const BACKUP_TABLES: Record<string, BackupTable> = {
   month_leaves: { select: 'SELECT * FROM month_leaves', key: ['month_id', 'leaf_id'] },
   audit: { select: 'SELECT * FROM audit', key: ['id'] },
   email_log: { select: 'SELECT * FROM email_log', key: ['id'] },
+  dept_channels: { select: 'SELECT * FROM dept_channels', key: ['dept_id', 'channel'] },
+  user_roles: { select: 'SELECT * FROM user_roles', key: ['user_id', 'role', 'workspace'] },
+  data_routes: { select: 'SELECT * FROM data_routes', key: ['ws', 'kind', 'month', 'route_code'] },
+  data_months: { select: 'SELECT * FROM data_months', key: ['ws', 'kind', 'month'] },
+  cycles: { select: 'SELECT * FROM cycles', key: ['ws', 'period'] },
+  head_approvals: { select: 'SELECT * FROM head_approvals', key: ['period', 'dept_id'] },
+  notifications: { select: 'SELECT * FROM notifications', key: ['id'] },
 };
 
 export const BACKUP_DEFAULT_LIMIT = 200;

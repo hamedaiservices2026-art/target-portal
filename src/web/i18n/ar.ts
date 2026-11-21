@@ -113,6 +113,7 @@ export const ar: Record<TextKey, string> = {
   dsStOk: 'سليم',
   dsStOver: 'زيادة {n}',
   dsStShort: 'نقص {n}',
+  dsStPerson: 'تغيّر هدف شخص أكثر من حده',
   dsStMoved: 'نقل أكثر من الحد',
   dsStInvalid: 'رقم غير صالح',
   dsReset: 'إعادة',

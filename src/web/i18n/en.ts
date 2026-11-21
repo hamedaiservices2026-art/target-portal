@@ -111,6 +111,7 @@ export const en = {
   dsStOk: 'OK',
   dsStOver: 'Over by {n}',
   dsStShort: 'Short by {n}',
+  dsStPerson: 'One person changed too much',
   dsStMoved: 'Moved too much',
   dsStInvalid: 'Invalid number',
   dsReset: 'Reset',

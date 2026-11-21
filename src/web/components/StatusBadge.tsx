@@ -8,6 +8,7 @@ export function statusText(c: Pick<PackCheck, 'status' | 'diff'>): string {
     case 'over': return tf('dsStOver', { n: fmtNum(Math.abs(c.diff)) });
     case 'short': return tf('dsStShort', { n: fmtNum(Math.abs(c.diff)) });
     case 'moved_too_much': return t('dsStMoved');
+    case 'person_over_cap': return t('dsStPerson');
     default: return t('dsStInvalid');
   }
 }

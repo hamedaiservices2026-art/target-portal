@@ -7,7 +7,12 @@ import { one, run } from './db';
 
 export type Role = 'admin' | 'manager';
 export type Lang = 'en' | 'ar';
-export type SessionUser = { id: number; role: Role; lang: Lang; name: string };
+export type Workspace = 'ops' | 'ka';
+/**
+ * `cd`: the workspaces where the user is Commercial Director (user_roles).
+ * `mustChangePw`: first login, the password must be changed before anything else.
+ */
+export type SessionUser = { id: number; role: Role; lang: Lang; name: string; cd: Workspace[]; mustChangePw: boolean };
 
 /** Shared by every route module: `new Hono<AppEnv>()`. */
 export type AppEnv = { Bindings: Env; Variables: { user: SessionUser } };
@@ -124,9 +129,10 @@ export const requireUser = createMiddleware<AppEnv>(async (c, next) => {
   const sid = getCookie(c, SESSION_COOKIE);
   if (!sid) return c.json({ error: 'unauthenticated' }, 401);
   const token = await sha256Hex(sid);
-  const row = await one<SessionUser & { active: number; expires_at: string }>(
+  const row = await one<{ id: number; role: Role; lang: Lang; name: string; active: number; expires_at: string; cd: string | null; must_change_pw: number }>(
     c.env.DB,
-    `SELECT u.id, u.role, u.lang, u.name, u.active, s.expires_at
+    `SELECT u.id, u.role, u.lang, u.name, u.active, s.expires_at, u.must_change_pw,
+            (SELECT group_concat(r.workspace) FROM user_roles r WHERE r.user_id = u.id AND r.role = 'cd') AS cd
        FROM sessions s JOIN users u ON u.id = s.user_id
       WHERE s.token = ?`,
     token,
@@ -141,7 +147,12 @@ export const requireUser = createMiddleware<AppEnv>(async (c, next) => {
     return c.json({ error: 'unauthenticated' }, 401);
   }
   if (!row.active) return c.json({ error: 'unauthenticated' }, 401);
-  c.set('user', { id: row.id, role: row.role, lang: row.lang, name: row.name });
+  const cd = (row.cd ?? '').split(',').filter((w): w is Workspace => w === 'ops' || w === 'ka');
+  c.set('user', { id: row.id, role: row.role, lang: row.lang, name: row.name, cd, mustChangePw: row.must_change_pw === 1 });
+  // First login: only reading the session, changing the password and signing out are allowed.
+  if (row.must_change_pw === 1 && !/^\/api\/(me|auth\/logout)(\/|$)/.test(new URL(c.req.url).pathname)) {
+    return c.json({ error: 'password_change_required' }, 403);
+  }
   await next();
 });
 

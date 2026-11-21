@@ -3,7 +3,7 @@ import { useEffect, useState } from 'preact/hooks';
 import { api, ApiError } from './api';
 import { applyLang, getLang, langChosenWhileSignedOut, persistLang, setSignedIn, type Lang } from './i18n';
 
-export type User = { id: number; role: 'admin' | 'manager'; lang: Lang; name: string };
+export type User = { id: number; role: 'admin' | 'manager'; lang: Lang; name: string; cd?: ('ops' | 'ka')[]; mustChangePw?: boolean };
 export type Session = { status: 'loading' | 'in' | 'out'; user: User | null };
 
 let state: Session = { status: 'loading', user: null };

@@ -257,7 +257,7 @@ describe('sessions', () => {
     const res = await SELF.fetch('http://x/api/me', withSid(sid));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
-      user: { id: expect.any(Number), role: 'admin', lang: 'en', name: 'Name sara' },
+      user: { id: expect.any(Number), role: 'admin', lang: 'en', name: 'Name sara', cd: [], mustChangePw: false },
     });
   });
 

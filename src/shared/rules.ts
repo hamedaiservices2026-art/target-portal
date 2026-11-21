@@ -20,7 +20,18 @@ export function capFor(total: number, capPct: number): number {
  * whole number >= 0, capPct is not a finite number >= 0, or starts/values differ
  * in length). It takes precedence over over/short and is never ok.
  */
-export type PackStatus = 'ok' | 'over' | 'short' | 'moved_too_much' | 'invalid';
+export type PackStatus = 'ok' | 'over' | 'short' | 'person_over_cap' | 'moved_too_much' | 'invalid';
+
+/**
+ * Handover rules: rule 2 (one person's change <= their cap) and rule 3 (total
+ * moved <= the level cap) can each be switched off; a named person may have
+ * their own cap % (`personCapPct[i]`, undefined = the level cap).
+ */
+export interface RuleOptions {
+  rule2?: boolean;
+  rule3?: boolean;
+  personCapPct?: readonly (number | undefined)[];
+}
 
 export interface PackCheck {
   ok: boolean;
@@ -47,7 +58,7 @@ function finiteOrZero(n: number | undefined): number {
  * Never throws (the UI calls it while users type); unusable input yields
  * status 'invalid' with ok:false and finite numeric fields.
  */
-export function checkPack(total: number, starts: number[], values: number[], capPct: number): PackCheck {
+export function checkPack(total: number, starts: number[], values: number[], capPct: number, opts: RuleOptions = {}): PackCheck {
   const valid =
     starts.length === values.length &&
     isWholeCases(total) &&
@@ -58,16 +69,19 @@ export function checkPack(total: number, starts: number[], values: number[], cap
 
   const safeTotal = finiteOrZero(total);
   const cap = valid ? capFor(total, capPct) : finiteOrZero(Number.isFinite(capPct) && capPct >= 0 ? capFor(safeTotal, capPct) : 0);
+  const rule2 = opts.rule2 ?? true;
+  const rule3 = opts.rule3 ?? true;
   let sum = 0;
   let moved = 0;
-  let maxChange = 0;
+  let personOver = false;
   for (let i = 0; i < values.length; i++) {
     const v = finiteOrZero(values[i]);
     const delta = v - finiteOrZero(starts[i]);
     sum += v;
     if (delta > 0) moved += delta;
-    const abs = Math.abs(delta);
-    if (abs > maxChange) maxChange = abs;
+    const own = opts.personCapPct?.[i];
+    const personCap = own !== undefined && Number.isFinite(own) && own >= 0 ? capFor(safeTotal, own) : cap;
+    if (Math.abs(delta) > personCap) personOver = true;
   }
   const diff = sum - safeTotal;
   const status: PackStatus = !valid
@@ -76,9 +90,11 @@ export function checkPack(total: number, starts: number[], values: number[], cap
       ? 'over'
       : diff < 0
         ? 'short'
-        : moved > cap || maxChange > cap
+        : rule3 && moved > cap
           ? 'moved_too_much'
-          : 'ok';
+          : rule2 && personOver
+            ? 'person_over_cap'
+            : 'ok';
   return { ok: status === 'ok', status, total: safeTotal, sum, diff, moved, cap };
 }
 
@@ -88,6 +104,7 @@ export function checkAll(
   values: Grid[],
   packs: PackCode[],
   capPct: number,
+  opts: RuleOptions = {},
 ): { ok: boolean; byPack: Record<PackCode, PackCheck> } {
   const byPack: Record<PackCode, PackCheck> = {};
   let ok = true;
@@ -97,6 +114,7 @@ export function checkAll(
       starts.map((g) => g[pack] ?? 0),
       values.map((g) => g[pack] ?? 0),
       capPct,
+      opts,
     );
     byPack[pack] = check;
     if (!check.ok) ok = false;

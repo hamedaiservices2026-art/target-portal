@@ -124,6 +124,11 @@ test('admin opens a month, uploads the checked forecast, starts, pushes, exports
   const mctx = await browser.newContext();
   const mpage = await mctx.newPage();
   await signIn(mpage, MANAGER.username, MANAGER.password);
+  // First sign-in of an account Admin made: the person chooses their own password before anything else.
+  await expect(mpage.getByTestId('change-password')).toBeVisible();
+  await mpage.getByLabel('New password', { exact: true }).fill(MANAGER.password);
+  await mpage.getByLabel('New password again').fill(MANAGER.password);
+  await mpage.getByRole('button', { name: 'Save password' }).click();
   const task = mpage.getByTestId('task').filter({ hasText: ROOT });
   await expect(task.getByTestId('task-status')).toHaveText('In progress');
   await task.getByRole('link', { name: 'Open' }).click();

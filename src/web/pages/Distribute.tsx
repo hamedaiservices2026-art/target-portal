@@ -18,6 +18,7 @@ import { statusText } from '../components/StatusBadge';
 import { StatusPill } from '../components/StatusPill';
 import { fmtDeadline, fmtPeriod } from '../format';
 import { fmtNum, t, tf, useLang, type TextKey } from '../i18n';
+import { Benchmarks, ByTotal, SalesmanPanel } from './cycle/DistributeExtras';
 
 const GROUPS: PackGroup[] = ['CSD', 'Water', 'LRB-Others'];
 
@@ -162,6 +163,10 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
     return hits.length ? [hits, true] : [members.map((_m, i) => i), false];
   }, [members, q]);
 
+  const ruleOpts = useMemo(() => (ws ? {
+    rule2: ws.rules.rule2, rule3: ws.rules.rule3, personCapPct: ws.rules.personCapPct.map((x) => x ?? undefined),
+  } : {}), [ws]);
+
   // Per-pack checks, cached by the identity of the pack's raw array: an edit
   // replaces one pack's array, so only that pack is re-checked.
   const cache = useMemo(() => new WeakMap<string[], PackInfo>(), [ws]);
@@ -173,12 +178,12 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
       const invalid = nums.map((n) => Number.isNaN(n));
       hit = {
         nums, invalid, anyInvalid: invalid.some(Boolean),
-        check: checkPack(totals[pack] ?? 0, starts[pack] ?? [], nums, ws?.capPct ?? 0),
+        check: checkPack(totals[pack] ?? 0, starts[pack] ?? [], nums, ws?.capPct ?? 0, ruleOpts),
       };
       cache.set(r, hit);
     }
     return hit;
-  }, [raw, cache, totals, starts, ws]);
+  }, [raw, cache, totals, starts, ws, ruleOpts]);
 
   // Mirror unsaved edits for this version.
   useEffect(() => {
@@ -401,8 +406,8 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
 
       <p class="legend">
         <span><b>{t('dsRule1h')}</b> {t('dsRule1')}</span>
-        <span><b>{t('dsRule2h')}</b> {t('dsRule2')}</span>
-        <span><b>{t('dsRule3h')}</b> {t('dsRule3')}</span>
+        {ws.rules.rule2 && <span><b>{t('dsRule2h')}</b> {t('dsRule2')}</span>}
+        {ws.rules.rule3 && <span><b>{t('dsRule3h')}</b> {t('dsRule3')}</span>}
       </p>
 
       {readOnlyKey && <div class="banner info" data-testid="read-only">{t(readOnlyKey)}</div>}
@@ -466,6 +471,11 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
           <button type="button" class="btn" onClick={() => setConfirming(false)}>{t('dsCancel')}</button>
         </div>
       )}
+
+      <ByTotal ws={ws} codes={codes} ordered={ordered} info={info} totals={totals} editable={editable}
+        onApply={(next) => { setRaw((prev) => ({ ...prev, ...next })); touched(); }} />
+      <Benchmarks ws={ws} mid={mid} nid={nid} codes={codes} info={info} />
+      {leafTeam && <SalesmanPanel ws={ws} mid={mid} onChanged={() => void load()} />}
 
       <DistributionTable
         groups={groups} members={members} vis={vis} totals={totals} starts={starts} raw={raw} packIdx={packIdx}

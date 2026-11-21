@@ -1,0 +1,120 @@
+// Target cycle API (handover design): data store, Commercial Director step,
+// calculation, Head approval, rules settings, notifications, benchmarks.
+// Logic and validation live in services/cycle*.ts.
+import { Hono } from 'hono';
+import { requireUser, type AppEnv } from '../auth';
+import { h, p, type Ctx } from './handler';
+import { benchmarks, salesMonths, setSalesman } from '../services/benchmarks';
+import {
+  applyCalc, approveHead, getCalc, getCycle, listCycles, myApprovals, recallFromCd, restartHead, returnFromCd, returnHead,
+  saveCd, saveSettings, sendToCd, sendToHead, setDeptTarget, submitCd,
+} from '../services/cycle';
+import {
+  clearRouteMonths, dataStatus, listCdRoles, logUpload, readMonthData, readOrg, readRouteRows, saveMonthData, setCdRoles,
+  setChannels, setDeptWorkspace, uploadRouteRows, workspace,
+} from '../services/cycleData';
+import { forbidden, parseId } from '../services/masters';
+import { listNotifications, markRead } from '../services/notify';
+import { getRules, setRules } from '../services/rulesSettings';
+
+const cycle = new Hono<AppEnv>();
+
+const ws = (c: Ctx) => workspace(c.req.param('ws'));
+const per = (c: Ctx) => p(c, 'period');
+/** A JSON string built by SQLite, sent as is. */
+const raw = (c: Ctx, json: string) => c.body(json, 200, { 'Content-Type': 'application/json; charset=UTF-8' });
+
+/** Admin, or the Commercial Director of this workspace. */
+function adminOrCd(c: Ctx): void {
+  const u = c.var.user;
+  if (u.role !== 'admin' && !u.cd.includes(ws(c))) throw forbidden();
+}
+
+// ---------- admin only ----------
+// Mounted after routes/admin.ts, whose `/api/admin/*` guard (requireUser +
+// requireAdmin) already runs before these handlers.
+
+cycle.get('/api/admin/rules', h(async (c, db) => c.json(await getRules(db))));
+cycle.put('/api/admin/rules', h(async (c, db, me, body) => c.json(await setRules(db, me, await body()))));
+
+cycle.put('/api/admin/departments/:id/workspace', h(async (c, db, me, body) => {
+  await setDeptWorkspace(db, me, parseId(p(c, 'id')), await body());
+  return c.json({ ok: true });
+}));
+cycle.put('/api/admin/departments/:id/channels', h(async (c, db, me, body) =>
+  c.json(await setChannels(db, me, parseId(p(c, 'id')), await body()))));
+cycle.get('/api/admin/cd-roles', h(async (c, db) => c.json({ roles: await listCdRoles(db) })));
+cycle.put('/api/admin/users/:id/cd', h(async (c, db, me, body) => c.json(await setCdRoles(db, me, parseId(p(c, 'id')), await body()))));
+
+cycle.post('/api/admin/data/:ws/routes/clear', h(async (c, db, me, body) => c.json(await clearRouteMonths(db, me, ws(c), await body()))));
+cycle.post('/api/admin/data/:ws/routes', h(async (c, db, me, body) => c.json(await uploadRouteRows(db, me, ws(c), await body()))));
+cycle.post('/api/admin/data/:ws/log', h(async (c, db, me, body) => {
+  await logUpload(db, me, ws(c), await body());
+  return c.json({ ok: true });
+}));
+cycle.post('/api/admin/data/:ws/months', h(async (c, db, me, body) => c.json(await saveMonthData(db, me, ws(c), await body()))));
+
+cycle.put('/api/admin/cycle/:ws/:period/settings', h(async (c, db, me, body) => c.json({ settings: await saveSettings(db, me, ws(c), per(c), await body()) })));
+cycle.post('/api/admin/cycle/:ws/:period/cd/send', h(async (c, db, me, body) => {
+  await sendToCd(db, me, ws(c), per(c), await body());
+  return c.json({ ok: true });
+}));
+cycle.post('/api/admin/cycle/:ws/:period/cd/recall', h(async (c, db, me) => {
+  await recallFromCd(db, me, ws(c), per(c));
+  return c.json({ ok: true });
+}));
+cycle.put('/api/admin/cycle/:ws/:period/dept-target', h(async (c, db, me, body) => {
+  await setDeptTarget(db, me, ws(c), per(c), await body());
+  return c.json({ ok: true });
+}));
+cycle.put('/api/admin/cycle/:ws/:period/calc', h(async (c, db, me, body) => c.json(await applyCalc(db, me, ws(c), per(c), await body()))));
+cycle.post('/api/admin/cycle/:ws/:period/heads/:deptId/send', h(async (c, db, me) =>
+  c.json(await sendToHead(db, me, ws(c), per(c), parseId(p(c, 'deptId'))))));
+cycle.post('/api/admin/cycle/:ws/:period/heads/:deptId/restart', h(async (c, db, me) => {
+  await restartHead(db, me, ws(c), per(c), parseId(p(c, 'deptId')));
+  return c.json({ ok: true });
+}));
+
+// ---------- signed-in users ----------
+// `/api/my/*` and `/api/months/*` are already guarded by routes/work.ts (mounted before).
+cycle.use('/api/cycle/*', requireUser);
+cycle.use('/api/data/*', requireUser);
+
+// Data reads: Admin and the CD (others see sales through their own scope: benchmarks).
+cycle.get('/api/data/:ws/status', h(async (c, db) => { adminOrCd(c); return c.json({ status: await dataStatus(db, ws(c)) }); }));
+cycle.get('/api/data/:ws/routes', h(async (c, db) => { adminOrCd(c); return raw(c, await readRouteRows(db, ws(c), c.req.query('kind'), c.req.query('month'))); }));
+cycle.get('/api/data/:ws/months', h(async (c, db) => { adminOrCd(c); return raw(c, await readMonthData(db, ws(c), c.req.query('kind'))); }));
+cycle.get('/api/data/:ws/org', h(async (c, db) => { adminOrCd(c); return c.json(await readOrg(db, ws(c))); }));
+cycle.get('/api/data/:ws/sales-months', h(async (c, db) => c.json({ months: await salesMonths(db, ws(c)) })));
+
+cycle.get('/api/cycle/:ws', h(async (c, db) => { adminOrCd(c); return c.json({ cycles: await listCycles(db, ws(c)) }); }));
+cycle.get('/api/cycle/:ws/:period', h(async (c, db) => c.json(await getCycle(db, c.var.user, ws(c), per(c)))));
+cycle.get('/api/cycle/:ws/:period/calc', h(async (c, db) => raw(c, await getCalc(db, c.var.user, ws(c), per(c)))));
+cycle.put('/api/cycle/:ws/:period/cd', h(async (c, db, _me, body) => c.json(await saveCd(db, c.var.user, ws(c), per(c), await body()))));
+cycle.post('/api/cycle/:ws/:period/cd/submit', h(async (c, db) => c.json(await submitCd(db, c.var.user, ws(c), per(c)))));
+cycle.post('/api/cycle/:ws/:period/cd/return', h(async (c, db, _me, body) => {
+  await returnFromCd(db, c.var.user, ws(c), per(c), await body());
+  return c.json({ ok: true });
+}));
+cycle.post('/api/cycle/:ws/:period/heads/:deptId/approve', h(async (c, db) => {
+  await approveHead(db, c.env, c.var.user, ws(c), per(c), parseId(p(c, 'deptId')));
+  return c.json({ ok: true });
+}));
+cycle.post('/api/cycle/:ws/:period/heads/:deptId/return', h(async (c, db, _me, body) => {
+  await returnHead(db, c.var.user, ws(c), per(c), parseId(p(c, 'deptId')), await body());
+  return c.json({ ok: true });
+}));
+
+cycle.get('/api/my/approvals', h(async (c, db, me) => c.json({ approvals: await myApprovals(db, me) })));
+cycle.get('/api/my/notifications', h(async (c, db, me) => c.json(await listNotifications(db, me))));
+cycle.post('/api/my/notifications/read', h(async (c, db, me) => {
+  await markRead(db, me);
+  return c.json({ ok: true });
+}));
+
+cycle.get('/api/months/:mid/nodes/:nid/benchmarks', h(async (c, db) =>
+  raw(c, await benchmarks(db, c.var.user, parseId(p(c, 'mid')), parseId(p(c, 'nid')), c.req.query('months')))));
+cycle.put('/api/months/:mid/leaves/:leafId/salesman', h(async (c, db, _me, body) =>
+  c.json(await setSalesman(db, c.var.user, parseId(p(c, 'mid')), parseId(p(c, 'leafId')), await body()))));
+
+export default cycle;
