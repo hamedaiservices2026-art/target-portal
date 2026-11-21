@@ -1,91 +1,9 @@
 /**
- * Distribution rules and the "By total" rebalance (handover sections 6 and 7).
- * Pure module.
- *
- * Rule 1 (always): every pack still adds up to its locked target.
- * Rule 2 (switchable): one person can change by at most their cap % of the
- *   pack target. A named person may have their own cap % (exception).
- * Rule 3 (switchable): total cases moved in a pack can't exceed the level's
- *   cap % of the pack target.
- * Caps are whole cases, rounded down: 5% of 19 = 0, so packs under 20 cases
- * can't move at a 5% cap.
+ * The "By total" rebalance of the distribution page (handover section 7).
+ * Pure module. The rule checks themselves live in ../rules.ts (checkPack with
+ * RuleOptions: rules 2 and 3 switchable, per-person cap exceptions).
  */
 import { largestRemainder } from '../rounding';
-import { capFor } from '../rules';
-
-export interface RuleSettings {
-  /** The level's cap % (Head, Manager or Supervisor; 5 by default). */
-  capPct: number;
-  rule2: boolean;
-  rule3: boolean;
-}
-
-export type RuleStatus = 'ok' | 'over' | 'short' | 'person_over_cap' | 'moved_too_much' | 'invalid';
-
-export interface RuleCheck {
-  ok: boolean;
-  status: RuleStatus;
-  total: number;
-  sum: number;
-  /** sum - total. */
-  diff: number;
-  /** Sum of increases over the starting values. */
-  moved: number;
-  /** Rule 3 cap (level cap % of total). */
-  cap: number;
-  /** Rule 2 cap per person (exceptions applied). */
-  personCaps: number[];
-  /** Indexes of people over their own cap (rule 2), whether or not rule 2 is on. */
-  overCap: number[];
-}
-
-function whole(n: number | undefined): n is number {
-  return n !== undefined && Number.isInteger(n) && n >= 0;
-}
-
-/**
- * Checks one pack. `personCapPct[i]` is person i's own cap % (an exception),
- * or undefined for the level cap. Never throws.
- */
-export function checkPackRules(
-  total: number,
-  starts: readonly number[],
-  values: readonly number[],
-  settings: RuleSettings,
-  personCapPct: readonly (number | undefined)[] = [],
-): RuleCheck {
-  const capOk = Number.isFinite(settings.capPct) && settings.capPct >= 0;
-  const valid = whole(total) && starts.length === values.length && starts.every(whole) && values.every(whole) && capOk;
-  const t = whole(total) ? total : 0;
-  const cap = capOk ? capFor(t, settings.capPct) : 0;
-  const personCaps = values.map((_, i) => {
-    const p = personCapPct[i];
-    return p !== undefined && Number.isFinite(p) && p >= 0 ? capFor(t, p) : cap;
-  });
-  let sum = 0;
-  let moved = 0;
-  const overCap: number[] = [];
-  values.forEach((raw, i) => {
-    const v = Number.isFinite(raw) ? raw : 0;
-    const s = Number.isFinite(starts[i]) ? starts[i]! : 0;
-    sum += v;
-    if (v > s) moved += v - s;
-    if (Math.abs(v - s) > personCaps[i]!) overCap.push(i);
-  });
-  const diff = sum - t;
-  const status: RuleStatus = !valid
-    ? 'invalid'
-    : diff > 0
-      ? 'over'
-      : diff < 0
-        ? 'short'
-        : settings.rule2 && overCap.length > 0
-          ? 'person_over_cap'
-          : settings.rule3 && moved > cap
-            ? 'moved_too_much'
-            : 'ok';
-  return { ok: status === 'ok', status, total: t, sum, diff, moved, cap, personCaps, overCap };
-}
 
 export class RebalanceError extends Error {}
 

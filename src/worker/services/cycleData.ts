@@ -1,0 +1,253 @@
+// Admin data store for the 8-step start (handover section 4): route-level
+// history (sales, previous targets) packed per route and month, and month-level
+// data (New Target, AOP, full-year target, department & channel targets).
+//
+// The browser parses the Excel files and sends checked rows; reads are built
+// as ONE JSON string by SQLite (json_group_array / json_group_object), so the
+// Worker never parses the stored values (CPU budget, docs/decisions.md).
+import type { Workspace } from '../auth';
+import { all, insertJsonStatement, MAX_INSERT_ROWS, one } from '../db';
+import { auditStatement } from './audit';
+import { ApiError, bad, writeBatch, type Obj } from './masters';
+
+export const ROUTE_KINDS = ['sales', 'prev_target'] as const;
+export type RouteKind = (typeof ROUTE_KINDS)[number];
+export const MONTH_KINDS = ['new_target', 'aop', 'fy_target', 'dept_channel'] as const;
+export type MonthKind = (typeof MONTH_KINDS)[number];
+
+const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+const MAX_VALUE = 1_000_000_000;
+/** Month-level JSON larger than this is refused (D1 values are limited to 2 MB). */
+const MAX_MONTH_JSON = 1_500_000;
+
+export function workspace(v: string | undefined): Workspace {
+  if (v === 'ops' || v === 'ka') return v;
+  throw new ApiError(404, { error: 'not_found' });
+}
+
+export function month(v: unknown, field = 'month'): string {
+  if (typeof v !== 'string' || !MONTH_RE.test(v)) throw bad(`${field} must be YYYY-MM`);
+  return v;
+}
+
+function routeKind(v: unknown): RouteKind {
+  if (typeof v === 'string' && (ROUTE_KINDS as readonly string[]).includes(v)) return v as RouteKind;
+  throw bad(`kind must be one of ${ROUTE_KINDS.join(', ')}`);
+}
+
+function monthKind(v: unknown): MonthKind {
+  if (typeof v === 'string' && (MONTH_KINDS as readonly string[]).includes(v)) return v as MonthKind;
+  throw bad(`kind must be one of ${MONTH_KINDS.join(', ')}`);
+}
+
+/** {pack: cases}: finite numbers >= 0 (sales may carry decimals; targets are rounded by the caller). */
+function packValues(v: unknown, where: string): Record<string, number> {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) throw bad(`${where}: values must be an object of pack to cases`);
+  const out: Record<string, number> = {};
+  for (const [k, n] of Object.entries(v as Obj)) {
+    if (!k || k.length > 100) throw bad(`${where}: bad pack name`);
+    if (typeof n !== 'number' || !Number.isFinite(n) || Math.abs(n) > MAX_VALUE) throw bad(`${where}: cases of ${k} must be a number`);
+    out[k] = n;
+  }
+  return out;
+}
+
+/** Removes the given months of a route-level kind before a re-upload ("a month already loaded is replaced, others are kept"). */
+export async function clearRouteMonths(db: D1Database, actorId: number, ws: Workspace, body: Obj): Promise<{ removed: number }> {
+  const kind = routeKind(body.kind);
+  if (!Array.isArray(body.months) || body.months.length === 0 || body.months.length > 60) throw bad('months must be a list of 1 to 60 months');
+  const months = body.months.map((m) => month(m));
+  const res = await writeBatch(db, [
+    db.prepare(`DELETE FROM data_routes WHERE ws = ? AND kind = ? AND month IN (SELECT value FROM json_each(?))`).bind(ws, kind, JSON.stringify(months)),
+    auditStatement(db, actorId, `data.${kind}.clear`, {}, { ws, months }),
+  ], 'conflict');
+  return { removed: res[0]!.meta.changes ?? 0 };
+}
+
+/** Upserts up to 200 route rows: [{month, routeCode, values, extra?}]. */
+export async function uploadRouteRows(db: D1Database, actorId: number, ws: Workspace, body: Obj): Promise<{ count: number }> {
+  const kind = routeKind(body.kind);
+  if (!Array.isArray(body.rows) || body.rows.length === 0) throw bad('rows must be a non-empty list');
+  if (body.rows.length > MAX_INSERT_ROWS) throw new ApiError(413, { error: 'too_many_rows', detail: `at most ${MAX_INSERT_ROWS} rows per batch` });
+  const seen = new Set<string>();
+  const rows = body.rows.map((r, i) => {
+    const o = r as Obj;
+    const where = `row ${i + 1}`;
+    const m = month(o?.month, `${where} month`);
+    if (typeof o.routeCode !== 'string' || !o.routeCode.trim() || o.routeCode.length > 100) throw bad(`${where}: routeCode is required`);
+    const code = o.routeCode.trim();
+    const key = `${m}|${code}`;
+    if (seen.has(key)) throw bad(`${where}: route ${code} appears twice for ${m}`);
+    seen.add(key);
+    let extra: string | null = null;
+    if (o.extra !== undefined && o.extra !== null) {
+      if (typeof o.extra !== 'object' || Array.isArray(o.extra)) throw bad(`${where}: extra must be an object`);
+      extra = JSON.stringify(o.extra);
+      if (extra.length > 2000) throw bad(`${where}: extra is too long`);
+    }
+    return { ws, kind, month: m, route_code: code, extra_json: extra, values_json: JSON.stringify(packValues(o.values, where)) };
+  });
+  await writeBatch(db, [
+    insertJsonStatement(db, 'data_routes', ['ws', 'kind', 'month', 'route_code', 'extra_json', 'values_json'], rows, {
+      onConflict: `ON CONFLICT(ws, kind, month, route_code) DO UPDATE SET extra_json = excluded.extra_json, values_json = excluded.values_json`,
+    }),
+  ], 'conflict');
+  return { count: rows.length };
+}
+
+/** Logs one audit row for a finished upload (the browser calls it after the last batch). */
+export async function logUpload(db: D1Database, actorId: number, ws: Workspace, body: Obj): Promise<void> {
+  const kind = typeof body.kind === 'string' ? body.kind.slice(0, 40) : 'unknown';
+  const months = Array.isArray(body.months) ? body.months.filter((m) => typeof m === 'string').slice(0, 60) : [];
+  const count = typeof body.count === 'number' ? body.count : null;
+  const file = typeof body.file === 'string' ? body.file.slice(0, 200) : null;
+  await auditStatement(db, actorId, `data.${kind}.upload`, {}, { ws, months, count, file }).run();
+}
+
+/** Route rows of one kind and month as one JSON array `[{r, v, x}]`, built by SQLite. */
+export async function readRouteRows(db: D1Database, ws: Workspace, kindRaw: string | undefined, monthRaw: string | undefined): Promise<string> {
+  const kind = routeKind(kindRaw);
+  const m = month(monthRaw);
+  const row = await one<{ j: string | null }>(db,
+    `SELECT json_group_array(json_object('r', route_code, 'v', json(values_json), 'x', json(extra_json))) AS j
+     FROM (SELECT route_code, values_json, extra_json FROM data_routes WHERE ws = ? AND kind = ? AND month = ? ORDER BY route_code)`,
+    ws, kind, m);
+  return row?.j ?? '[]';
+}
+
+/** Saves one month-level dataset (replacing that month). */
+export async function saveMonthData(db: D1Database, actorId: number, ws: Workspace, body: Obj): Promise<{ month: string }> {
+  const kind = monthKind(body.kind);
+  const m = month(body.month);
+  const v = body.values;
+  if (!v || typeof v !== 'object' || Array.isArray(v)) throw bad('values must be an object');
+  const json = JSON.stringify(v);
+  if (json.length > MAX_MONTH_JSON) throw new ApiError(413, { error: 'too_many_rows', detail: 'the month data is too large' });
+  await writeBatch(db, [
+    db.prepare(
+      `INSERT INTO data_months(ws, kind, month, values_json, uploaded_by, uploaded_at) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(ws, kind, month) DO UPDATE SET values_json = excluded.values_json, uploaded_by = excluded.uploaded_by, uploaded_at = excluded.uploaded_at`,
+    ).bind(ws, kind, m, json, actorId, new Date().toISOString()),
+    auditStatement(db, actorId, `data.${kind}.upload`, {}, { ws, month: m }),
+  ], 'conflict');
+  return { month: m };
+}
+
+/** Every month of a month-level kind as one JSON object `{month: values}`, built by SQLite. */
+export async function readMonthData(db: D1Database, ws: Workspace, kindRaw: string | undefined): Promise<string> {
+  const kind = monthKind(kindRaw);
+  const row = await one<{ j: string | null }>(db,
+    `SELECT json_group_object(month, json(values_json)) AS j FROM data_months WHERE ws = ? AND kind = ?`, ws, kind);
+  return row?.j ?? '{}';
+}
+
+export type DataStatus = { kind: string; month: string; rows: number; uploadedAt: string | null }[];
+
+/** What is loaded: route rows per kind and month, and the month-level datasets. */
+export async function dataStatus(db: D1Database, ws: Workspace): Promise<DataStatus> {
+  const routes = await all<{ kind: string; month: string; rows: number }>(db,
+    `SELECT kind, month, COUNT(*) AS rows FROM data_routes WHERE ws = ? GROUP BY kind, month ORDER BY kind, month`, ws);
+  const months = await all<{ kind: string; month: string; uploaded_at: string }>(db,
+    `SELECT kind, month, uploaded_at FROM data_months WHERE ws = ? ORDER BY kind, month`, ws);
+  return [
+    ...routes.map((r) => ({ kind: r.kind, month: r.month, rows: r.rows, uploadedAt: null })),
+    ...months.map((r) => ({ kind: r.kind, month: r.month, rows: 1, uploadedAt: r.uploaded_at })),
+  ];
+}
+
+// ---------- organisation (for the CD, the calculator and the reports) ----------
+
+export type OrgDto = {
+  depts: { id: number; code: string; name: string; sort: number; channels: { channel: string; grp: string }[] }[];
+  nodes: { id: number; deptId: number; parentId: number | null; name: string; managerUserId: number | null; managerName: string | null }[];
+  leaves: { id: number; deptId: number; nodeId: number; routeCode: string; deliverySystem: string; label: string }[];
+  packs: { code: string; grp: string; active: boolean; sort: number }[];
+};
+
+/** The live hierarchy of one workspace, with channels and the pack master. */
+export async function readOrg(db: D1Database, ws: Workspace): Promise<OrgDto> {
+  const res = await db.batch([
+    db.prepare(`SELECT id, code, name, sort FROM departments WHERE workspace = ? ORDER BY sort, code`).bind(ws),
+    db.prepare(`SELECT c.dept_id, c.channel, c.grp FROM dept_channels c JOIN departments d ON d.id = c.dept_id WHERE d.workspace = ? ORDER BY c.dept_id, c.sort, c.channel`).bind(ws),
+    db.prepare(`SELECT n.id, n.dept_id, n.parent_id, n.name, n.manager_user_id, u.name AS manager_name FROM nodes n
+                JOIN departments d ON d.id = n.dept_id LEFT JOIN users u ON u.id = n.manager_user_id
+                WHERE d.workspace = ? ORDER BY n.name, n.id`).bind(ws),
+    db.prepare(`SELECT l.id, l.dept_id, l.node_id, l.route_code, l.delivery_system, l.label FROM leaves l
+                JOIN departments d ON d.id = l.dept_id WHERE d.workspace = ? ORDER BY l.route_code, l.id`).bind(ws),
+    db.prepare(`SELECT code, grp, active, sort FROM packs ORDER BY sort, code`),
+  ]);
+  const [depts, chans, nodes, leaves, packs] = res.map((r) => r.results as Obj[]);
+  return {
+    depts: depts!.map((d) => ({
+      id: d.id as number, code: d.code as string, name: d.name as string, sort: d.sort as number,
+      channels: chans!.filter((c) => c.dept_id === d.id).map((c) => ({ channel: c.channel as string, grp: c.grp as string })),
+    })),
+    nodes: nodes!.map((n) => ({
+      id: n.id as number, deptId: n.dept_id as number, parentId: n.parent_id as number | null, name: n.name as string,
+      managerUserId: n.manager_user_id as number | null, managerName: n.manager_name as string | null,
+    })),
+    leaves: leaves!.map((l) => ({
+      id: l.id as number, deptId: l.dept_id as number, nodeId: l.node_id as number, routeCode: l.route_code as string,
+      deliverySystem: l.delivery_system as string, label: l.label as string,
+    })),
+    packs: packs!.map((p) => ({ code: p.code as string, grp: p.grp as string, active: p.active === 1, sort: p.sort as number })),
+  };
+}
+
+// ---------- channels per Head (Admin > Department & channel targets > Channels per Head) ----------
+
+export async function setChannels(db: D1Database, actorId: number, deptId: number, body: Obj): Promise<{ channels: { channel: string; grp: string }[] }> {
+  if (!Array.isArray(body.channels) || body.channels.length > 30) throw bad('channels must be a list of at most 30');
+  const seen = new Set<string>();
+  const channels = body.channels.map((c, i) => {
+    const o = c as Obj;
+    if (typeof o?.channel !== 'string' || !o.channel.trim() || o.channel.length > 60) throw bad(`channel ${i + 1} needs a name`);
+    const name = o.channel.trim();
+    if (seen.has(name.toLowerCase())) throw bad(`channel ${name} is listed twice`);
+    seen.add(name.toLowerCase());
+    const grp = typeof o.grp === 'string' ? o.grp.trim().slice(0, 30) : '';
+    return { channel: name, grp, sort: i };
+  });
+  const dept = await one<{ id: number }>(db, `SELECT id FROM departments WHERE id = ?`, deptId);
+  if (!dept) throw new ApiError(404, { error: 'not_found' });
+  await writeBatch(db, [
+    db.prepare(`DELETE FROM dept_channels WHERE dept_id = ?`).bind(deptId),
+    ...(channels.length ? [db.prepare(
+      `INSERT INTO dept_channels(dept_id, channel, grp, sort)
+       SELECT ?, json_extract(value, '$.channel'), json_extract(value, '$.grp'), json_extract(value, '$.sort') FROM json_each(?)`,
+    ).bind(deptId, JSON.stringify(channels))] : []),
+    auditStatement(db, actorId, 'dept.channels', {}, { deptId, channels }),
+  ], 'a channel name is already used by another Head of Department');
+  return { channels: channels.map(({ channel, grp }) => ({ channel, grp })) };
+}
+
+/** Workspace and order of a department (Admin > Departments). */
+export async function setDeptWorkspace(db: D1Database, actorId: number, deptId: number, body: Obj): Promise<void> {
+  const ws = body.workspace;
+  if (ws !== 'ops' && ws !== 'ka') throw bad('workspace must be ops or ka');
+  const sort = body.sort === undefined ? null : body.sort;
+  if (sort !== null && (typeof sort !== 'number' || !Number.isInteger(sort))) throw bad('sort must be a whole number');
+  const res = await writeBatch(db, [
+    db.prepare(`UPDATE departments SET workspace = ?, sort = COALESCE(?, sort) WHERE id = ?`).bind(ws, sort, deptId),
+    auditStatement(db, actorId, 'dept.workspace', {}, { deptId, workspace: ws, sort }),
+  ], 'conflict');
+  if ((res[0]!.meta.changes ?? 0) === 0) throw new ApiError(404, { error: 'not_found' });
+}
+
+/** Commercial Director role per workspace (Admin > Users). */
+export async function setCdRoles(db: D1Database, actorId: number, userId: number, body: Obj): Promise<{ cd: Workspace[] }> {
+  if (!Array.isArray(body.cd) || body.cd.some((w) => w !== 'ops' && w !== 'ka')) throw bad('cd must be a list of ops / ka');
+  const cd = [...new Set(body.cd as Workspace[])];
+  const user = await one<{ id: number }>(db, `SELECT id FROM users WHERE id = ?`, userId);
+  if (!user) throw new ApiError(404, { error: 'not_found' });
+  await writeBatch(db, [
+    db.prepare(`DELETE FROM user_roles WHERE user_id = ? AND role = 'cd'`).bind(userId),
+    ...(cd.length ? [db.prepare(`INSERT INTO user_roles(user_id, role, workspace) SELECT ?, 'cd', value FROM json_each(?)`).bind(userId, JSON.stringify(cd))] : []),
+    auditStatement(db, actorId, 'user.cd_roles', {}, { id: userId, cd }),
+  ], 'conflict');
+  return { cd };
+}
+
+export async function listCdRoles(db: D1Database): Promise<{ userId: number; workspace: Workspace }[]> {
+  return all(db, `SELECT user_id AS userId, workspace FROM user_roles WHERE role = 'cd' ORDER BY user_id, workspace`);
+}

@@ -14,8 +14,10 @@ import {
   LOGIN_WINDOW_MS as WINDOW_MS,
   type AppEnv,
   type SessionUser,
+  type Workspace,
 } from '../auth';
 import { batch, one, run } from '../db';
+import { auditStatement } from '../services/audit';
 
 const MAX_USERNAME = 100;
 const MAX_PASSWORD = 1024;
@@ -32,7 +34,7 @@ const cookieOpts = {
   maxAge: SESSION_TTL_SECONDS,
 } as const;
 
-type UserRow = SessionUser & { pw_hash: string; pw_salt: string; active: number };
+type UserRow = Omit<SessionUser, 'cd' | 'mustChangePw'> & { pw_hash: string; pw_salt: string; active: number; cd: string | null; must_change_pw: number };
 
 const auth = new Hono<AppEnv>();
 
@@ -68,7 +70,9 @@ auth.post('/api/auth/login', async (c) => {
 
   const user = await one<UserRow>(
     db,
-    `SELECT id, role, lang, name, pw_hash, pw_salt, active FROM users WHERE username = ?`,
+    `SELECT id, role, lang, name, pw_hash, pw_salt, active, must_change_pw,
+            (SELECT group_concat(r.workspace) FROM user_roles r WHERE r.user_id = users.id AND r.role = 'cd') AS cd
+       FROM users WHERE username = ?`,
     key, // Ruling R11: usernames are stored trimmed and lower-cased
   );
 
@@ -76,7 +80,8 @@ auth.post('/api/auth/login', async (c) => {
   if (user) {
     const ok = await verifyPassword(password, user.pw_hash, user.pw_salt);
     if (ok && user.active) {
-      sessionUser = { id: user.id, role: user.role, lang: user.lang, name: user.name };
+      const cd = (user.cd ?? '').split(',').filter((w): w is Workspace => w === 'ops' || w === 'ka');
+      sessionUser = { id: user.id, role: user.role, lang: user.lang, name: user.name, cd, mustChangePw: user.must_change_pw === 1 };
     }
   } else if (await isBootstrapLogin(c.env, username, password)) {
     // createBootstrapAdmin runs one PBKDF2 (hashPassword), the same cost as a
@@ -124,7 +129,7 @@ async function createBootstrapAdmin(db: D1Database, password: string): Promise<S
     hash, salt,
   );
   if (res.changes !== 1) return null;
-  return { id: res.lastRowId, role: 'admin', lang: 'en', name: 'Administrator' };
+  return { id: res.lastRowId, role: 'admin', lang: 'en', name: 'Administrator', cd: [], mustChangePw: false };
 }
 
 auth.post('/api/auth/logout', async (c) => {
@@ -135,6 +140,24 @@ auth.post('/api/auth/logout', async (c) => {
 });
 
 auth.get('/api/me', requireUser, (c) => c.json({ user: c.var.user }));
+
+/**
+ * First login: set a new password (handover section 2). Only while the
+ * account must change it: the session was just opened with the old one, so it
+ * is not asked again (one PBKDF2 per request, docs/decisions.md).
+ */
+auth.post('/api/me/password', requireUser, async (c) => {
+  if (!c.var.user.mustChangePw) return c.json({ error: 'forbidden' }, 403);
+  const body = await c.req.json().catch(() => null);
+  const pw = body?.password;
+  if (typeof pw !== 'string' || pw.length < 8 || pw.length > MAX_PASSWORD) return c.json({ error: 'invalid_request', detail: 'password must be 8 to 1024 characters' }, 400);
+  const { hash, salt } = await hashPassword(pw);
+  await batch(c.env.DB, [
+    c.env.DB.prepare(`UPDATE users SET pw_hash = ?, pw_salt = ?, must_change_pw = 0 WHERE id = ?`).bind(hash, salt, c.var.user.id),
+    auditStatement(c.env.DB, c.var.user.id, 'user.password_first_change', {}, { id: c.var.user.id }),
+  ]);
+  return c.json({ user: { ...c.var.user, mustChangePw: false } });
+});
 
 auth.patch('/api/me', requireUser, async (c) => {
   const body = await c.req.json().catch(() => null);

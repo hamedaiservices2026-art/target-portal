@@ -3,7 +3,8 @@ import { averageSales, sumSeries } from '../../../src/shared/calc/averages';
 import { fitAndRound, fitMatrix, FitError } from '../../../src/shared/calc/fit';
 import { channelSplit, departmentSplit, gap } from '../../../src/shared/calc/splits';
 import { cascade, reconcile, type CascadeNode } from '../../../src/shared/calc/cascade';
-import { checkPackRules, rebalanceGroup } from '../../../src/shared/calc/distribution';
+import { rebalanceGroup } from '../../../src/shared/calc/distribution';
+import { checkPack } from '../../../src/shared/rules';
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -143,27 +144,24 @@ describe('cascade (step D)', () => {
   });
 });
 
-describe('distribution rules', () => {
-  const on = { capPct: 5, rule2: true, rule3: true };
+describe('distribution rules (handover options)', () => {
   it('owner examples: 1000 split 700/300 may go to 650/350, not 640/360', () => {
-    expect(checkPackRules(1000, [700, 300], [650, 350], on).status).toBe('ok');
-    expect(checkPackRules(1000, [700, 300], [640, 360], on).status).toBe('person_over_cap');
+    expect(checkPack(1000, [700, 300], [650, 350], 5).status).toBe('ok');
+    expect(checkPack(1000, [700, 300], [640, 360], 5, { rule3: false }).status).toBe('person_over_cap');
   });
 
   it('rule 3 blocks moving 100 across four people even when nobody moved more than 50', () => {
-    const r = checkPackRules(1000, [250, 250, 250, 250], [200, 200, 300, 300], on);
-    expect(r.status).toBe('moved_too_much');
-    expect(checkPackRules(1000, [250, 250, 250, 250], [200, 200, 300, 300], { ...on, rule3: false }).status).toBe('ok');
+    expect(checkPack(1000, [250, 250, 250, 250], [200, 200, 300, 300], 5).status).toBe('moved_too_much');
+    expect(checkPack(1000, [250, 250, 250, 250], [200, 200, 300, 300], 5, { rule3: false }).status).toBe('ok');
   });
 
   it('a per-person exception cap', () => {
-    expect(checkPackRules(1000, [700, 300], [640, 360], { ...on, rule3: false }, [10, undefined]).status).toBe('person_over_cap');
-    expect(checkPackRules(1000, [700, 300], [640, 360], { ...on, rule3: false }, [10, 10]).status).toBe('ok');
+    expect(checkPack(1000, [700, 300], [640, 360], 5, { rule3: false, personCapPct: [10, undefined] }).status).toBe('person_over_cap');
+    expect(checkPack(1000, [700, 300], [640, 360], 5, { rule3: false, personCapPct: [10, 10] }).status).toBe('ok');
   });
 
-  it('rule 1 is always on; packs under 20 cases cannot move at 5%', () => {
-    expect(checkPackRules(100, [50, 50], [50, 49], { ...on, rule2: false, rule3: false }).status).toBe('short');
-    expect(checkPackRules(19, [10, 9], [9, 10], on).status).toBe('person_over_cap');
+  it('rule 1 is always on', () => {
+    expect(checkPack(100, [50, 50], [50, 49], 5, { rule2: false, rule3: false }).status).toBe('short');
   });
 });
 

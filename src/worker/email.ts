@@ -100,6 +100,18 @@ export function notifyTurnOpened(env: Env, monthId: number, nodeIds: number[]): 
 
 async function turnOpenedWork(env: Env, monthId: number, nodeIds: number[]): Promise<void> {
   try {
+    // In-app notification (the reliable signal; email may be filtered).
+    await env.DB.prepare(
+      `INSERT INTO notifications(user_id, at, kind, text, link)
+       SELECT mn.manager_user_id, ?, 'turn_opened',
+              json_object('en', 'Your turn to split the ' || m.period || ' target of ' || mn.name || ' is open.',
+                          'ar', 'حان دورك لتوزيع هدف ' || m.period || ' لـ ' || mn.name || '.'),
+              '/m/' || mn.month_id || '/n/' || mn.node_id
+       FROM month_nodes mn JOIN months m ON m.id = mn.month_id
+       WHERE mn.month_id = ? AND mn.node_id IN (SELECT value FROM json_each(?)) AND mn.manager_user_id IS NOT NULL`,
+    ).bind(new Date().toISOString(), monthId, JSON.stringify(nodeIds)).run();
+  } catch { /* notifications must not fail the request */ }
+  try {
     const ids = nodeIds.slice(0, MAX_PER_RUN);
     if (!ids.length) return;
     const rows = await all<NodeRow>(env.DB,
@@ -114,6 +126,18 @@ export function notifyDeptComplete(env: Env, monthId: number, deptId: number): P
 }
 
 async function deptCompleteWork(env: Env, monthId: number, deptId: number): Promise<void> {
+  try {
+    // "Final": the Head and the admins are notified in the app.
+    await env.DB.prepare(
+      `INSERT INTO notifications(user_id, at, kind, text, link)
+       SELECT u.id, ?, 'final',
+              json_object('en', 'The ' || m.period || ' target of ' || d.name || ' is final.',
+                          'ar', 'أصبح هدف ' || m.period || ' لـ ' || d.name || ' نهائياً.'), NULL
+       FROM users u, months m, departments d
+       WHERE m.id = ? AND d.id = ? AND u.active = 1
+         AND (u.role = 'admin' OR u.id = (SELECT manager_user_id FROM nodes WHERE dept_id = d.id AND parent_id IS NULL))`,
+    ).bind(new Date().toISOString(), monthId, deptId).run();
+  } catch { /* notifications must not fail the request */ }
   try {
     const rows = await all<{ email: string; lang: Lang; period: string; dept_name: string }>(env.DB,
       `SELECT u.email, u.lang, m.period, d.name AS dept_name FROM users u, months m, departments d

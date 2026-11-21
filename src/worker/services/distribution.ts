@@ -21,7 +21,8 @@
 // compact number array on read and rebuilds the object on write, so the Worker
 // never parses or builds the 42-key objects. Leaves are loaded for the node's
 // subtree only (a supervisor never touches the whole department).
-import { checkAll } from '../../shared/rules';
+import { checkAll, type RuleOptions } from '../../shared/rules';
+import { levelOf, parseRules, personCaps, type RulesSettings } from './rulesSettings';
 import { ancestors } from '../../shared/tree';
 import type { ChildKey, Grid, NodeStatus } from '../../shared/types';
 import type { SessionUser } from '../auth';
@@ -41,8 +42,11 @@ export type { MonthPack } from './plan';
 
 export interface Workspace {
   month: { id: number; period: string; deadline: string | null };
-  node: { id: number; name: string; status: NodeStatus; deptCode: string };
+  node: { id: number; name: string; status: NodeStatus; deptCode: string; deptId: number; level: 'head' | 'manager' | 'supervisor' };
+  /** The cap % of this node's level (rule 3, and rule 2 for people without an exception). */
   capPct: number;
+  /** Rules 2 and 3 on/off and each team member's own cap % (null = the level cap). */
+  rules: { rule2: boolean; rule3: boolean; personCapPct: (number | null)[] };
   packs: MonthPack[];
   totals: Grid;
   children: { key: ChildKey; label: string; sub: string; starts: Grid; values: Grid }[];
@@ -72,7 +76,40 @@ export interface Dept extends Tree {
   deptId: number;
   deptCode: string;
   capPct: number;
+  rules: RulesSettings;
   packs: MonthPack[];
+}
+
+/** Depth of a node in the month tree (root = 0). */
+function depthOf(d: Tree, nodeId: number): number {
+  let depth = 0;
+  let cur = d.nodes.get(nodeId)?.parent_id ?? null;
+  while (cur !== null && depth < 64) {
+    depth += 1;
+    cur = d.nodes.get(cur)?.parent_id ?? null;
+  }
+  return depth;
+}
+
+/** The handover rule options for `nodeId`'s split: its level's cap and each child's exception. */
+export function ruleContext(d: Dept, nodeId: number, labels: string[]): { capPct: number; level: 'head' | 'manager' | 'supervisor'; opts: RuleOptions; personCapPct: (number | null)[] } {
+  const level = levelOf(depthOf(d, nodeId));
+  const caps = personCaps(d.rules, labels);
+  return {
+    capPct: d.rules.caps[level],
+    level,
+    opts: { rule2: d.rules.rule2, rule3: d.rules.rule3, personCapPct: caps },
+    personCapPct: caps.map((c) => c ?? null),
+  };
+}
+
+/** Labels used to match cap exceptions: a child node's name, a child route's code. */
+function childLabels(d: Tree, keys: ChildKey[]): string[] {
+  const leafById = new Map(d.leaves.map((l) => [l.leaf_id, l]));
+  return keys.map((k) => {
+    const id = Number(k.slice(2));
+    return k.startsWith('n:') ? (d.nodes.get(id)?.name ?? '') : (leafById.get(id)?.route_code ?? '');
+  });
 }
 
 type LeafScope = 'none' | 'direct' | 'subtree';
@@ -131,7 +168,8 @@ export async function loadDept(db: D1Database, monthId: number, nodeId: number, 
   const stmts: D1PreparedStatement[] = [
     db.prepare(
       `SELECT m.id, m.period, m.deadline, m.packs_json, n.dept_id, d.code AS dept_code,
-              (SELECT value FROM settings WHERE key = 'cap_pct') AS cap_pct
+              (SELECT value FROM settings WHERE key = 'cap_pct') AS cap_pct,
+              (SELECT value FROM settings WHERE key = 'rules_json') AS rules_json
        FROM month_nodes n JOIN months m ON m.id = n.month_id JOIN departments d ON d.id = n.dept_id
        WHERE n.month_id = ? AND n.node_id = ?`,
     ).bind(monthId, nodeId),
@@ -146,7 +184,7 @@ export async function loadDept(db: D1Database, monthId: number, nodeId: number, 
   if (scope !== 'none') stmts.push(leafQuery(db, monthId, nodeId, scope, true));
   const [head, nodesRes, leavesRes] = await batch(db, stmts);
   const h = head!.results[0] as
-    | { id: number; period: string; deadline: string | null; packs_json: string; dept_id: number; dept_code: string; cap_pct: string | null }
+    | { id: number; period: string; deadline: string | null; packs_json: string; dept_id: number; dept_code: string; cap_pct: string | null; rules_json: string | null }
     | undefined;
   if (!h) throw notFound();
 
@@ -165,6 +203,7 @@ export async function loadDept(db: D1Database, monthId: number, nodeId: number, 
     deptId: h.dept_id,
     deptCode: h.dept_code,
     capPct: capPctFrom(h.cap_pct),
+    rules: parseRules(h.rules_json, capPctFrom(h.cap_pct)),
     packs,
   };
   return { d, node: d.nodes.get(nodeId)! };
@@ -178,7 +217,7 @@ const sameGrid = (a: Grid, b: Grid, codes: string[]): boolean => codes.every((c)
 const parseGrids = (json: string | null): Record<ChildKey, Grid> | null =>
   json === null ? null : (JSON.parse(json) as Record<ChildKey, Grid>);
 
-function canView(d: Dept, user: SessionUser, nodeId: number): boolean {
+export function canView(d: Dept, user: SessionUser, nodeId: number): boolean {
   if (user.role === 'admin') return true;
   if (d.nodes.get(nodeId)?.manager_user_id === user.id) return true;
   const list = [...d.nodes.values()].map((n) => ({ id: n.node_id, parent_id: n.parent_id }));
@@ -338,10 +377,12 @@ export async function getWorkspace(db: D1Database, user: SessionUser, monthId: n
     }
     return { key, label, sub, starts: pick(starts[key], d.codes), values: pick(values[key], d.codes) };
   });
+  const rc = ruleContext(d, nodeId, childLabels(d, children.map((c) => c.key)));
   return {
     month: d.month,
-    node: { id: nodeId, name: node.name, status: node.status, deptCode: d.deptCode },
-    capPct: d.capPct,
+    node: { id: nodeId, name: node.name, status: node.status, deptCode: d.deptCode, deptId: d.deptId, level: rc.level },
+    capPct: rc.capPct,
+    rules: { rule2: d.rules.rule2, rule3: d.rules.rule3, personCapPct: rc.personCapPct },
     packs: d.packs,
     totals: gridOf(totals.get(nodeId)!, d.codes),
     children,
@@ -503,9 +544,10 @@ export async function submitWith(
   // per-pack total of the subtree unchanged, whole cases >= 0), all in memory
   // before anything is written. The subtree's leaves are every leaf loaded and
   // the only leaves written, so its total unchanged means the department's is.
+  const rc = ruleContext(d, nodeId, childLabels(d, keys));
   const attempt = (values: Record<ChildKey, Grid>) => {
     const valueList = keys.map((k) => pick(values[k], codes));
-    const check = checkAll(total, startList, valueList, codes, d.capPct);
+    const check = checkAll(total, startList, valueList, codes, rc.capPct, rc.opts);
     if (!check.ok) throw new ApiError(400, { error: 'rules_failed', detail: 'some packs do not pass the rules', byPack: check.byPack });
     try {
       return { valueList, plan: planSubmit(d, nodeId, keys, valueList.map((g) => vecOf(g, codes)), totals) };
