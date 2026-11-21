@@ -377,10 +377,14 @@ export function deptTree(org: Org, deptId: number): CascadeNode | null {
     if (!leaves.has(l.nodeId)) leaves.set(l.nodeId, []);
     leaves.get(l.nodeId)!.push(l.routeCode);
   }
-  const build = (id: number): CascadeNode => ({
-    id: `n:${id}`,
-    children: [...(kids.get(id) ?? []).map(build), ...(leaves.get(id) ?? []).map((r) => ({ id: `r:${r}`, children: [] }))],
-  });
+  // A node with no route under it is left out: it could not hold a target (and is not a route).
+  const build = (id: number): CascadeNode | null => {
+    const children = [
+      ...(kids.get(id) ?? []).map(build).filter((n): n is CascadeNode => n !== null),
+      ...(leaves.get(id) ?? []).map((r) => ({ id: `r:${r}`, children: [] })),
+    ];
+    return children.length ? { id: `n:${id}`, children } : null;
+  };
   return build(root.id);
 }
 
@@ -412,7 +416,7 @@ export function calculate(args: {
   for (const [d, target] of Object.entries(dept)) {
     const root = deptTree(org, Number(d));
     const name = org.depts.find((x) => String(x.id) === d)?.name ?? d;
-    if (!root) { problems.push(`${name}: no hierarchy; it keeps its current target.`); continue; }
+    if (!root) { problems.push(`${name}: no routes under the Head; it keeps its current target.`); continue; }
     const result = cascade({
       root, packs: Object.keys(target), target,
       packAvg: (id, p) => routeAvg.get(id.slice(2))?.[p] ?? 0,
@@ -421,6 +425,7 @@ export function calculate(args: {
     });
     const out: Record<string, Grid> = {};
     for (const [id, g] of Object.entries(result.routes)) {
+      if (!id.startsWith('r:')) continue;
       const clean: Grid = {};
       for (const [p, n] of Object.entries(g)) if (n > 0) clean[p] = n;
       out[id.slice(2)] = clean;

@@ -6,3 +6,4 @@ export * from './fit';
 export * from './splits';
 export * from './cascade';
 export * from './distribution';
+export * from './cd';

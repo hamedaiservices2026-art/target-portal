@@ -26,7 +26,7 @@ import { levelOf, parseRules, personCaps, type RulesSettings } from './rulesSett
 import { ancestors } from '../../shared/tree';
 import type { ChildKey, Grid, NodeStatus } from '../../shared/types';
 import type { SessionUser } from '../auth';
-import { all, batch, type Bindable } from '../db';
+import { all, batch, one, type Bindable } from '../db';
 import type { Env } from '../index';
 import { ApiError, bad, capPctFrom, forbidden, int, notFound, type Obj } from './masters';
 import {
@@ -42,7 +42,7 @@ export type { MonthPack } from './plan';
 
 export interface Workspace {
   month: { id: number; period: string; deadline: string | null };
-  node: { id: number; name: string; status: NodeStatus; deptCode: string; deptId: number; level: 'head' | 'manager' | 'supervisor' };
+  node: { id: number; name: string; status: NodeStatus; deptCode: string; deptId: number; level: 'head' | 'manager' | 'supervisor'; workspace: 'ops' | 'ka' };
   /** The cap % of this node's level (rule 3, and rule 2 for people without an exception). */
   capPct: number;
   /** Rules 2 and 3 on/off and each team member's own cap % (null = the level cap). */
@@ -378,9 +378,10 @@ export async function getWorkspace(db: D1Database, user: SessionUser, monthId: n
     return { key, label, sub, starts: pick(starts[key], d.codes), values: pick(values[key], d.codes) };
   });
   const rc = ruleContext(d, nodeId, childLabels(d, children.map((c) => c.key)));
+  const wsRow = await one<{ workspace: string | null }>(db, `SELECT workspace FROM departments WHERE id = ?`, d.deptId);
   return {
     month: d.month,
-    node: { id: nodeId, name: node.name, status: node.status, deptCode: d.deptCode, deptId: d.deptId, level: rc.level },
+    node: { id: nodeId, name: node.name, status: node.status, deptCode: d.deptCode, deptId: d.deptId, level: rc.level, workspace: wsRow?.workspace === 'ka' ? 'ka' : 'ops' },
     capPct: rc.capPct,
     rules: { rule2: d.rules.rule2, rule3: d.rules.rule3, personCapPct: rc.personCapPct },
     packs: d.packs,

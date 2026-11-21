@@ -42,8 +42,11 @@ class Session {
     return text ? (JSON.parse(text) as Json) : {};
   }
 
-  login(username: string, password: string): Promise<Json> {
-    return this.call('POST', '/auth/login', { username, password });
+  async login(username: string, password: string): Promise<Json> {
+    const res = await this.call('POST', '/auth/login', { username, password });
+    // New accounts must choose their password on first sign-in: the seed keeps the one it set.
+    if ((res as { user?: { mustChangePw?: boolean } }).user?.mustChangePw) return this.call('POST', '/me/password', { password });
+    return res;
   }
 }
 
@@ -65,6 +68,8 @@ export async function seed(
     admin.call('POST', '/admin/users', { username, name, role: 'manager', password: SEED_MANAGER_PASSWORD });
   const head1 = await mk('head1', 'Head TT');
   const sup1 = await mk('sup1', 'Supervisor S-01');
+  // Both sign in once so the seeded accounts keep the seed password (no first-sign-in change left).
+  for (const u of ['head1', 'sup1']) await new Session(base).login(u, SEED_MANAGER_PASSWORD);
   const headUser = (head1.user ?? head1) as Json;
   const supUser = (sup1.user ?? sup1) as Json;
 

@@ -60,6 +60,7 @@ const org: Org = {
   nodes: [
     { id: 10, deptId: 1, parentId: null, name: 'TT Head', managerUserId: null, managerName: null },
     { id: 11, deptId: 1, parentId: 10, name: 'Mgr', managerUserId: null, managerName: null },
+    { id: 12, deptId: 1, parentId: 10, name: 'Empty team', managerUserId: null, managerName: null },
     { id: 20, deptId: 2, parentId: null, name: 'MT Head', managerUserId: null, managerName: null },
   ],
   leaves: [
@@ -119,6 +120,8 @@ describe('cycle compute', () => {
     const dept = { '1': { CSD_CANS150: 101 } };
     const { depts } = calculate({ org, dept, sales, avgMonths: ['2026-07', '2026-08', '2026-09'], routeTargets: {} });
     expect(Object.values(depts[0]!.routes).reduce((s, g) => s + (g.CSD_CANS150 ?? 0), 0)).toBe(101);
+    // A node with no route under it gets nothing and is never taken for a route.
+    expect(Object.keys(depts[0]!.routes).sort()).toEqual(['R1', 'R2']);
     expect(reconciliation(org, dept, depts, null).ok).toBe(true);
   });
 

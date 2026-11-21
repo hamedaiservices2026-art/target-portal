@@ -7,7 +7,7 @@
 // in the browser with src/shared/calc; the Worker re-checks every total before
 // it stores anything, and computes the CD final fit itself (it is small:
 // packs x departments per category).
-import { fitAndRound } from '../../shared/calc/fit';
+import { cdFinal, cdSubmitProblems, type CdWork, type PackCat } from '../../shared/calc/cd';
 import type { SessionUser, Workspace } from '../auth';
 import { all, one } from '../db';
 import type { Env } from '../index';
@@ -36,22 +36,7 @@ export type CycleSettings = {
 };
 
 /** The Commercial Director's work (CD tabs 1-3). */
-export type CdWork = {
-  /** Tab 1: New Target per pack. */
-  nt: Record<string, number>;
-  /** Tab 1 approved (must be before the split). */
-  ntOk: boolean;
-  /** Tab 2: department -> channel ('_' when the Head has none) -> pack -> cases. */
-  dm: Record<string, Record<string, Record<string, number>>>;
-  /** The New Target the split in `dm` was made from (stale when it differs from `nt`). */
-  splitNt: Record<string, number>;
-  /** Basis of the default split per pack. */
-  basis: Record<string, string>;
-  /** Tab 3 column I overrides: department -> category -> cases. */
-  gm: Record<string, Record<string, number>>;
-  /** Tab 3 column J (final department total): department -> category -> cases. */
-  colJ: Record<string, Record<string, number>>;
-};
+export type { CdWork };
 
 export type CycleDto = {
   ws: Workspace;
@@ -387,58 +372,11 @@ export async function returnFromCd(db: D1Database, user: SessionUser, ws: Worksp
   checkApplied(res);
 }
 
-export type PackCat = Map<string, string>;
+export { cdFinal, cdSubmitProblems, type PackCat };
 
 async function packCategories(db: D1Database): Promise<PackCat> {
   const rows = await all<{ code: string; grp: string }>(db, `SELECT code, grp FROM packs`);
   return new Map(rows.map((r) => [r.code, r.grp]));
-}
-
-/**
- * Submit check (section 5): New Target approved; split exists and is not
- * stale; every pack of Tab 2 adds up to its New Target; column J per category
- * = the category's New Target. Returns the reasons it fails (empty = ok).
- */
-export function cdSubmitProblems(work: CdWork, cats: PackCat, depts: string[]): string[] {
-  const out: string[] = [];
-  if (!work.ntOk) out.push('the New Target is not approved');
-  const packs = Object.keys(work.nt);
-  const unknown = packs.filter((p) => !cats.has(p));
-  if (unknown.length) out.push(`packs not in the pack master: ${unknown.slice(0, 10).join(', ')}`);
-  if (Object.keys(work.dm).length === 0) out.push('there is no split by department');
-  else if (packs.some((p) => (work.splitNt[p] ?? 0) !== work.nt[p]) || Object.keys(work.splitNt).some((p) => !(p in work.nt))) {
-    out.push('the split is stale: the New Target changed after it was made');
-  }
-  let badPacks = 0;
-  for (const p of packs) {
-    let s = 0;
-    for (const d of Object.keys(work.dm)) for (const ch of Object.values(work.dm[d]!)) s += ch[p] ?? 0;
-    if (s !== work.nt[p]) badPacks++;
-  }
-  if (badPacks) out.push(`${badPacks} packs in Target by department don't add up`);
-  for (const cat of new Set(packs.map((p) => cats.get(p)).filter((c): c is string => !!c))) {
-    const want = packs.filter((p) => cats.get(p) === cat).reduce((s, p) => s + work.nt[p]!, 0);
-    const got = depts.reduce((s, d) => s + (work.colJ[d]?.[cat] ?? 0), 0);
-    if (want !== got) out.push(`column J of ${cat} adds up to ${got}, not the New Target ${want}`);
-  }
-  return out;
-}
-
-/**
- * The final department x pack target: per category, rows = New Target per
- * pack and columns = column J per department, fitted from Tab 2 by iterative
- * proportional fitting (80 iterations) and rounded to whole cases.
- */
-export function cdFinal(work: CdWork, cats: PackCat, depts: string[]): Record<string, Record<string, number>> {
-  const out: Record<string, Record<string, number>> = Object.fromEntries(depts.map((d) => [d, {}]));
-  const packs = Object.keys(work.nt);
-  for (const cat of new Set(packs.map((p) => cats.get(p)!))) {
-    const rows = packs.filter((p) => cats.get(p) === cat).sort();
-    const seed = rows.map((p) => depts.map((d) => Object.values(work.dm[d] ?? {}).reduce((s, ch) => s + (ch[p] ?? 0), 0)));
-    const fitted = fitAndRound(seed, rows.map((p) => work.nt[p]!), depts.map((d) => work.colJ[d]?.[cat] ?? 0));
-    rows.forEach((p, i) => depts.forEach((d, j) => { out[d]![p] = fitted[i]![j]!; }));
-  }
-  return out;
 }
 
 export async function submitCd(db: D1Database, user: SessionUser, ws: Workspace, periodRaw: string): Promise<{ dept: Record<string, Record<string, number>> }> {
