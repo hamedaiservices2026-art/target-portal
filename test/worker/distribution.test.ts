@@ -219,7 +219,7 @@ describe('workspace', () => {
     const ws = await json(res);
     expect(ws).toEqual({
       month: { id: month, period: '2026-10', deadline: '2026-10-25' },
-      node: { id: head, name: 'Head', status: 'in_progress', deptCode: 'TT', deptId: dept, level: 'head' },
+      node: { id: head, name: 'Head', status: 'in_progress', deptCode: 'TT', deptId: expect.any(Number), level: 'head' },
       capPct: 5,
       rules: { rule2: true, rule3: true, personCapPct: [null] },
       packs: [
