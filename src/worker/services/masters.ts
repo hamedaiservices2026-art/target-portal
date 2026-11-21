@@ -212,14 +212,14 @@ export async function setUserPassword(db: D1Database, actorId: number, id: numbe
 
 // ---------- departments ----------
 
-export type DepartmentDto = { id: number; code: string; name: string };
+export type DepartmentDto = { id: number; code: string; name: string; workspace?: 'ops' | 'ka'; sort?: number };
 
 function deptCode(v: unknown): string {
   return text(v, 'code', 50).toUpperCase();
 }
 
 export async function listDepartments(db: D1Database): Promise<DepartmentDto[]> {
-  return all<DepartmentDto>(db, `SELECT id, code, name FROM departments ORDER BY code`);
+  return all<DepartmentDto>(db, `SELECT id, code, name, workspace, sort FROM departments ORDER BY workspace DESC, sort, code`);
 }
 
 export async function createDepartment(db: D1Database, actorId: number, body: Obj): Promise<DepartmentDto> {
