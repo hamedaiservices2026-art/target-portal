@@ -153,9 +153,9 @@ export async function createUser(db: D1Database, actorId: number, body: Obj): Pr
   const { hash, salt } = await hashPassword(pw); // the only PBKDF2 of this request
   const [ins] = await writeBatch(db, [
     db.prepare(
-      `INSERT INTO users(username, name, email, pw_hash, pw_salt, role, lang, active, must_change_pw)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1) RETURNING ${USER_COLS}`,
-    ).bind(v.username, v.name, v.email, hash, salt, v.role, v.lang, v.active ? 1 : 0),
+      `INSERT INTO users(username, name, email, pw_hash, pw_salt, role, lang, active, must_change_pw, first_pw)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?) RETURNING ${USER_COLS}`,
+    ).bind(v.username, v.name, v.email, hash, salt, v.role, v.lang, v.active ? 1 : 0, pw),
     auditStatement(db, actorId, 'user.create', {}, v, { lastInsertIdAs: 'id' }),
   ], 'username already exists');
   return toUser(ins!.results[0] as UserRow);
@@ -194,20 +194,39 @@ export async function updateUser(db: D1Database, actorId: number, id: number, bo
   return after;
 }
 
-export async function setUserPassword(db: D1Database, actorId: number, id: number, body: Obj): Promise<void> {
-  const pw = password(body.password);
+/** A first password like the v16 prototype: 4 letters and 4 digits, easy to read out. */
+export function firstPassword(): string {
+  const L = 'ABCDEFGHJKLMNPQRSTUVWXYZ', D = '23456789';
+  const a = new Uint32Array(8);
+  crypto.getRandomValues(a);
+  return Array.from(a, (x, i) => (i < 4 ? L[x % L.length] : D[x % D.length])).join('');
+}
+
+/**
+ * The admin sets a password (body.password) or, without one, a new first
+ * password is made. Someone else's password must be changed at the next
+ * sign-in and is shown to the admin (first_pw) until then.
+ */
+export async function setUserPassword(db: D1Database, actorId: number, id: number, body: Obj): Promise<{ password?: string }> {
+  const made = body.password === undefined || body.password === null || body.password === '';
+  const pw = made ? firstPassword() : password(body.password);
   const row = await one<{ username: string }>(db, `SELECT username FROM users WHERE id = ?`, id);
   if (!row) throw notFound();
   const { hash, salt } = await hashPassword(pw); // the only PBKDF2 of this request
   const stmts = [
     // A reset by the admin of someone else's password must be changed at the next login.
-    db.prepare(`UPDATE users SET pw_hash = ?, pw_salt = ?, must_change_pw = ? WHERE id = ?`).bind(hash, salt, id === actorId ? 0 : 1, id),
+    db.prepare(`UPDATE users SET pw_hash = ?, pw_salt = ?, must_change_pw = ?, first_pw = ? WHERE id = ?`)
+      .bind(hash, salt, id === actorId ? 0 : 1, id === actorId ? null : pw, id),
   ];
   // Resetting someone else's password signs them out everywhere; the admin
   // changing their own keeps the current session.
   if (id !== actorId) stmts.push(db.prepare(`DELETE FROM sessions WHERE user_id = ?`).bind(id));
+  // A new password also unlocks the account.
+  stmts.push(db.prepare(`DELETE FROM login_failures WHERE username = ?`).bind(row.username));
   stmts.push(auditStatement(db, actorId, 'user.password', {}, { id, username: row.username }));
   await writeBatch(db, stmts, 'conflict');
+  // Only a password made here is sent back (the admin typed any other one).
+  return made ? { password: pw } : {};
 }
 
 // ---------- departments ----------

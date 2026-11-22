@@ -148,6 +148,7 @@ export const en = {
   adEdit: 'Edit',
   adSave: 'Save',
   adSaved: 'Saved.',
+  toastClose: 'Close',
   adName: 'Name',
   adCode: 'Code',
   adLabel: 'Label',

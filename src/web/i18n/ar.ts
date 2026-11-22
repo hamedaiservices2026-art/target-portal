@@ -150,6 +150,7 @@ export const ar: Record<TextKey, string> = {
   adEdit: 'تعديل',
   adSave: 'حفظ',
   adSaved: 'تم الحفظ.',
+  toastClose: 'إغلاق',
   adName: 'الاسم',
   adCode: 'الرمز',
   adLabel: 'التسمية',

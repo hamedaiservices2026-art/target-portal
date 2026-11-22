@@ -203,7 +203,6 @@ describe('users', () => {
     const id = await addUser('sara', 'old-password');
     const saraSid = await sidFor('sara', 'old-password');
     expect((await call('POST', `/users/${id}/password`, { password: 'short' })).status).toBe(400);
-    expect((await call('POST', `/users/${id}/password`, {})).status).toBe(400);
     expect((await call('POST', '/users/99999/password', { password: 'new-password' })).status).toBe(404);
 
     const res = await call('POST', `/users/${id}/password`, { password: 'new-password' });
@@ -215,6 +214,24 @@ describe('users', () => {
     });
     expect(bad.status).toBe(401);
     await sidFor('sara', 'new-password');
+  });
+
+  it('a reset without a password makes a first password, shows it until the person changes it, and unlocks', async () => {
+    const id = await addUser('omar', 'old-password');
+    const res = await call('POST', `/users/${id}/password`, {});
+    expect(res.status).toBe(200);
+    const { password } = await json(res);
+    expect(password).toMatch(/^[A-Z]{4}[2-9]{4}$/);
+    const list = async () => (await json(await call('GET', '/accounts'))).accounts.find((a: { id: number }) => a.id === id);
+    expect(await list()).toMatchObject({ firstPw: password, status: 'norole' });
+    const sid = await sidFor('omar', password);
+    const chg = await SELF.fetch('http://x/api/me/password', {
+      method: 'POST', headers: { 'content-type': 'application/json', cookie: `sid=${sid}` },
+      body: JSON.stringify({ current: password, currentPassword: password, password: 'my-own-pass-1', newPassword: 'my-own-pass-1' }),
+    });
+    expect(chg.status, await chg.clone().text()).toBe(200);
+    expect(await list()).toMatchObject({ firstPw: null });
+    expect((await list()).lastLogin).toBeTruthy();
   });
 
   it('an admin changing their own password keeps their session', async () => {

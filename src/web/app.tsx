@@ -1,4 +1,5 @@
 import type * as preact from 'preact';
+import { SaveToast } from './components/SaveToast';
 import { LocationProvider, Route, Router, useLocation } from 'preact-iso';
 import { useEffect } from 'preact/hooks';
 import { AUTH_EXPIRED } from './api';
@@ -83,6 +84,7 @@ function Routes() {
 
   return (
     <Layout>
+      <SaveToast />
       <Router>
         <Route path="/" component={Home} />
         <Route path="/m/:mid" component={MonthRedirect} />

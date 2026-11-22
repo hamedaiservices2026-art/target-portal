@@ -4,6 +4,7 @@ import { requireAdmin, requireUser, type AppEnv } from '../auth';
 import { h, p } from './handler';
 import { backupIndex, backupPage, listAudit } from '../services/export';
 import importRoutes from './imports';
+import { listAccounts, syncNextAccount, unlockUser } from '../services/accounts';
 import { applyHierarchySync, listPeople, previewHierarchySync } from '../services/hierarchySync';
 import monthRoutes from './months';
 import {
@@ -24,9 +25,12 @@ admin.post('/api/admin/users', h(async (c, db, me, body) =>
 admin.patch('/api/admin/users/:id', h(async (c, db, me, body) =>
   c.json({ user: await updateUser(db, me, parseId(p(c, 'id')), await body()) })));
 admin.post('/api/admin/users/:id/password', h(async (c, db, me, body) => {
-  await setUserPassword(db, me, parseId(p(c, 'id')), await body());
-  return c.json({ ok: true });
+  const r = await setUserPassword(db, me, parseId(p(c, 'id')), await body());
+  return c.json({ ok: true, ...r });
 }));
+admin.get('/api/admin/accounts', h(async (c, db) => c.json(await listAccounts(db))));
+admin.post('/api/admin/users/:id/unlock', h(async (c, db, me) => c.json(await unlockUser(db, me, parseId(p(c, 'id'))))));
+admin.post('/api/admin/accounts/sync', h(async (c, db, me) => c.json(await syncNextAccount(db, me))));
 
 admin.get('/api/admin/departments', h(async (c, db) => c.json({ departments: await listDepartments(db) })));
 admin.post('/api/admin/departments', h(async (c, db, me, body) =>

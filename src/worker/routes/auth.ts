@@ -99,6 +99,7 @@ auth.post('/api/auth/login', async (c) => {
   await batch(db, [
     db.prepare(`DELETE FROM login_failures WHERE username = ?`).bind(key),
     db.prepare(`DELETE FROM sessions WHERE expires_at <= ?`).bind(nowIso),
+    db.prepare(`UPDATE users SET last_login = ? WHERE id = ?`).bind(nowIso, sessionUser.id),
     db.prepare(`INSERT INTO sessions(token, user_id, expires_at) VALUES (?, ?, ?)`)
       .bind(await sha256Hex(sid), sessionUser.id, expires),
   ]);
@@ -153,7 +154,7 @@ auth.post('/api/me/password', requireUser, async (c) => {
   if (typeof pw !== 'string' || pw.length < 8 || pw.length > MAX_PASSWORD) return c.json({ error: 'invalid_request', detail: 'password must be 8 to 1024 characters' }, 400);
   const { hash, salt } = await hashPassword(pw);
   await batch(c.env.DB, [
-    c.env.DB.prepare(`UPDATE users SET pw_hash = ?, pw_salt = ?, must_change_pw = 0 WHERE id = ?`).bind(hash, salt, c.var.user.id),
+    c.env.DB.prepare(`UPDATE users SET pw_hash = ?, pw_salt = ?, must_change_pw = 0, first_pw = NULL WHERE id = ?`).bind(hash, salt, c.var.user.id),
     auditStatement(c.env.DB, c.var.user.id, 'user.password_first_change', {}, { id: c.var.user.id }),
   ]);
   return c.json({ user: { ...c.var.user, mustChangePw: false } });

@@ -15,10 +15,10 @@ async function signIn(page: Page, username: string, password: string, path = '/'
 test('admin opens a cycle, saves the rules, and reads the reports', async ({ page }) => {
   await signIn(page, 'admin', 'admin-pass-123', `/admin/cycle/ops/${PERIOD}`);
   await expect(page.getByTestId('admin-cycle')).toBeVisible();
-  await expect(page.getByText('0 of 8 steps done')).toBeVisible();
+  await expect(page.getByText('0 of 5 steps done')).toBeVisible();
   await page.getByRole('button', { name: 'Open the cycle' }).click();
-  await expect(page.getByText('1 of 8 steps done')).toBeVisible();
-  await expect(page.getByTestId('step-5')).toBeVisible();
+  await expect(page.getByText('1 of 5 steps done')).toBeVisible();
+  await expect(page.getByTestId('step-4')).toBeVisible();
   await expect(page.getByTestId('cd-status')).toHaveText('With Admin');
 
   await page.getByRole('tab', { name: 'Send to Heads' }).click();

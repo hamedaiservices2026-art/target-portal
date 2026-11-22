@@ -15,11 +15,11 @@ async function addUser(username: string, role: 'admin' | 'manager' = 'manager', 
   return res.lastRowId;
 }
 
-async function sidFor(username: string): Promise<string> {
+async function sidFor(username: string, password = 'password-123'): Promise<string> {
   const res = await SELF.fetch('http://x/api/auth/login', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ username, password: 'password-123' }),
+    body: JSON.stringify({ username, password }),
   });
   expect(res.status).toBe(200);
   return /(?:^|,\s*)sid=([^;]+)/.exec(res.headers.get('set-cookie') ?? '')![1]!;
@@ -72,7 +72,7 @@ describe('access control', () => {
     const routes: [string, string][] = [
       ['GET', '/nodes'], ['POST', '/nodes'], ['PATCH', '/nodes/1'], ['DELETE', '/nodes/1'],
       ['GET', '/leaves'], ['POST', '/leaves'], ['PATCH', '/leaves/1'], ['DELETE', '/leaves/1'],
-      ['POST', '/leaves/bulk-map'], ['GET', '/people'], ['POST', '/hierarchy/sync/preview'], ['POST', '/hierarchy/sync/apply'],
+      ['POST', '/leaves/bulk-map'], ['GET', '/people'], ['GET', '/accounts'], ['POST', '/accounts/sync'], ['POST', '/hierarchy/sync/preview'], ['POST', '/hierarchy/sync/apply'],
     ];
     for (const [m, p] of routes) {
       expect((await call(m, p, {}, null)).status, `${m} ${p} anon`).toBe(401);
@@ -428,7 +428,7 @@ describe('whole hierarchy from one file', () => {
     expect(text).toMatch(/S is under two different parents/);
   });
 
-  it('lists everyone by position for the Users screen', async () => {
+  it('lists everyone by position and makes their accounts one at a time, with the CD first', async () => {
     const res = await call('POST', '/hierarchy/sync/apply', { rows, depts: { 'Amir Elnagar': tt, 'Samir Najm': kam } });
     expect(res.status).toBe(200);
     const { people } = await json(await call('GET', '/people'));
@@ -436,5 +436,24 @@ describe('whole hierarchy from one file', () => {
     expect(by('head')).toEqual(expect.arrayContaining([['Amir Elnagar', null, 3], ['Samir Najm', null, 1]]));
     expect(by('manager')).toEqual(expect.arrayContaining([['Hussain', 'Amir Elnagar', 3], ['Omar', 'Samir Najm', 1]]));
     expect(by('supervisor')).toEqual(expect.arrayContaining([['Mahdi', 'Hussain', 2], ['Ali', 'Hussain', 1]]));
+
+    let acc = await json(await call('GET', '/accounts'));
+    expect(acc.missing).toBe(7); // 6 names + the Commercial Director
+    const made: Json[] = [];
+    for (let i = 0; i < 20; i++) {
+      const step = await json(await call('POST', '/accounts/sync', {}));
+      if (step.created) made.push(step.created);
+      if (!step.created || step.remaining === 0) break;
+    }
+    expect(made[0]).toMatchObject({ name: 'Commercial Director', username: 'commercial.director' });
+    expect(made.map((m) => m.username)).toEqual(expect.arrayContaining(['amir.elnagar', 'samir.najm', 'hussain', 'mahdi', 'ali', 'omar']));
+    acc = await json(await call('GET', '/accounts'));
+    expect(acc.missing).toBe(0);
+    const samir = acc.accounts.find((a: Json) => a.username === 'samir.najm');
+    expect(samir.roles).toEqual([{ kind: 'head', dept: expect.any(String), ws: expect.any(String) }]);
+    expect(samir).toMatchObject({ status: 'pending', firstPw: made.find((m) => m.username === 'samir.najm')!.password });
+    const cd = acc.accounts.find((a: Json) => a.username === 'commercial.director');
+    expect(cd.roles.map((r: Json) => r.kind)).toEqual(['cd', 'cd']);
+    await sidFor('commercial.director', made[0]!.password);
   });
 });

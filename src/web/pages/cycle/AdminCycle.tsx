@@ -1,4 +1,4 @@
-// Admin › Target cycle (handover sections 3, 4, 6, 9): the 8-step start with
+// Admin › Target cycle (handover sections 3, 4, 6, 9): the 5-step start with
 // every upload, the Commercial Director hand-off, the target calculator, the
 // send / restart control per Head of Department, route targets and variance.
 import type { ComponentChildren } from 'preact';
@@ -22,7 +22,7 @@ import { catMap, cdRows, startNewTarget, subMap, sumCat, total, type Grid, type 
 import { tc } from '../../cycle/i18n';
 import { clearRouteCache, getCycle, getOrg, loadMonthData, loadRouteData, useAsync } from '../../cycle/load';
 import {
-  packIndex, parseAop, parseChannelGrid, parseFyTarget, parseNewTargetByLeaf, parseNewTargetByPack, parsePackMapping, parsePrevTargets, parseSales, sheetMonth,
+  packIndex, parseAop, parseChannelGrid, parseNewTargetByLeaf, parseNewTargetByPack, parsePackMapping, parseSales,
   type Check, type RouteMonthData,
 } from '../../cycle/parsers';
 import { Checks, defaultPeriod, downloadCsv, fmtCases, Section, Tabs, writeWorkbook, WsPeriod } from '../../cycle/ui';
@@ -322,9 +322,9 @@ function SendStep({ ws, period, l, onDone }: { ws: Workspace; period: string; l:
     ? org.depts.map((d) => ({ id: d.id, name: d.name, g: d.channels.reduce<Grid>((acc, c) => { for (const [p, n] of Object.entries(preview.upload!.byChannel![c.channel] ?? {})) acc[p] = (acc[p] ?? 0) + n; return acc; }, {}) }))
     : [];
   return (
-    <div class={`cy-step${done ? ' done' : ''}`} data-testid="step-8">
+    <div class={`cy-step${done ? ' done' : ''}`} data-testid="step-5">
       <div class="cy-step-head">
-        <span class="cy-step-n">{done ? '✓' : 8}</span>
+        <span class="cy-step-n">{done ? '✓' : 5}</span>
         <div><b>{tc('step8')}</b><p class="muted small">{cycle.settings.cdStep ? tc('step8HelpCd') : tc('step8HelpNoCd')}</p></div>
       </div>
       {cycle.cdStatus === 'returned' && cycle.cdComment && <div class="banner warn">{tc('cdReturnedWith')} <q>{cycle.cdComment}</q></div>}
@@ -389,7 +389,6 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
   const groups = Object.fromEntries(org.depts.flatMap((d) => d.channels.map((c) => [c.channel, c.grp])));
   const routes = new Set(org.leaves.map((x) => x.routeCode));
   const locked = cycle.cdStatus === 'with_cd' || cycle.cdStatus === 'submitted';
-  const pm = pagoOf(period);
   const cats = catMap(org);
   const [modeBusy, setModeBusy] = useState(false);
   const ntData = useAsync(exists ? () => loadMonthData<NtUpload>(ws, 'new_target') : null, [ws, period, cycle.version, status.length]);
@@ -399,10 +398,7 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
     exists,
     has(status, 'new_target', period),
     status.some((s) => s.kind === 'aop'),
-    status.some((s) => s.kind === 'fy_target'),
     cycle.settings.avgMonths.every((m) => has(status, 'sales', m)),
-    has(status, 'prev_target', pm),
-    has(status, 'dept_channel', pm),
     cycle.settings.cdStep ? cycle.cdStatus === 'with_cd' || cycle.cdStatus === 'submitted' : cycle.dept !== null,
   ];
   const n = done.filter(Boolean).length;
@@ -435,9 +431,9 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
 
   return (
     <>
-      <div class="cy-progress" aria-label={tc('stepsDone', { n, of: 8 })}>
-        <div class="bar"><span style={{ width: `${(n / 8) * 100}%` }} /></div>
-        <b>{tc('stepsDone', { n, of: 8 })}</b>
+      <div class="cy-progress" aria-label={tc('stepsDone', { n, of: 5 })}>
+        <div class="bar"><span style={{ width: `${(n / 5) * 100}%` }} /></div>
+        <b>{tc('stepsDone', { n, of: 5 })}</b>
       </div>
       <SettingsStep ws={ws} period={period} cycle={cycle} exists={exists} onSaved={reload} />
       {exists && (
@@ -480,42 +476,12 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
               return { checks: r.checks, summary: tc('sumMonths', { n: Object.keys(r.byMonth).length }), payload: r.byMonth };
             }}
             upload={async (p) => after(tc('savedMonths', { n: await uploadMonths(ws, 'aop', p as Record<string, unknown>) }))} />
-          <UploadStep n={4} title={tc('step4')} help={tc('step4Help')} template={() => T.fyTarget(org, period)} done={done[3]!} locked={locked} multiSheet
-            parse={({ sheets }) => {
-              const r = parseFyTarget(sheets!, idx);
-              return { checks: r.checks, summary: tc('sumMonths', { n: Object.keys(r.byMonth).length }), payload: r.byMonth };
-            }}
-            upload={async (p) => after(tc('savedMonths', { n: await uploadMonths(ws, 'fy_target', p as Record<string, unknown>) }))} />
-          <UploadStep n={5} title={tc('step5')} help={ws === 'ka' ? tc('step5HelpKa') : tc('step5Help')} template={() => T.sales(org, period, ws)} done={done[4]!} locked={false}
+          <UploadStep n={4} title={tc('step5')} help={ws === 'ka' ? tc('step5HelpKa') : tc('step5Help')} template={() => T.sales(org, period, ws)} done={done[3]!} locked={false}
             parse={({ rows }) => {
               const r = parseSales(rows!, idx, routes);
               return { checks: r.checks, summary: tc('sumMonths', { n: Object.keys(r.data).length }), payload: r.data };
             }}
             upload={async (p, file, prog) => after(tc('savedRows', { n: fmtNum(await uploadRoutes(ws, 'sales', p as RouteMonthData, null, file, prog)) }))} />
-          <UploadStep n={6} title={tc('step6')} help={tc('step6Help')} template={() => T.prevTargets(org, period)} done={done[5]!} locked={locked}
-            parse={({ rows }) => {
-              const r = parsePrevTargets(rows!, idx);
-              return { checks: r.checks, summary: tc('sumMonths', { n: Object.keys(r.data).length }), payload: r };
-            }}
-            upload={async (p, file, prog) => {
-              const r = p as ReturnType<typeof parsePrevTargets>;
-              return after(tc('savedRows', { n: fmtNum(await uploadRoutes(ws, 'prev_target', r.data, r.extra as never, file, prog)) }));
-            }} />
-          <UploadStep n={7} title={tc('step7')} help={tc('step7Help')} template={() => T.deptChannelTargets(org, period)} done={done[6]!} locked={locked} multiSheet
-            parse={({ sheets }) => {
-              const byMonth: Record<string, Record<string, Grid>> = {};
-              const checks: Check[] = [];
-              for (const s of sheets!) {
-                const m = sheetMonth(s);
-                if (!m) { checks.push({ level: 'info', text: tc('sheetNoMonth', { sheet: s.sheet }) }); continue; }
-                const r = parseChannelGrid(s.data, channels, idx, groups);
-                checks.push(...r.checks.map((c) => ({ ...c, text: `${s.sheet}: ${c.text}` })));
-                if (!r.checks.some((c) => c.level === 'error')) byMonth[m] = r.byChannel;
-              }
-              if (!Object.keys(byMonth).length) checks.push({ level: 'error', text: tc('noMonthSheets') });
-              return { checks, summary: tc('sumMonths', { n: Object.keys(byMonth).length }), payload: byMonth };
-            }}
-            upload={async (p) => after(tc('savedMonths', { n: await uploadMonths(ws, 'dept_channel', p as Record<string, unknown>) }))} />
           <UploadStep n={null} title={tc('stepMapping')} help={tc('stepMappingHelp')} template={() => T.packMapping(org)} done={org.packs.some((p) => !!p.sub)} locked={false}
             parse={({ rows }) => {
               const r = parsePackMapping(rows!, idx);

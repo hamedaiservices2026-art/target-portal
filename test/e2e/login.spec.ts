@@ -110,7 +110,7 @@ test('the admin sees the admin navigation', async ({ page }) => {
   }
   await page.getByRole('link', { name: 'Hierarchy' }).click();
   await expect(page).toHaveURL(/\/admin\/hierarchy$/);
-  await expect(page.getByRole('heading', { name: 'Hierarchy' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Hierarchy', exact: true })).toBeVisible();
 });
 
 test('login and layout never scroll sideways on a phone', async ({ page }) => {
