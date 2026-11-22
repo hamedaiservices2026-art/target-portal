@@ -16,6 +16,8 @@ import { month as parseMonth } from './cycleData';
 import { ApiError, bad, forbidden, notFound, writeBatch, type Obj } from './masters';
 import { createMonth, resetDept, startDept } from './months';
 import { ADMINS, CDS, notifySql, type NotifyText } from './notify';
+import { getRules } from './rulesSettings';
+import { capFor } from '../../shared/rules';
 
 const MAX_VALUE = 1_000_000_000;
 /** calc_json is limited well below D1's 2 MB per value. */
@@ -31,8 +33,14 @@ export type CycleSettings = {
   deadlines: { head: string | null; manager: string | null; supervisor: string | null };
   /** Months averaged for the splits (default: the 3 before the target month). */
   avgMonths: string[];
-  /** Step 2 option: New Target by pack, or by pack & department. */
-  ntMode: 'pack' | 'dept';
+  /** Step 2 option: New Target by pack, by pack & department, or (Key Accounts) by pack, KAM & KAE. */
+  ntMode: 'pack' | 'dept' | 'leaf';
+  /**
+   * The CAP % nobody may exceed when they change a target (the Commercial
+   * Director's New Target per pack, and every level's distribution). Saving
+   * it sets the cap of every level in the distribution rules.
+   */
+  capPct: number | null;
 };
 
 /** The Commercial Director's work (CD tabs 1-3). */
@@ -92,6 +100,7 @@ export function defaultSettings(period: string): CycleSettings {
     deadlines: { head: addDays(period, 2), manager: addDays(period, 4), supervisor: addDays(period, 6) },
     avgMonths: prevMonths(period, 3),
     ntMode: 'pack',
+    capPct: null,
   };
 }
 
@@ -223,8 +232,14 @@ function parseSettings(body: Obj, period: string): CycleSettings {
     s.cdStep = body.cdStep;
   }
   if (body.ntMode !== undefined) {
-    if (body.ntMode !== 'pack' && body.ntMode !== 'dept') throw bad('ntMode must be pack or dept');
+    if (body.ntMode !== 'pack' && body.ntMode !== 'dept' && body.ntMode !== 'leaf') throw bad('ntMode must be pack, dept or leaf');
     s.ntMode = body.ntMode;
+  }
+  if (body.capPct !== undefined) {
+    if (body.capPct !== null && (typeof body.capPct !== 'number' || !Number.isFinite(body.capPct) || body.capPct < 0 || body.capPct > 100)) {
+      throw bad('capPct must be a number from 0 to 100');
+    }
+    s.capPct = body.capPct as number | null;
   }
   if (body.avgMonths !== undefined) {
     if (!Array.isArray(body.avgMonths) || body.avgMonths.length === 0 || body.avgMonths.length > 24) throw bad('avgMonths must list 1 to 24 months');
@@ -244,16 +259,29 @@ function parseSettings(body: Obj, period: string): CycleSettings {
 }
 
 /** Creates the cycle (first save) or updates its settings. */
+/** The cycle CAP % becomes the cap of every level of the distribution rules. */
+async function capStatements(db: D1Database, cap: number | null): Promise<D1PreparedStatement[]> {
+  if (cap === null) return [];
+  const rules = await getRules(db);
+  const next = { ...rules, caps: { head: cap, manager: cap, supervisor: cap } };
+  return [
+    db.prepare(`INSERT INTO settings(key, value) VALUES ('rules_json', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).bind(JSON.stringify(next)),
+    db.prepare(`INSERT INTO settings(key, value) VALUES ('cap_pct', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).bind(String(cap)),
+  ];
+}
+
 export async function saveSettings(db: D1Database, actorId: number, ws: Workspace, periodRaw: string, body: Obj): Promise<CycleSettings> {
   const period = parseMonth(periodRaw, 'period');
   const cur = await cycleRow(db, ws, period);
   const merged = { ...(cur ? parseJson<Obj>(cur.settings_json) ?? {} : {}), ...body };
   const settings = parseSettings(merged, period);
   const now = new Date().toISOString();
+  const caps = body.capPct !== undefined ? await capStatements(db, settings.capPct) : [];
   if (!cur) {
     await writeBatch(db, [
       db.prepare(`INSERT INTO cycles(ws, period, settings_json, updated_at) VALUES (?, ?, ?, ?)`).bind(ws, period, JSON.stringify(settings), now),
       auditStatement(db, actorId, 'cycle.open', {}, { ws, period, settings }),
+      ...caps,
     ], 'this cycle already exists');
     return settings;
   }
@@ -261,6 +289,7 @@ export async function saveSettings(db: D1Database, actorId: number, ws: Workspac
   const res = await writeBatch(db, [
     updateCycle(db, ws, period, cur.version, 'settings_json = ?', [JSON.stringify(settings)]),
     auditStatement(db, actorId, 'cycle.settings', {}, { ws, period, settings }),
+    ...caps,
   ], 'conflict');
   checkApplied(res);
   // Deadlines of the month the cycle runs in (the final level's date).
@@ -283,7 +312,7 @@ export async function sendToCd(db: D1Database, actorId: number, ws: Workspace, p
   let work: CdWork | null = cd;
   if (body.nt !== undefined) {
     const nt = packGrid(body.nt, 'nt');
-    work = { nt, ntOk: false, dm: {}, splitNt: {}, basis: {}, gm: {}, colJ: {}, ...(cd ? { gm: cd.gm, colJ: cd.colJ } : {}) };
+    work = { nt, ntOk: false, dm: {}, splitNt: {}, basis: {}, gm: {}, colJ: {}, ...(cd ? { gm: cd.gm, colJ: cd.colJ, avgMonths: cd.avgMonths } : {}) };
     if (cd && JSON.stringify(cd.nt) === JSON.stringify(nt)) work = { ...cd, ntOk: cd.ntOk };
   }
   if (!work || Object.keys(work.nt).length === 0) throw bad('nt (the New Target per pack) is required the first time');
@@ -340,7 +369,13 @@ function parseCdWork(v: unknown): CdWork {
     basis,
     gm: nested(o.gm, 'gm', 1) as CdWork['gm'],
     colJ: nested(o.colJ, 'colJ', 1) as CdWork['colJ'],
+    ...(o.avgMonths === undefined ? {} : { avgMonths: parseAvgMonths(o.avgMonths) }),
   };
+}
+
+function parseAvgMonths(v: unknown): string[] {
+  if (!Array.isArray(v) || v.length > 24) throw bad('avgMonths must list at most 24 months');
+  return [...new Set(v.map((m) => parseMonth(m, 'avgMonths')))].sort();
 }
 
 /** The CD saves the work in progress (version-checked). */
@@ -389,6 +424,19 @@ export async function submitCd(db: D1Database, user: SessionUser, ws: Workspace,
   const depts = (await all<{ id: number }>(db, `SELECT id FROM departments WHERE workspace = ? ORDER BY id`, ws)).map((d) => String(d.id));
   const cats = await packCategories(db);
   const problems = cdSubmitProblems(work, cats, depts);
+  // The CAP %: no pack's New Target may move more than the cap from the uploaded target.
+  const settings = { ...defaultSettings(period), ...parseJson<CycleSettings>(c.settings_json) };
+  if (settings.capPct !== null) {
+    const up = await one<{ v: string }>(db, `SELECT values_json AS v FROM data_months WHERE ws = ? AND kind = 'new_target' AND month = ?`, ws, period);
+    const byPack = parseJson<{ byPack?: Record<string, number> }>(up?.v ?? null)?.byPack;
+    if (byPack) {
+      const over = Object.keys(work.nt).filter((p) => {
+        const base = Math.round(byPack[p] ?? 0);
+        return Math.abs((work.nt[p] ?? 0) - base) > capFor(base, settings.capPct!);
+      });
+      if (over.length) problems.push(`${over.length} packs move more than the ${settings.capPct}% cap: ${over.slice(0, 10).join(', ')}`);
+    }
+  }
   if (problems.length) throw new ApiError(400, { error: 'invalid_request', detail: problems.join('; ') });
   const dept = cdFinal(work, cats, depts);
   const res = await writeBatch(db, [
@@ -462,9 +510,10 @@ export async function applyCalc(db: D1Database, actorId: number, ws: Workspace, 
       if (!known.has(r)) throw bad(`route ${r} is not a route of department ${d}`);
       for (const [p, n] of Object.entries(packGrid(g, `calc.${d}.${r}`))) sums[p] = (sums[p] ?? 0) + n;
     }
+    // Admin may lower a pack (editing the recommended target) but never go over the department target.
     const target = dept[d]!;
     for (const p of new Set([...Object.keys(target), ...Object.keys(sums)])) {
-      if ((sums[p] ?? 0) !== (target[p] ?? 0)) throw bad(`department ${d}: routes of ${p} add up to ${sums[p] ?? 0}, not the department target ${target[p] ?? 0}`);
+      if ((sums[p] ?? 0) > (target[p] ?? 0)) throw bad(`department ${d}: routes of ${p} add up to ${sums[p] ?? 0}, over the department target ${target[p] ?? 0}`);
     }
     next[d] = routes;
     applied.push(d);
@@ -644,4 +693,51 @@ export async function myApprovals(db: D1Database, userId: number): Promise<{ ws:
     sentByCategory: parseJson<Record<string, number>>(r.sent_json), sentAt: r.sent_at,
     deadline: parseJson<CycleSettings>(r.settings_json)?.deadlines.head ?? null, comment: r.comment,
   }));
+}
+
+// ---------- workflow progress and the Head's summary ----------
+
+export type ProgressNode = {
+  nodeId: number; deptId: number; parentId: number | null; name: string; userName: string | null;
+  status: string; openedAt: string | null; submittedAt: string | null;
+};
+
+/** Every person's step of the month (Admin and the CD): the workflow screen. */
+export async function getProgress(db: D1Database, user: SessionUser, ws: Workspace, periodRaw: string): Promise<{ monthId: number | null; deadline: string | null; nodes: ProgressNode[] }> {
+  if (!isAdmin(user) && !isCd(user, ws)) throw forbidden();
+  const period = parseMonth(periodRaw, 'period');
+  const m = await one<{ id: number; deadline: string | null }>(db, `SELECT id, deadline FROM months WHERE period = ?`, period);
+  if (!m) return { monthId: null, deadline: null, nodes: [] };
+  const nodes = await all<ProgressNode>(db,
+    `SELECT mn.node_id AS nodeId, mn.dept_id AS deptId, mn.parent_id AS parentId, mn.name, u.name AS userName,
+            mn.status, mn.opened_at AS openedAt, mn.submitted_at AS submittedAt
+     FROM month_nodes mn JOIN departments d ON d.id = mn.dept_id LEFT JOIN users u ON u.id = mn.manager_user_id
+     WHERE mn.month_id = ? AND d.workspace = ? ORDER BY d.sort, mn.name`, m.id, ws);
+  return { monthId: m.id, deadline: m.deadline, nodes };
+}
+
+/**
+ * The target sent to a Head (route level, with the tree), for the Head's
+ * summary by manager / supervisor and by pack. The Head, Admin and the CD.
+ */
+export async function headSummary(db: D1Database, user: SessionUser, ws: Workspace, periodRaw: string, deptId: number): Promise<{
+  nodes: { id: number; parentId: number | null; name: string }[];
+  leaves: { nodeId: number; routeCode: string; values: Record<string, number> }[];
+}> {
+  const period = parseMonth(periodRaw, 'period');
+  await deptOfWs(db, ws, deptId);
+  if (!isAdmin(user) && !isCd(user, ws)) {
+    const root = await one<{ manager_user_id: number | null }>(db, `SELECT manager_user_id FROM nodes WHERE dept_id = ? AND parent_id IS NULL`, deptId);
+    if (!root || root.manager_user_id !== user.id) throw forbidden();
+  }
+  const m = await one<{ id: number }>(db, `SELECT id FROM months WHERE period = ?`, period);
+  if (!m) return { nodes: [], leaves: [] };
+  const nodes = await all<{ id: number; parentId: number | null; name: string }>(db,
+    `SELECT node_id AS id, parent_id AS parentId, name FROM month_nodes WHERE month_id = ? AND dept_id = ? ORDER BY name`, m.id, deptId);
+  const leaves = await all<{ nodeId: number; routeCode: string; values_json: string }>(db,
+    `SELECT node_id AS nodeId, route_code AS routeCode, values_json FROM month_leaves WHERE month_id = ? AND dept_id = ? ORDER BY route_code`, m.id, deptId);
+  return {
+    nodes,
+    leaves: leaves.map((l) => ({ nodeId: l.nodeId, routeCode: l.routeCode, values: parseJson<Record<string, number>>(l.values_json) ?? {} })),
+  };
 }

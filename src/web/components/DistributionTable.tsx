@@ -8,6 +8,7 @@ import type { PackGroup } from '../../shared/types';
 import { fmtNum, t, tf, type Lang, type TextKey } from '../i18n';
 import { FilterRow, type FilterLabels, type FilterState } from './Filters';
 import { StatusBadge } from './StatusBadge';
+import { BenchLine, type BenchFn } from '../pages/cycle/DistributeExtras';
 
 /** A pack's live state, derived from its raw cell texts (cached per raw array). */
 export interface PackInfo {
@@ -48,6 +49,8 @@ interface RowProps {
   onCell: CellHandler;
   onCommit: PackHandler;
   onReset: (pack: string) => void;
+  /** Sales benchmarks per member (when "Show average sales, YAGO and PAGO" is on). */
+  bench?: BenchFn;
 }
 
 /** A number (or "x / y") kept left-to-right inside Arabic text: "-21" never shows as "21-". */
@@ -78,7 +81,7 @@ class PackRow extends Component<RowProps> {
   }
 
   render() {
-    const { pack, idx, total, starts, raw, info, vis, members, editable, onCell, onCommit, onReset } = this.props;
+    const { pack, idx, total, starts, raw, info, vis, members, editable, onCell, onCommit, onReset, bench } = this.props;
     const { check } = info;
     return (
       <tr data-pack={pack}>
@@ -102,6 +105,7 @@ class PackRow extends Component<RowProps> {
                   onBlur={() => onCommit(pack, i)}
                 />
                 <span id={hintId} class={hint.cls} data-testid={`hint-${pack}-${i}`}>{hint.text}</span>
+                {bench && <BenchLine v={Number.isFinite(info.nums[i]) ? info.nums[i]! : 0} b={bench(pack, i) ?? { avg: 0, pago: 0, yago: 0 }} />}
               </div>
             </td>
           );
@@ -151,6 +155,7 @@ export function DistributionTable(props: {
   onCell: CellHandler;
   onCommit: PackHandler;
   onReset: (pack: string) => void;
+  bench?: BenchFn;
 }) {
   const { groups, members, vis, totals, starts, raw, info, collapsed, editable, lang } = props;
   const cols = vis.length + 5;
@@ -202,7 +207,7 @@ export function DistributionTable(props: {
         <PackRow
           key={p} pack={p} idx={props.packIdx[p] ?? 0} total={totals[p] ?? 0} starts={starts[p] ?? []} raw={raw[p] ?? []}
           info={info(p)} vis={vis} members={members} editable={editable} lang={lang}
-          onCell={props.onCell} onCommit={props.onCommit} onReset={props.onReset}
+          onCell={props.onCell} onCommit={props.onCommit} onReset={props.onReset} bench={props.bench}
         />,
       );
     }

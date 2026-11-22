@@ -6,11 +6,11 @@ import { requireUser, type AppEnv } from '../auth';
 import { h, p, type Ctx } from './handler';
 import { benchmarks, salesMonths, setSalesman } from '../services/benchmarks';
 import {
-  applyCalc, approveHead, getCalc, getCycle, listCycles, myApprovals, recallFromCd, restartHead, returnFromCd, returnHead,
+  applyCalc, approveHead, getCalc, getCycle, getProgress, headSummary, listCycles, myApprovals, recallFromCd, restartHead, returnFromCd, returnHead,
   saveCd, saveSettings, sendToCd, sendToHead, setDeptTarget, submitCd,
 } from '../services/cycle';
 import {
-  clearRouteMonths, dataStatus, listCdRoles, logUpload, readMonthData, readOrg, readRouteRows, saveMonthData, setCdRoles,
+  clearRouteMonths, dataStatus, listCdRoles, logUpload, packSubs, readMonthData, readOrg, readRouteRows, saveMonthData, setCdRoles, setPackSubs,
   setChannels, setDeptWorkspace, uploadRouteRows, workspace,
 } from '../services/cycleData';
 import { forbidden, parseId } from '../services/masters';
@@ -43,6 +43,7 @@ cycle.put('/api/admin/departments/:id/workspace', h(async (c, db, me, body) => {
 }));
 cycle.put('/api/admin/departments/:id/channels', h(async (c, db, me, body) =>
   c.json(await setChannels(db, me, parseId(p(c, 'id')), await body()))));
+cycle.put('/api/admin/packs-sub', h(async (c, db, me, body) => c.json(await setPackSubs(db, me, await body()))));
 cycle.get('/api/admin/cd-roles', h(async (c, db) => c.json({ roles: await listCdRoles(db) })));
 cycle.put('/api/admin/users/:id/cd', h(async (c, db, me, body) => c.json(await setCdRoles(db, me, parseId(p(c, 'id')), await body()))));
 
@@ -85,10 +86,14 @@ cycle.get('/api/data/:ws/status', h(async (c, db) => { adminOrCd(c); return c.js
 cycle.get('/api/data/:ws/routes', h(async (c, db) => { adminOrCd(c); return raw(c, await readRouteRows(db, ws(c), c.req.query('kind'), c.req.query('month'))); }));
 cycle.get('/api/data/:ws/months', h(async (c, db) => { adminOrCd(c); return raw(c, await readMonthData(db, ws(c), c.req.query('kind'))); }));
 cycle.get('/api/data/:ws/org', h(async (c, db) => { adminOrCd(c); return c.json(await readOrg(db, ws(c))); }));
+cycle.get('/api/data/packs-sub', h(async (c, db) => c.json(await packSubs(db))));
 cycle.get('/api/data/:ws/sales-months', h(async (c, db) => c.json({ months: await salesMonths(db, ws(c)) })));
 
 cycle.get('/api/cycle/:ws', h(async (c, db) => { adminOrCd(c); return c.json({ cycles: await listCycles(db, ws(c)) }); }));
 cycle.get('/api/cycle/:ws/:period', h(async (c, db) => c.json(await getCycle(db, c.var.user, ws(c), per(c)))));
+cycle.get('/api/cycle/:ws/:period/progress', h(async (c, db) => c.json(await getProgress(db, c.var.user, ws(c), per(c)))));
+cycle.get('/api/cycle/:ws/:period/heads/:deptId/summary', h(async (c, db) =>
+  c.json(await headSummary(db, c.var.user, ws(c), per(c), parseId(p(c, 'deptId'))))));
 cycle.get('/api/cycle/:ws/:period/calc', h(async (c, db) => raw(c, await getCalc(db, c.var.user, ws(c), per(c)))));
 cycle.put('/api/cycle/:ws/:period/cd', h(async (c, db, _me, body) => c.json(await saveCd(db, c.var.user, ws(c), per(c), await body()))));
 cycle.post('/api/cycle/:ws/:period/cd/submit', h(async (c, db) => c.json(await submitCd(db, c.var.user, ws(c), per(c)))));

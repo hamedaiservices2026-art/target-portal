@@ -17,14 +17,21 @@ export type CdWork = {
   basis: Record<string, string>;
   /** Column I overrides: dept -> category -> cases. */
   gm: Record<string, Record<string, number>>;
-  /** Column J (final department total): dept -> category -> cases. */
+  /** Column J (final department total): dept -> category -> cases. Empty = the split itself is final. */
   colJ: Record<string, Record<string, number>>;
+  /** Months the Commercial Director picked for the average sales (default: the cycle's months). */
+  avgMonths?: string[];
 };
+
+/** Column J is in use when any department has a value in it (older cycles). */
+function usesColJ(work: CdWork): boolean {
+  return Object.values(work.colJ ?? {}).some((g) => Object.keys(g ?? {}).length > 0);
+}
 
 /**
  * Submit check (section 5): New Target approved; split exists and is not
  * stale; every pack of Tab 2 adds up to its New Target; column J per category
- * = the category's New Target. Returns the reasons it fails (empty = ok).
+ * = the category's New Target (only when column J is used). Returns the reasons it fails (empty = ok).
  */
 export function cdSubmitProblems(work: CdWork, cats: PackCat, depts: string[]): string[] {
   const out: string[] = [];
@@ -43,6 +50,7 @@ export function cdSubmitProblems(work: CdWork, cats: PackCat, depts: string[]): 
     if (s !== work.nt[p]) badPacks++;
   }
   if (badPacks) out.push(`${badPacks} packs in Target by department don't add up`);
+  if (!usesColJ(work)) return out;
   for (const cat of new Set(packs.map((p) => cats.get(p)).filter((c): c is string => !!c))) {
     const want = packs.filter((p) => cats.get(p) === cat).reduce((s, p) => s + work.nt[p]!, 0);
     const got = depts.reduce((s, d) => s + (work.colJ[d]?.[cat] ?? 0), 0);
@@ -59,6 +67,11 @@ export function cdSubmitProblems(work: CdWork, cats: PackCat, depts: string[]): 
 export function cdFinal(work: CdWork, cats: PackCat, depts: string[]): Record<string, Record<string, number>> {
   const out: Record<string, Record<string, number>> = Object.fromEntries(depts.map((d) => [d, {}]));
   const packs = Object.keys(work.nt);
+  if (!usesColJ(work)) {
+    // The department split by pack is final: each department gets the sum of its channels.
+    for (const d of depts) for (const p of packs) out[d]![p] = Object.values(work.dm[d] ?? {}).reduce((s, ch) => s + (ch[p] ?? 0), 0);
+    return out;
+  }
   for (const cat of new Set(packs.map((p) => cats.get(p)!))) {
     const rows = packs.filter((p) => cats.get(p) === cat).sort();
     const seed = rows.map((p) => depts.map((d) => Object.values(work.dm[d] ?? {}).reduce((s, ch) => s + (ch[p] ?? 0), 0)));

@@ -98,8 +98,9 @@ describe('target cycle (handover flow)', () => {
     expect(dept[tt]).toEqual({ CSD_CANS150: 520, AquafinA_330: 25 });
     expect(dept[mt]).toEqual({ CSD_CANS150: 480, AquafinA_330: 76 });
 
-    // Admin: apply a calculation that does not add up -> refused; then a right one.
-    r = await api('PUT', `/admin/cycle/ops/${P}/calc`, admin, { calc: { [tt]: { R1: { CSD_CANS150: 300, AquafinA_330: 25 }, R2: { CSD_CANS150: 200 } } } });
+    // Admin: apply a calculation that is over the department target -> refused
+    // (under is allowed: Admin's edits may leave cases unassigned); then a right one.
+    r = await api('PUT', `/admin/cycle/ops/${P}/calc`, admin, { calc: { [tt]: { R1: { CSD_CANS150: 330, AquafinA_330: 25 }, R2: { CSD_CANS150: 200 } } } });
     expect(r.status).toBe(400);
     r = await api('PUT', `/admin/cycle/ops/${P}/calc`, admin, { calc: { [tt]: { R1: { CSD_CANS150: 312, AquafinA_330: 25 }, R2: { CSD_CANS150: 208 } } } });
     expect(r.status).toBe(200);

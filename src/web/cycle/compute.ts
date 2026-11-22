@@ -5,7 +5,7 @@
 import type { OrgDto } from '../../worker/services/cycleData';
 import { averageSales } from '../../shared/calc/averages';
 import { cascade, reconcile, type CascadeNode, type CascadeResult } from '../../shared/calc/cascade';
-import { brandFamily, cdSubtotals, type Category, CATEGORIES } from '../../shared/calc/packs';
+import { brandFamily, cdSubtotals, subCategoryByName, type Category, CATEGORIES } from '../../shared/calc/packs';
 import { addMonths, pago as pagoOf, yago as yagoOf, type Month } from '../../shared/calc/periods';
 import { channelSplit, departmentSplit, splitByWeights } from '../../shared/calc/splits';
 import type { RouteMonthData } from './parsers';
@@ -19,6 +19,19 @@ export const NO_CHANNEL = '_';
 /** Pack -> category from the pack master. */
 export function catMap(org: Org): Map<string, Category> {
   return new Map(org.packs.map((p) => [p.code, p.grp as Category]));
+}
+
+/** Pack -> sub category (SSNR, MSPET, PMIX, Water, LIT, LRB_Other): the pack master's, else by name. */
+export function subMap(packs: { code: string; grp: string; sub?: string | null }[]): (pack: string) => string {
+  const m = new Map(packs.map((p) => [p.code, p.sub || subCategoryByName(p.code, p.grp as Category)]));
+  return (pack) => m.get(pack) ?? subCategoryByName(pack);
+}
+
+/** Company sales of one month by pack. */
+export function companyMonth(sales: RouteMonthData, m: Month): Grid {
+  const out: Grid = {};
+  for (const g of Object.values(sales[m] ?? {})) for (const [p, n] of Object.entries(g)) add(out, p, n);
+  return out;
 }
 
 export type RouteInfo = { deptId: number; nodeId: number; channel: string };
@@ -362,6 +375,20 @@ export function cdRows(packs: string[], cats: Map<string, Category>): CdRow[] {
 
 export type DeptCalc = { deptId: number; result: CascadeResult; routes: Record<string, Grid> };
 
+/** Route -> pack -> average sales of the months given (Excel AVERAGE: months with no value skipped). */
+export function routeAverages(sales: RouteMonthData, months: Month[], routes?: Iterable<string>): Map<string, Grid> {
+  const byRoute = groupSales(sales, (r) => r);
+  const out = new Map<string, Grid>();
+  const list = routes ? [...routes] : [...new Set(months.flatMap((m) => Object.keys(byRoute[m] ?? {})))];
+  for (const r of list) {
+    const packs = new Set(months.flatMap((m) => Object.keys(byRoute[m]?.[r] ?? {})));
+    const g: Grid = {};
+    for (const p of packs) g[p] = avgOf(byRoute, r, p, months);
+    out.set(r, g);
+  }
+  return out;
+}
+
 /** The live tree of one department as cascade nodes (routes are leaves). */
 export function deptTree(org: Org, deptId: number): CascadeNode | null {
   const nodes = org.nodes.filter((n) => n.deptId === deptId);
@@ -395,18 +422,18 @@ export function deptTree(org: Org, deptId: number): CascadeNode | null {
  */
 export function calculate(args: {
   org: Org; dept: Record<string, Grid>; sales: RouteMonthData; avgMonths: Month[]; routeTargets: Record<string, Grid>;
-}): { depts: DeptCalc[]; problems: string[] } {
-  const { org, dept, sales, avgMonths, routeTargets } = args;
+  /** Admin edits: cascade node id ('n:<node id>' or 'r:<route>') -> pack -> cases. */
+  fixed?: Record<string, Grid>;
+  /** Key Accounts: the uploaded target per KAE, used as the weights instead of sales. */
+  uploadedLeaf?: Record<string, Grid> | null;
+}): { depts: DeptCalc[]; problems: string[]; routeAvg: Map<string, Grid> } {
+  const { org, dept, sales, avgMonths, routeTargets, fixed, uploadedLeaf } = args;
   const cats = catMap(org);
-  const byRoute = groupSales(sales, (r) => r);
-  const routeAvg = new Map<string, Grid>();
-  const routeCatAvg = new Map<string, Record<string, number>>();
   const routes = new Set(org.leaves.map((l) => l.routeCode));
+  const routeAvg = routeAverages(sales, avgMonths, routes);
+  const routeCatAvg = new Map<string, Record<string, number>>();
   for (const r of routes) {
-    const packs = new Set(avgMonths.flatMap((m) => Object.keys(byRoute[m]?.[r] ?? {})));
-    const g: Grid = {};
-    for (const p of packs) g[p] = avgOf(byRoute, r, p, avgMonths);
-    routeAvg.set(r, g);
+    const g = routeAvg.get(r) ?? {};
     const c: Record<string, number> = {};
     for (const [p, n] of Object.entries(g)) c[cats.get(p) ?? 'LRB-Others'] = (c[cats.get(p) ?? 'LRB-Others'] ?? 0) + n;
     routeCatAvg.set(r, c);
@@ -419,7 +446,8 @@ export function calculate(args: {
     if (!root) { problems.push(`${name}: no routes under the Head; it keeps its current target.`); continue; }
     const result = cascade({
       root, packs: Object.keys(target), target,
-      packAvg: (id, p) => routeAvg.get(id.slice(2))?.[p] ?? 0,
+      packAvg: uploadedLeaf ? (id, p) => uploadedLeaf[id.slice(2)]?.[p] ?? 0 : (id, p) => routeAvg.get(id.slice(2))?.[p] ?? 0,
+      fixed: fixed ? (id, p) => fixed[id]?.[p] : undefined,
       categoryAvg: (id, p) => routeCatAvg.get(id.slice(2))?.[cats.get(p) ?? 'LRB-Others'] ?? 0,
       routeTarget: (id, p) => routeTargets[id.slice(2)]?.[p] ?? 0,
     });
@@ -433,7 +461,7 @@ export function calculate(args: {
     if (Object.keys(out).length === 0) problems.push(`${name}: no routes under the Head.`);
     depts.push({ deptId: Number(d), result, routes: out });
   }
-  return { depts, problems };
+  return { depts, problems, routeAvg };
 }
 
 /** Reconciliation lines per department and category (section 6). */

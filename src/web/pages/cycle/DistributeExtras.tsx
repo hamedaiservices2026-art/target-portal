@@ -1,8 +1,10 @@
-// Extras on the distribution screen (handover section 7): the "By total"
-// view per summary group, sales benchmarks per team member (3-month average,
-// PAGO, YAGO, any months picked), and the supervisor's salesman corrections.
+// Extras on the distribution screen (new target process): step 1 "By
+// category" (categories open to their sub categories), the "Show average
+// sales, YAGO and PAGO" benchmarks per team member, and the supervisor's
+// salesman corrections.
 import { useMemo, useState } from 'preact/hooks';
-import { editableGroupOf, EDITABLE_SUMMARY_GROUPS, RebalanceError, rebalanceGroup, summaryGroups, SUMMARY_GROUPS, type Category, type SummaryGroup } from '../../../shared/calc';
+import { CATEGORIES, RebalanceError, rebalanceGroup, type Category } from '../../../shared/calc';
+import { subCategoryByName, subsOf } from '../../../shared/calc/packs';
 import { addMonths } from '../../../shared/calc/periods';
 import type { Workspace } from '../../../worker/services/distribution';
 import { api } from '../../api';
@@ -11,32 +13,99 @@ import type { PackInfo } from '../../components/DistributionTable';
 import { fmtNum, useLang } from '../../i18n';
 import { tc } from '../../cycle/i18n';
 import { useAsync } from '../../cycle/load';
-import { fmtGap, gapClass, NumCell } from '../../cycle/ui';
+import { fmtGap, gapClass, MonthPicker, NumCell } from '../../cycle/ui';
 
-function useMaster(ws: Workspace): Map<string, Category> {
-  return useMemo(() => new Map(ws.packs.map((p) => [p.code, p.grp as Category])), [ws]);
+type PackMeta = Record<string, { grp: string; sub: string | null }>;
+type Bench = { avg: number; pago: number; yago: number };
+type BenchRow = [string, string, number | null, number | null, number | null];
+/** A member's sales benchmark for a pack (or undefined when the benchmarks are off). */
+export type BenchFn = (pack: string, i: number) => Bench | undefined;
+
+const ZERO: Bench = { avg: 0, pago: 0, yago: 0 };
+const fin = (x: number | undefined) => (x !== undefined && Number.isFinite(x) ? x : 0);
+
+/** Category of each pack and its sub category (SSNR / MSPET / PMIX / Water / LIT / LRB_Other). */
+function usePackMeta(ws: Workspace) {
+  const meta = useAsync(() => api<PackMeta>('GET', '/api/data/packs-sub'), []);
+  return useMemo(() => {
+    const cat = new Map<string, Category>(ws.packs.map((p) => [p.code, p.grp as Category]));
+    const sub = (p: string) => meta.data?.[p]?.sub || subCategoryByName(p, cat.get(p) ?? 'LRB-Others');
+    return { cat, sub };
+  }, [ws, meta.data]);
 }
 
-/** "By total": type a new group total for one person; the group's packs are rebalanced. */
-export function ByTotal({ ws, codes, info, totals, editable, onApply }: {
-  ws: Workspace; codes: string[]; ordered: Map<string, string[]>; info: (p: string) => PackInfo; totals: Record<string, number>;
-  editable: boolean; onApply: (next: Record<string, string[]>) => void;
+/**
+ * The sales benchmarks behind "Show average sales, YAGO and PAGO": the months
+ * picked (default: the 3 months before the period), loaded only while on.
+ */
+export function useBench(ws: Workspace | null, mid: string, nid: string) {
+  const period = ws?.month.period ?? '';
+  const [on, setOn] = useState(false);
+  const [picked, setMonths] = useState<string[] | null>(null);
+  const months = picked ?? (period ? [addMonths(period, -3), addMonths(period, -2), addMonths(period, -1)] : []);
+  const wsName = ws?.node.workspace ?? '';
+  const avail = useAsync(on && wsName ? () => api<{ months: string[] }>('GET', `/api/data/${wsName}/sales-months`) : null, [on, wsName]);
+  const data = useAsync(on && months.length ? () => api<BenchRow[]>('GET', `/api/months/${mid}/nodes/${nid}/benchmarks?months=${months.join(',')}`) : null, [on, mid, nid, months.join(',')]);
+  const fn = useMemo<BenchFn | undefined>(() => {
+    if (!on || !data.data || !ws) return undefined;
+    const idx = new Map<string, number>(ws.children.map((c, i) => [c.key, i]));
+    const m = new Map<string, Bench>();
+    for (const [child, p, avg, pago, yago] of data.data) {
+      const i = idx.get(child);
+      if (i !== undefined) m.set(`${p}|${i}`, { avg: avg ?? 0, pago: pago ?? 0, yago: yago ?? 0 });
+    }
+    return (p, i) => m.get(`${p}|${i}`) ?? ZERO;
+  }, [on, data.data, ws]);
+  return { on, setOn, months, setMonths, available: avail.data ? new Set(avail.data.months) : null, error: data.error, fn };
+}
+
+export type BenchState = ReturnType<typeof useBench>;
+
+/** The checkbox and the month picker. */
+export function BenchControls({ ws, b }: { ws: Workspace; b: BenchState }) {
+  useLang();
+  return (
+    <div class="cy-bench-controls" data-testid="benchmarks">
+      <label class="small">
+        <input type="checkbox" checked={b.on} onChange={(e) => b.setOn(e.currentTarget.checked)} />{' '}{tc('showBench')}
+      </label>
+      {b.on && <MonthPicker period={ws.month.period} months={b.months} onChange={b.setMonths} available={b.available} title={tc('benchTitle')} />}
+      {b.on && !b.months.length && <p class="small muted">{tc('pickMonths')}</p>}
+      {b.error && <div class="alert">{b.error}</div>}
+    </div>
+  );
+}
+
+/** "Avg · PAGO · YAGO" under a number, each with the gap of the target against it. */
+export function BenchLine({ v, b }: { v: number; b: Bench }) {
+  const gap = (x: number) => (x > 0 ? v / x - 1 : null);
+  const part = (label: string, x: number) => {
+    const g = gap(x);
+    return <span title={`${label} ${fmtNum(Math.round(x))}`}>{label} {fmtNum(Math.round(x))} <span class={gapClass(g)}>{fmtGap(g)}</span></span>;
+  };
+  return <span class="cy-bench">{part(tc('avgSel'), b.avg)}{part('PAGO', b.pago)}{part('YAGO', b.yago)}</span>;
+}
+
+/**
+ * Step 1 of the distribution: by category. Each category opens to its sub
+ * categories; type a new total for one person and the packs of that row are
+ * rebalanced across the team (the pack totals stay locked).
+ */
+export function ByCategory({ ws, codes, info, totals, editable, onApply, bench }: {
+  ws: Workspace; codes: string[]; info: (p: string) => PackInfo; totals: Record<string, number>;
+  editable: boolean; onApply: (next: Record<string, string[]>) => void; bench?: BenchFn;
 }) {
   useLang();
-  const master = useMaster(ws);
+  const { cat, sub } = usePackMeta(ws);
   const [err, setErr] = useState<string | null>(null);
-  const byGroup = useMemo(() => {
-    const m = new Map<SummaryGroup, string[]>(SUMMARY_GROUPS.map((g) => [g, []]));
-    for (const p of codes) for (const g of summaryGroups(p, master)) m.get(g)!.push(p);
-    return m;
-  }, [codes, master]);
+  const [open, setOpen] = useState<Set<string>>(new Set());
   const people = ws.children;
   if (people.length === 0) return null;
+  const inCat = (c: Category) => codes.filter((p) => (cat.get(p) ?? 'LRB-Others') === c && (totals[p] ?? 0) > 0);
 
-  function change(g: SummaryGroup, who: number, n: number) {
+  function change(packs: string[], who: number, n: number) {
     setErr(null);
-    const packs = (byGroup.get(g) ?? []).filter((p) => editableGroupOf(p, master) === g);
-    const vals = packs.map((p) => info(p).nums.map((x) => (Number.isFinite(x) ? x : 0)));
+    const vals = packs.map((p) => info(p).nums.map(fin));
     try {
       const next = rebalanceGroup(packs.map((p) => totals[p] ?? 0), vals, who, n);
       onApply(Object.fromEntries(packs.map((p, i) => [p, next[i]!.map(String)])));
@@ -45,102 +114,51 @@ export function ByTotal({ ws, codes, info, totals, editable, onApply }: {
     }
   }
 
+  const row = (key: string, label: preact.ComponentChild, packs: string[], cls: string) => {
+    const canEdit = editable && people.length > 1;
+    return (
+      <tr key={key} class={cls}>
+        <td>{label}</td>
+        <td class="num">{fmtNum(packs.reduce((s, p) => s + (totals[p] ?? 0), 0))}</td>
+        {people.map((c, i) => {
+          const v = packs.reduce((s, p) => s + fin(info(p).nums[i]), 0);
+          const b = bench ? packs.reduce<Bench>((t, p) => { const x = bench(p, i) ?? ZERO; return { avg: t.avg + x.avg, pago: t.pago + x.pago, yago: t.yago + x.yago }; }, ZERO) : null;
+          return (
+            <td key={c.key} class="num">
+              {canEdit ? <NumCell value={v} label={`${key} ${c.label}`} onChange={(n) => change(packs, i, n)} /> : fmtNum(v)}
+              {b && <BenchLine v={v} b={b} />}
+            </td>
+          );
+        })}
+      </tr>
+    );
+  };
+
   return (
-    <details class="card cy-extra" data-testid="by-total">
-      <summary><b>{tc('byTotal')}</b> <span class="muted small">{tc('byTotalHelp')}</span></summary>
+    <section class="card cy-extra" data-testid="by-category">
+      <div class="cy-section-head">
+        <h2><span class="n">1</span> {tc('distByCategory')}</h2>
+        <span class="muted small">{tc('distByCategoryHelp')}</span>
+      </div>
       {err && <div class="alert" role="alert">{err}</div>}
       <div class="tablewrap"><table class="ad-table cy-table">
-        <thead><tr><th>{tc('group')}</th><th class="num">{tc('target')}</th>{people.map((c) => <th key={c.key} class="num"><bdi>{c.label}</bdi></th>)}</tr></thead>
-        <tbody>{SUMMARY_GROUPS.map((g) => {
-          const packs = byGroup.get(g) ?? [];
-          if (!packs.length) return null;
-          const canEdit = editable && EDITABLE_SUMMARY_GROUPS.includes(g);
-          return (
-            <tr key={g} class={canEdit ? '' : 'sub l2'}>
-              <td>{g}</td>
-              <td class="num">{fmtNum(packs.reduce((s, p) => s + (totals[p] ?? 0), 0))}</td>
-              {people.map((c, i) => {
-                const v = packs.reduce((s, p) => s + (Number.isFinite(info(p).nums[i]!) ? info(p).nums[i]! : 0), 0);
-                return <td key={c.key} class="num">{canEdit ? <NumCell value={v} label={`${g} ${c.label}`} onChange={(n) => change(g, i, n)} /> : fmtNum(v)}</td>;
-              })}
-            </tr>
-          );
+        <thead><tr><th>{tc('category')}</th><th class="num">{tc('target')}</th>{people.map((c) => <th key={c.key} class="num"><bdi>{c.label}</bdi>{c.sub && <div class="muted small">{c.sub}</div>}</th>)}</tr></thead>
+        <tbody>{CATEGORIES.flatMap((c) => {
+          const packs = inCat(c);
+          if (!packs.length) return [];
+          const subs = subsOf(c, packs, sub);
+          const expandable = subs.length > 1 || (subs.length === 1 && subs[0] !== c);
+          const isOpen = open.has(c);
+          const label = expandable
+            ? <button type="button" class="btn link" aria-expanded={isOpen} onClick={() => { const n = new Set(open); if (isOpen) n.delete(c); else n.add(c); setOpen(n); }}>{isOpen ? '▾' : '▸'} {c}</button>
+            : c;
+          return [
+            row(c, label, packs, 'sub l1'),
+            ...(isOpen ? subs.map((s) => row(`${c}/${s}`, <span style={{ paddingInlineStart: '18px' }}>{s}</span>, packs.filter((p) => sub(p) === s), '')) : []),
+          ];
         })}</tbody>
       </table></div>
-    </details>
-  );
-}
-
-type BenchRow = [string, string, number | null, number | null, number | null];
-
-/** Sales benchmarks per team member for the packs on screen. */
-export function Benchmarks({ ws, mid, nid, codes, info }: { ws: Workspace; mid: string; nid: string; codes: string[]; info: (p: string) => PackInfo }) {
-  useLang();
-  const period = ws.month.period;
-  const [open, setOpen] = useState(false);
-  const [months, setMonths] = useState<string[]>(() => [addMonths(period, -3), addMonths(period, -2), addMonths(period, -1)]);
-  const [pack, setPack] = useState<string>('');
-  const avail = useAsync(open ? () => api<{ months: string[] }>('GET', `/api/data/${ws.node.workspace}/sales-months`) : null, [open, ws.node.workspace]);
-  const data = useAsync(open ? () => api<BenchRow[]>('GET', `/api/months/${mid}/nodes/${nid}/benchmarks?months=${months.join(',')}`) : null, [open, mid, nid, months.join(',')]);
-  const have = new Set(avail.data?.months ?? []);
-  const year = Number(period.slice(0, 4));
-  const pickable = [year - 1, year].flatMap((y) => Array.from({ length: 12 }, (_, i) => `${y}-${String(i + 1).padStart(2, '0')}`));
-  const toggle = (m: string) => setMonths((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m].sort()));
-
-  const agg = useMemo(() => {
-    const out = new Map<string, { avg: number; pago: number; yago: number }>();
-    for (const [child, p, avg, pago, yago] of data.data ?? []) {
-      if (pack && p !== pack) continue;
-      const e = out.get(child) ?? { avg: 0, pago: 0, yago: 0 };
-      e.avg += avg ?? 0;
-      e.pago += pago ?? 0;
-      e.yago += yago ?? 0;
-      out.set(child, e);
-    }
-    return out;
-  }, [data.data, pack]);
-  const gap = (a: number, b: number) => (b > 0 ? a / b - 1 : null);
-
-  return (
-    <details class="card cy-extra" data-testid="benchmarks" onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}>
-      <summary><b>{tc('benchTitle')}</b> <span class="muted small">{tc('benchHelp')}</span></summary>
-      {open && (
-        <>
-          <div class="cy-months" role="group" aria-label={tc('avgMonthsPick')}>
-            {pickable.map((m) => (
-              <button type="button" key={m} class={`chip${months.includes(m) ? ' on' : ''}${have.has(m) ? '' : ' off'}`}
-                aria-pressed={months.includes(m)} disabled={!have.has(m) && !months.includes(m)} title={have.has(m) ? '' : tc('noSalesData')} onClick={() => toggle(m)}>
-                {m}
-              </button>
-            ))}
-          </div>
-          <label class="small">{tc('pack')}{' '}
-            <select value={pack} onChange={(e) => setPack(e.currentTarget.value)}>
-              <option value="">{tc('allPacks')}</option>
-              {codes.map((c) => <option key={c} value={c}>{c}</option>)}
-            </select>
-          </label>
-          {data.error && <div class="alert">{data.error}</div>}
-          <div class="tablewrap"><table class="ad-table cy-table">
-            <thead><tr><th>{tc('member')}</th><th class="num">{tc('target')}</th><th class="num">{tc('avgSel')}</th><th class="num">{tc('vsAvg')}</th><th class="num">PAGO</th><th class="num">{tc('vsPago')}</th><th class="num">YAGO</th><th class="num">{tc('vsYago')}</th></tr></thead>
-            <tbody>{ws.children.map((c, i) => {
-              const tgt = (pack ? [pack] : codes).reduce((s, p) => s + (Number.isFinite(info(p).nums[i]!) ? info(p).nums[i]! : 0), 0);
-              const b = agg.get(c.key) ?? { avg: 0, pago: 0, yago: 0 };
-              const g = [gap(tgt, b.avg), gap(tgt, b.pago), gap(tgt, b.yago)];
-              return (
-                <tr key={c.key}>
-                  <td><bdi>{c.label}</bdi>{c.sub && <div class="muted small">{c.sub}</div>}</td>
-                  <td class="num">{fmtNum(tgt)}</td>
-                  <td class="num">{fmtNum(Math.round(b.avg))}</td><td class="num"><span class={gapClass(g[0])}>{fmtGap(g[0])}</span></td>
-                  <td class="num">{fmtNum(Math.round(b.pago))}</td><td class="num"><span class={gapClass(g[1])}>{fmtGap(g[1])}</span></td>
-                  <td class="num">{fmtNum(Math.round(b.yago))}</td><td class="num"><span class={gapClass(g[2])}>{fmtGap(g[2])}</span></td>
-                </tr>
-              );
-            })}</tbody>
-          </table></div>
-        </>
-      )}
-    </details>
+    </section>
   );
 }
 

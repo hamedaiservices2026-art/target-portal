@@ -18,7 +18,8 @@ import { statusText } from '../components/StatusBadge';
 import { StatusPill } from '../components/StatusPill';
 import { fmtDeadline, fmtPeriod } from '../format';
 import { fmtNum, t, tf, useLang, type TextKey } from '../i18n';
-import { Benchmarks, ByTotal, SalesmanPanel } from './cycle/DistributeExtras';
+import { BenchControls, ByCategory, SalesmanPanel, useBench } from './cycle/DistributeExtras';
+import { tc } from '../cycle/i18n';
 
 const GROUPS: PackGroup[] = ['CSD', 'Water', 'LRB-Others'];
 
@@ -71,6 +72,7 @@ function rawFromServer(w: Workspace): Raw {
 export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string }) {
   const [lang] = useLang();
   const [ws, setWs] = useState<Workspace | null>(null);
+  const bench = useBench(ws, mid, nid);
   const [loadErr, setLoadErr] = useState<TextKey | null>(null);
   const [raw, setRaw] = useState<Raw>({});
   const [version, setVersion] = useState(0);
@@ -472,16 +474,17 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
         </div>
       )}
 
-      <ByTotal ws={ws} codes={codes} ordered={ordered} info={info} totals={totals} editable={editable}
+      <BenchControls ws={ws} b={bench} />
+      <ByCategory ws={ws} codes={codes} info={info} totals={totals} editable={editable} bench={bench.fn}
         onApply={(next) => { setRaw((prev) => ({ ...prev, ...next })); touched(); }} />
-      <Benchmarks ws={ws} mid={mid} nid={nid} codes={codes} info={info} />
       {leafTeam && <SalesmanPanel ws={ws} mid={mid} onChanged={() => void load()} />}
+      <h2 class="cy-step-title"><span class="n">2</span> {tc('distByPack')}</h2>
 
       <DistributionTable
         groups={groups} members={members} vis={vis} totals={totals} starts={starts} raw={raw} packIdx={packIdx}
         info={info} collapsed={collapsed} onToggle={onToggle} editable={editable} lang={lang}
         filters={filters} onFilters={setFilters} filterLabels={filterLabels}
-        onCell={onCell} onCommit={onCommit} onReset={onReset}
+        onCell={onCell} onCommit={onCommit} onReset={onReset} bench={bench.fn}
       />
       {editable && <p class="foot">{t('dsFoot')}</p>}
     </section>

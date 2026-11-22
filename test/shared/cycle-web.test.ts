@@ -15,7 +15,7 @@ describe('parsers', () => {
       ['202610', 'UNKNOWN_X', 3],
     ], '2026-10', idx);
     expect(r.byPack).toEqual({ CSD_CANS150: 1000 });
-    expect(r.checks.map((c) => c.level)).toEqual(['info', 'error', 'info']);
+    expect(r.checks.map((c) => c.level)).toEqual(['info', 'warning', 'info']);
   });
 
   it('channel grid: subtotal rows and Total columns ignored, ABC kept', () => {
