@@ -1,3 +1,4 @@
+-- (LIT_CANS310 is added only where LIT_CANS320 exists: a fresh database gets no new pack.)
 -- LIT_CANS310 and LIT_CANS320 are one pack, LIT_CANS310 (the department
 -- target file already gives them as "LIT_CANS310+320"). Uploads read
 -- LIT_CANS320 and LIT_CANS310+320 as LIT_CANS310 (see PACK_ALIASES); here
@@ -6,7 +7,8 @@
 INSERT INTO packs (code, grp, active, sort, sub)
 SELECT 'LIT_CANS310', 'LRB-Others', 1,
        COALESCE((SELECT sort FROM packs WHERE upper(replace(code, '_', '')) = 'LITCANS320'), 0), 'LIT'
-WHERE NOT EXISTS (SELECT 1 FROM packs WHERE upper(replace(replace(code, '_', ''), ' ', '')) = 'LITCANS310');
+WHERE NOT EXISTS (SELECT 1 FROM packs WHERE upper(replace(replace(code, '_', ''), ' ', '')) = 'LITCANS310')
+  AND EXISTS (SELECT 1 FROM packs WHERE upper(replace(replace(code, '_', ''), ' ', '')) = 'LITCANS320');
 
 UPDATE packs SET active = 1, sub = COALESCE(sub, 'LIT')
 WHERE upper(replace(replace(code, '_', ''), ' ', '')) = 'LITCANS310';
