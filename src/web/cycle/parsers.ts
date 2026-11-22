@@ -1,7 +1,7 @@
 // Excel layouts of the Admin start (handover section 4). Pure functions over
 // the rows read-excel-file returns; each returns its data plus the problems
 // found, as ok / info / warning / error, before anything is sent.
-import { packKey } from '../../shared/calc/packs';
+import { PACK_ALIASES, packKey } from '../../shared/calc/packs';
 import { parseMonth, type Month } from '../../shared/calc/periods';
 
 export type CheckLevel = 'info' | 'warning' | 'error';
@@ -11,7 +11,13 @@ export type PackIndex = Map<string, string>;
 
 /** Maps packKey(name) -> the pack master code (CSD_CANS150 = CSD CANS150 = csd_cans150). */
 export function packIndex(codes: string[]): PackIndex {
-  return new Map(codes.map((c) => [packKey(c), c]));
+  const idx = new Map(codes.map((c) => [packKey(c), c]));
+  // Merged packs (e.g. LIT_CANS320 -> LIT_CANS310) count as the pack they were merged into.
+  for (const [alias, to] of Object.entries(PACK_ALIASES)) {
+    const target = idx.get(packKey(to));
+    if (target) idx.set(packKey(alias), target);
+  }
+  return idx;
 }
 
 const squash = (s: unknown): string => (typeof s === 'string' ? s : s === null || s === undefined ? '' : String(s)).toLowerCase().replace(/[\s_\-./]+/g, '');

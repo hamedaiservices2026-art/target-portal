@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { cascade, type CascadeNode } from '../../src/shared/calc/cascade';
 import { cdFinal, cdSubmitProblems, type CdWork } from '../../src/shared/calc/cd';
 import { categoryOfSub, subCategoryByName, subsOf } from '../../src/shared/calc/packs';
-import { packIndex, parseChannelGrid, parseNewTargetByLeaf, parsePackMapping } from '../../src/web/cycle/parsers';
+import { packIndex, parseChannelGrid, parseNewTargetByLeaf, parseNewTargetByPack, parsePackMapping } from '../../src/web/cycle/parsers';
 
 const idx = packIndex(['CSD_CANS150', 'CSD_PET2250', 'AquafinA_330', 'LIT_PET500']);
 
@@ -76,12 +76,26 @@ describe('new upload layouts', () => {
       ['Pack', 'TT DMM', 'TT Outer', 'Total TT', 'MT', 'MT SSV', 'Total MT', 'ABC'],
       ['CSD_CANS150', 300, 200, 500, 100, 50, 150, 650],
       ['AquafinA_330', '', '', '', '', '', 80, 80],
-      ['LIT_CANS310+320', 1, 1, 2, '', '', '', 2],
+      ['NOT_A_PACK', 1, 1, 2, '', '', '', 2],
     ], ['TT DMM', 'TT Outer', 'MT', 'MT SSV'], idx, { 'TT DMM': 'TT', 'TT Outer': 'TT', MT: 'MT', 'MT SSV': 'MT' });
     expect(r.byChannel.MT).toEqual({ CSD_CANS150: 100, AquafinA_330: 80 });
     expect(r.byChannel['MT SSV']).toEqual({ CSD_CANS150: 50 });
-    expect(r.checks.some((c) => c.level === 'warning' && /LIT_CANS310\+320/.test(c.text))).toBe(true);
+    expect(r.checks.some((c) => c.level === 'warning' && /NOT_A_PACK/.test(c.text))).toBe(true);
     expect(r.checks.some((c) => c.level === 'error')).toBe(false);
+  });
+
+  it('LIT_CANS320 and LIT_CANS310+320 are read as LIT_CANS310 (merged pack)', () => {
+    const lit = packIndex(['LIT_CANS310', 'LIT_CANS320', 'CSD_CANS150']);
+    const g = parseChannelGrid([
+      ['Pack', 'TT DMM', 'MT'],
+      ['LIT_CANS310+320', 100, 40],
+      ['LIT_CANS320', 5, 0],
+    ], ['TT DMM', 'MT'], lit);
+    expect(g.byChannel['TT DMM']).toEqual({ LIT_CANS310: 105 });
+    expect(g.byChannel.MT).toEqual({ LIT_CANS310: 40 });
+    expect(g.checks.some((c) => c.level === 'warning')).toBe(false);
+    const nt = parseNewTargetByPack([['Sales Target Category', 'Cases'], ['LIT_CANS310', 7], ['LIT_CANS320', 3]], '2026-12', lit);
+    expect(nt.byPack).toEqual({ LIT_CANS310: 10 });
   });
 
   it('Key Accounts by pack, KAM and KAE', () => {

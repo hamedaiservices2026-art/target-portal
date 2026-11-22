@@ -172,3 +172,13 @@ export function subsOf(cat: Category, packs: readonly string[], subOf: (p: strin
     return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
   });
 }
+
+/**
+ * Packs merged into another pack: every upload reads the alias as the target
+ * pack (cases are added up). LIT_CANS320 and the combined "LIT_CANS310+320"
+ * of the department file are one pack, LIT_CANS310.
+ */
+export const PACK_ALIASES: Readonly<Record<string, string>> = {
+  LIT_CANS320: 'LIT_CANS310',
+  'LIT_CANS310+320': 'LIT_CANS310',
+};
