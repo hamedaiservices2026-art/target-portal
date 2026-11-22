@@ -122,3 +122,22 @@ describe('new upload layouts', () => {
     expect(r.checks.some((c) => /NOPE/.test(c.text))).toBe(true);
   });
 });
+
+describe('sales hierarchy file', () => {
+  it('reads the Hierarchy.xlsx layout (title rows above, blank rows skipped)', async () => {
+    const { parseHierarchySheet } = await import('../../src/web/cycle/hierarchyFile');
+    const r = parseHierarchySheet([
+      ['Sales hierarchy'],
+      ['Channel Head', 'Sales Manager', 'Sales Supervisor', 'Route Code'],
+      ['Amir Elnagar', 'Hussain Alsaleem', 'Mahdi Altawat', 314037],
+      [null, null, null, null],
+      ['Samir Najm', 'Samir Najm', 'Omar', '514001'],
+    ]);
+    expect(r.error).toBeNull();
+    expect(r.rows).toEqual([
+      { head: 'Amir Elnagar', manager: 'Hussain Alsaleem', supervisor: 'Mahdi Altawat', route: '314037', ds: '' },
+      { head: 'Samir Najm', manager: 'Samir Najm', supervisor: 'Omar', route: '514001', ds: '' },
+    ]);
+    expect(parseHierarchySheet([['Name', 'Code']]).error).toBe('no_header');
+  });
+});

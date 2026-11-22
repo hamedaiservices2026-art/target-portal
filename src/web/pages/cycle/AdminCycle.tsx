@@ -702,10 +702,14 @@ function RoutesTab({ ws, period, l }: { ws: Workspace; period: string; l: Loaded
 
 export function AdminCycle({ ws: wsParam, period: periodParam }: { ws?: string; period?: string }) {
   useLang();
-  const { route } = useLocation();
+  const { route, query } = useLocation();
   const ws: Workspace = wsParam === 'ka' ? 'ka' : 'ops';
   const period = periodParam && /^\d{4}-\d{2}$/.test(periodParam) ? periodParam : defaultPeriod();
-  const [tab, setTab] = useState<TabId>('start');
+  // The tab lives in the address (?tab=), so changing the month or reloading keeps it.
+  const TAB_IDS: TabId[] = ['start', 'calc', 'control', 'workflow', 'routes'];
+  const tab: TabId = TAB_IDS.includes(query.tab as TabId) ? (query.tab as TabId) : 'start';
+  const go = (w: Workspace, p: string, t: TabId) => route(`/admin/cycle/${w}/${p}${t === 'start' ? '' : `?tab=${t}`}`, true);
+  const setTab = (t: TabId) => go(ws, period, t);
   const loaded = useAsync<Loaded>(async () => {
     const [cycle, org, st] = await Promise.all([getCycle(ws, period), getOrg(ws), api<{ status: DataStatus }>('GET', `/api/data/${ws}/status`)]);
     return { cycle, org, status: st.status };
@@ -714,19 +718,21 @@ export function AdminCycle({ ws: wsParam, period: periodParam }: { ws?: string; 
   return (
     <section class="cycle" data-testid="admin-cycle">
       <PageHead title={tc('cycleTitle')} intro={tc('cycleIntro')} />
-      <WsPeriod ws={ws} period={period} onChange={(w, p) => route(`/admin/cycle/${w}/${p}`)} />
+      <WsPeriod ws={ws} period={period} onChange={(w, p) => go(w, p, tab)} />
       <Tabs<TabId> value={tab} onChange={setTab} items={[
         { id: 'start', label: tc('tabStart') }, { id: 'calc', label: tc('tabCalc') }, { id: 'control', label: tc('tabControl') },
         { id: 'workflow', label: tc('tabWorkflow') }, { id: 'routes', label: tc('tabRoutes') },
       ]} />
       {loaded.error && <div class="alert" role="alert">{loaded.error} <button type="button" class="btn" onClick={loaded.reload}>{tc('retry')}</button></div>}
-      {!l && !loaded.error && <p class="muted">{tc('loading')}</p>}
+      {(!l || l.cycle.period !== period || l.cycle.ws !== ws) && !loaded.error && <p class="muted">{tc('loading')}</p>}
       {l && l.org.depts.length === 0 && <div class="banner warn">{tc('noDepts')} <a href="/admin/departments">{tc('openDepts')}</a></div>}
-      {l && tab === 'start' && <StartTab ws={ws} period={period} l={l} reload={loaded.reload} />}
-      {l && tab === 'calc' && <CalcTab ws={ws} period={period} l={l} reload={loaded.reload} />}
-      {l && tab === 'control' && <ControlTab ws={ws} period={period} l={l} reload={loaded.reload} />}
-      {l && tab === 'workflow' && <WorkflowTab ws={ws} period={period} l={l} />}
-      {l && tab === 'routes' && <RoutesTab ws={ws} period={period} l={l} />}
+      {l && l.cycle.period === period && l.cycle.ws === ws && <div key={`${ws}/${period}`} class="cy-tabbody">
+      {tab === 'start' && <StartTab ws={ws} period={period} l={l} reload={loaded.reload} />}
+      {tab === 'calc' && <CalcTab ws={ws} period={period} l={l} reload={loaded.reload} />}
+      {tab === 'control' && <ControlTab ws={ws} period={period} l={l} reload={loaded.reload} />}
+      {tab === 'workflow' && <WorkflowTab ws={ws} period={period} l={l} />}
+      {tab === 'routes' && <RoutesTab ws={ws} period={period} l={l} />}
+      </div>}
     </section>
   );
 }

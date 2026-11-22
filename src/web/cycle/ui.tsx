@@ -24,21 +24,48 @@ export function gapClass(v: number | null | undefined): string {
   return v >= 0 ? 'gap up' : 'gap down';
 }
 
-/** The month after the current one (the usual target month). */
+const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const PERIOD_KEY = 'cy.period';
+const isPeriod = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(v);
+
+/**
+ * The target month a cycle screen opens on without one in its address: the
+ * month last picked on any cycle screen (so moving between Target cycle,
+ * Cycle setup, CD and Reports keeps it), else the month after the current one.
+ */
 export function defaultPeriod(): string {
+  try {
+    const v = localStorage.getItem(PERIOD_KEY);
+    if (isPeriod(v)) return v;
+  } catch { /* storage blocked */ }
   const d = new Date();
   const m = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
   return addMonths(m, 1);
 }
 
+/** Remembers the month on screen for the next cycle screen opened without one. */
+export function rememberPeriod(period: string): void {
+  if (!isPeriod(period)) return;
+  try { localStorage.setItem(PERIOD_KEY, period); } catch { /* storage blocked */ }
+}
+
 export const WS_LABEL = (ws: Workspace) => (ws === 'ops' ? tc('wsOps') : tc('wsKa'));
 
-/** Workspace tabs + target month input; `onChange` gets the new pair. */
+/**
+ * Workspace tabs + target month (a year and a month list: works the same in
+ * every browser and changes the month at once); `onChange` gets the new pair.
+ */
 export function WsPeriod({ ws, period, onChange, allowed }: {
   ws: Workspace; period: string; onChange: (ws: Workspace, period: string) => void; allowed?: Workspace[];
 }) {
   useLang();
   const list: Workspace[] = allowed ?? ['ops', 'ka'];
+  useEffect(() => rememberPeriod(period), [period]);
+  const year = Number(period.slice(0, 4));
+  const month = Number(period.slice(5, 7));
+  const now = new Date().getUTCFullYear();
+  const years = Array.from(new Set([now - 2, now - 1, now, now + 1, now + 2, year])).sort((a, b) => a - b);
+  const go = (y: number, m: number) => onChange(ws, `${y}-${String(m).padStart(2, '0')}`);
   return (
     <div class="toolbar cy-picker">
       {list.map((w) => (
@@ -46,10 +73,17 @@ export function WsPeriod({ ws, period, onChange, allowed }: {
           {WS_LABEL(w)}
         </button>
       ))}
-      <label>
-        {tc('targetMonth')}{' '}
-        <input type="month" value={period} onChange={(e) => { const v = e.currentTarget.value; if (/^\d{4}-\d{2}$/.test(v)) onChange(ws, v); }} />
-      </label>
+      <span class="cy-month" role="group" aria-label={tc('targetMonth')}>
+        <span>{tc('targetMonth')}</span>
+        <button type="button" class="btn small" aria-label={tc('prevMonth')} onClick={() => onChange(ws, addMonths(period, -1))}>‹</button>
+        <select aria-label={tc('monthWord')} value={month} data-testid="period-month" onChange={(e) => go(year, Number(e.currentTarget.value))}>
+          {MONTH_SHORT.map((n, i) => <option key={n} value={i + 1}>{n}</option>)}
+        </select>
+        <select aria-label={tc('yearWord')} value={year} data-testid="period-year" onChange={(e) => go(Number(e.currentTarget.value), month)}>
+          {years.map((y) => <option key={y} value={y}>{y}</option>)}
+        </select>
+        <button type="button" class="btn small" aria-label={tc('nextMonth')} onClick={() => onChange(ws, addMonths(period, 1))}>›</button>
+      </span>
     </div>
   );
 }
@@ -146,7 +180,6 @@ export async function writeWorkbook(file: string, sheets: { name: string; column
   await (write as unknown as (d: unknown) => { toFile: (f: string) => Promise<void> })(data).toFile(file);
 }
 
-const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 /** "Jul–Sep 2026" style label of a month list. */
 export function monthsLabel(months: string[]): string {

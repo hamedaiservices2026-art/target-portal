@@ -8,6 +8,8 @@ import {
   ConfirmButton, errText, Field, LoadError, PageHead, TreeChangeBanner, useResource, type TreeChange,
 } from '../../components/AdminBits';
 import { ImportPanel } from '../../components/ImportPanel';
+import { HierarchyUpload } from './HierarchyUpload';
+import { tc } from '../../cycle/i18n';
 import { writeXlsx, readSheet } from '../../excel';
 import { explainErrors, MAPPING_COLUMNS, MAPPING_MAX_ROWS, parseMappingSheet, type ExplainedError, type LineError } from '../../mapping';
 import { t, tf, fmtNum, useLang, type TextKey } from '../../i18n';
@@ -138,6 +140,43 @@ function LeafEditor({ leaf, mode, flat, run, onClose }: {
 }
 
 
+/** Add one route by hand: route code, delivery system and the node it reports to. */
+function AddRoute({ deptId, flat, channels, run }: { deptId: number | null; flat: Flat[]; channels: string[]; run: Run }) {
+  const [open, setOpen] = useState(false);
+  const [route, setRoute] = useState('');
+  const [ds, setDs] = useState('');
+  const [node, setNode] = useState('');
+  const known = [...new Set(channels)].sort();
+  if (deptId === null || flat.length === 0) return null;
+  if (!open) return <div class="actions"><button type="button" class="btn" data-testid="add-route" onClick={() => setOpen(true)}>{tc('hsAddRoute')}</button></div>;
+  async function save(e: Event) {
+    e.preventDefault();
+    const ok = await run(() => api('POST', '/api/admin/leaves', { deptId, nodeId: Number(node), deliverySystem: ds.trim(), routeCode: route.trim() }), tc('hsRouteAdded'));
+    if (ok) { setRoute(''); setOpen(false); }
+  }
+  return (
+    <form class="editor" onSubmit={save} data-testid="add-route-form">
+      <div class="cy-grid">
+        <label class="field"><span>{t('adRouteCode')}</span><input required value={route} onInput={(e) => setRoute(e.currentTarget.value)} /></label>
+        <label class="field"><span>{t('adDeliverySystem')}</span>
+          <input required list="ds-list" value={ds} onInput={(e) => setDs(e.currentTarget.value)} />
+          <datalist id="ds-list">{known.map((c) => <option key={c} value={c} />)}</datalist>
+        </label>
+        <label class="field"><span>{t('node')}</span>
+          <select required value={node} onChange={(e) => setNode(e.currentTarget.value)}>
+            <option value="">—</option>
+            {flat.map(({ node: n, depth }) => <option key={n.id} value={n.id}>{`${'\u00a0\u00a0'.repeat(depth)}${n.name}`}</option>)}
+          </select>
+        </label>
+      </div>
+      <div class="actions">
+        <button type="submit" class="btn primary" disabled={!route.trim() || !ds.trim() || !node}>{t('adSave')}</button>
+        <button type="button" class="btn" onClick={() => setOpen(false)}>{t('dsCancel')}</button>
+      </div>
+    </form>
+  );
+}
+
 function initialDept(): number | null {
   const n = Number(new URLSearchParams(location.search).get('dept'));
   return Number.isInteger(n) && n > 0 ? n : null;
@@ -203,6 +242,14 @@ export function Hierarchy() {
     for (const l of leaves) m.set(l.node_id, (m.get(l.node_id) ?? 0) + 1);
     return m;
   }, [leaves]);
+
+  // Routes under each node, all levels down (the roll-up Head -> manager -> supervisor -> routes).
+  const rolled = useMemo(() => {
+    const m = new Map<number, number>();
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    for (const l of leaves) for (let n = byId.get(l.node_id); n; n = n.parent_id === null ? undefined : byId.get(n.parent_id)) m.set(n.id, (m.get(n.id) ?? 0) + 1);
+    return m;
+  }, [nodes, leaves]);
 
   // Tree order: depth-first, siblings by name.
   const flat = useMemo(() => {
@@ -299,6 +346,7 @@ export function Hierarchy() {
         <ImportPanel kind="hierarchy" example={{ dept: dept?.code, parent: nodes.find((n) => n.parent_id === null)?.name }}
           onApplied={() => { reloadTree(); users.reload(); }} />
       )}
+      <HierarchyUpload depts={deptList} onApplied={reloadTree} />
       <div class="toolbar">
         <label for="h-dept">{t('adDepartment')}</label>
         <select id="h-dept" value={deptId ?? ''} onChange={(e) => pickDept(Number(e.currentTarget.value))}>
@@ -337,7 +385,7 @@ export function Hierarchy() {
                   <span class="node-meta" data-testid="node-manager">
                     {mgr ? `${mgr.name}${mgr.active ? '' : ` (${t('adDisabled')})`}` : <span class="muted">{t('adNoManager')}</span>}
                   </span>
-                  <span class="node-meta muted">{tf('adRoutesCount', { n: fmtNum(routes) })}</span>
+                  <span class="node-meta muted" data-testid="node-routes">{tf('adRoutesCount', { n: fmtNum(routes) })}{(rolled.get(node.id) ?? 0) !== routes && ` · ${tc('hsRolled', { n: fmtNum(rolled.get(node.id) ?? 0) })}`}</span>
                   <span class="act">
                     <button type="button" class="btn" onClick={act('child')}>{t('adAddChild')}</button>
                     <button type="button" class="btn" onClick={act('rename')}>{t('adRename')}</button>
@@ -401,6 +449,7 @@ export function Hierarchy() {
         <div class="ad-card-head">
           <h2>{t('adRoutesTitle')} <span class="muted">({fmtNum(leaves.length)})</span></h2>
         </div>
+        <AddRoute deptId={deptId} flat={flat} channels={leaves.map((l) => l.delivery_system)} run={run} />
         <div class="toolbar">
           <div class="search">
             <input type="search" aria-label={t('adRoutesSearch')} placeholder={t('adRoutesSearch')} value={q}

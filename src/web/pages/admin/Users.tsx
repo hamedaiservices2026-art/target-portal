@@ -6,6 +6,7 @@ import { ConfirmButton, errText, Field, LoadError, PageHead, useResource } from 
 import { ImportPanel } from '../../components/ImportPanel';
 import { t, useLang } from '../../i18n';
 import { useSession } from '../../session';
+import { PeopleByPosition } from './PeopleByPosition';
 
 type Form = { username: string; name: string; email: string; role: 'admin' | 'manager'; lang: 'en' | 'ar'; password: string };
 const EMPTY: Form = { username: '', name: '', email: '', role: 'manager', lang: 'ar', password: '' };
@@ -222,6 +223,7 @@ export function Users() {
           </div>
         </>
       )}
+      {res.data && <PeopleByPosition users={res.data.users} onUsersChanged={res.reload} />}
     </section>
   );
 }

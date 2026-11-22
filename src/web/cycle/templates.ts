@@ -4,6 +4,7 @@
 // Head of Department, every route / KAE with its manager and supervisor.
 import { addMonths } from '../../shared/calc/periods';
 import type { Workspace } from '../../worker/auth';
+import { packKey } from '../../shared/calc/packs';
 import { subMap, type Org } from './compute';
 
 type Cell = { value: string | number; type?: unknown; fontWeight?: 'bold'; format?: string } | null;
@@ -56,6 +57,65 @@ export function newTargetByPack(org: Org, period: string): Promise<void> {
   return save(`new_target_by_pack_${period}.xlsx`, [{ sheet: 'New target', data: [[bold('Period (YYYYMM)'), bold('Sales Target Category'), bold('Cases')], ...rows] }]);
 }
 
+/**
+ * Rows of the "Target by Pack by Department" file, in its own order and with
+ * its Total rows (Total CANS, SSNR, BIG MSPET, MSPET, CSD, Water, LIT,
+ * ROCKSTAR, Sting Energy, Britvic, LRB-Others, LRB). A Total adds up the
+ * packs and Totals it names. Packs of the pack master that the file does not
+ * list go at the end of their category, inside its Total.
+ */
+const DEPT_LAYOUT: ({ pack: string } | { total: string; refs: string[]; cat?: 'CSD' | 'Water' | 'LRB-Others' })[] = [
+  ...['CSD_CANS150', 'STING_240', 'CSD_CANS240', 'CSD_CANS300', 'CSD_CANS320', 'CSD_CANS325', 'CSD_CANS330', 'CSD_CANS355', 'CSD_CANS360'].map((pack) => ({ pack })),
+  { total: 'Total CANS', refs: ['CSD_CANS150', 'STING_240', 'CSD_CANS240', 'CSD_CANS300', 'CSD_CANS320', 'CSD_CANS325', 'CSD_CANS330', 'CSD_CANS355', 'CSD_CANS360'] },
+  ...['CSD_NRB', 'STING_250', 'CSD_SSPET250', 'CSD_SSPET500'].map((pack) => ({ pack })),
+  { total: 'Total SSNR', refs: ['Total CANS', 'CSD_NRB', 'STING_250', 'CSD_SSPET250', 'CSD_SSPET500'] },
+  ...['CSD_PET1000', 'CSD_PET2000', 'CSD_PET2200', 'CSD_PET2250'].map((pack) => ({ pack })),
+  { total: 'Total BIG MSPET', refs: ['CSD_PET2000', 'CSD_PET2200', 'CSD_PET2250'] },
+  { total: 'Total MSPET', refs: ['Total BIG MSPET', 'CSD_PET1000'] },
+  { pack: 'PMIX' },
+  { total: 'Total CSD', refs: ['Total SSNR', 'Total MSPET', 'PMIX'], cat: 'CSD' },
+  ...['AquafinA_200', 'AquafinA_330', 'AquafinA_500', 'AquafinA_1500', 'AquafinA_Sparkling_250', 'AquafinA_NRB_330', 'AquafinA_NRB_750'].map((pack) => ({ pack })),
+  { total: 'Total Water', refs: ['AquafinA_200', 'AquafinA_330', 'AquafinA_500', 'AquafinA_1500', 'AquafinA_Sparkling_250', 'AquafinA_NRB_330', 'AquafinA_NRB_750'], cat: 'Water' },
+  ...['LIT_CANS150', 'LIT_CANS240', 'LIT_CANS310', 'LIT_CANS315', 'LIT_FSY'].map((pack) => ({ pack })),
+  { total: 'Total LIT', refs: ['LIT_CANS150', 'LIT_CANS240', 'LIT_CANS310', 'LIT_CANS315', 'LIT_FSY'] },
+  { pack: 'GATORADE' },
+  { pack: 'MPLUS_NRB300' },
+  { pack: 'Rockstar_185' },
+  { pack: 'Rockstar_250' },
+  { total: 'Total ROCKSTAR', refs: ['Rockstar_185', 'Rockstar_250'] },
+  ...['Sting Energy_185', 'Sting Energy_240', 'Sting Energy_300'].map((pack) => ({ pack })),
+  { total: 'Total Sting Energy', refs: ['Sting Energy_185', 'Sting Energy_240', 'Sting Energy_300'] },
+  { pack: 'Britvic_300' },
+  { pack: 'Britvic_Soda' },
+  { total: 'Total Britvic', refs: ['Britvic_300', 'Britvic_Soda'] },
+  { total: 'Total LRB-Others', refs: ['Total LIT', 'GATORADE', 'MPLUS_NRB300', 'Total ROCKSTAR', 'Total Britvic', 'Total Sting Energy'], cat: 'LRB-Others' },
+  { total: 'Total LRB', refs: ['Total CSD', 'Total Water', 'Total LRB-Others'] },
+];
+
+type LayoutRow = { kind: 'pack'; label: string } | { kind: 'total'; label: string; refs: string[] };
+
+/** The file's layout over the live pack master: its packs by their master code, extra packs added in their category. */
+export function deptLayout(packs: { code: string; grp: string }[]): LayoutRow[] {
+  const byKey = new Map(packs.map((p) => [packKey(p.code), p]));
+  const used = new Set<string>();
+  const code = (name: string) => byKey.get(packKey(name))?.code;
+  const out: LayoutRow[] = [];
+  for (const e of DEPT_LAYOUT) {
+    if ('pack' in e) {
+      const c = code(e.pack);
+      if (c && !used.has(c)) { used.add(c); out.push({ kind: 'pack', label: c }); }
+      continue;
+    }
+    const refs = e.refs.map((r) => (r.startsWith('Total') ? r : code(r))).filter((r): r is string => !!r);
+    if (e.cat) {
+      const extra = packs.filter((p) => p.grp === e.cat && !used.has(p.code));
+      for (const p of extra) { used.add(p.code); out.push({ kind: 'pack', label: p.code }); refs.push(p.code); }
+    }
+    out.push({ kind: 'total', label: e.total, refs });
+  }
+  return out;
+}
+
 /** The department & channel grid (step 2B and step 7): Head names above, Pack | channels | Total <group> | ABC. */
 function channelGridSheet(org: Org, sheet: string, title: string | null): Sheet {
   type Col = { label: string; head: string; kind: 'ch' | 'tot'; from?: number; to?: number };
@@ -75,18 +135,31 @@ function channelGridSheet(org: Org, sheet: string, title: string | null): Sheet 
     }
   }
   const packs = templatePacks(org);
-  const first = title ? 3 : 2; // first data row (1-based)
+  const layout = deptLayout(packs);
+  const first = title ? 3 : 2; // rows above the first pack row
   const chanCols = cols.map((c, i) => ({ c, i: i + 1 })).filter((x) => x.c.kind === 'ch').map((x) => colName(x.i));
   const data: Cell[][] = [];
   if (title) data.push([bold(title)]);
   data.push([null, ...cols.map((c) => (c.head ? bold(c.head) : null)), null]);
   data.push([bold('Pack'), ...cols.map((c) => bold(c.label)), bold('ABC')]);
-  packs.forEach((p, k) => {
-    const r = first + k + 1;
+  // Excel row of every line (pack or Total), so a Total can add up packs and other Totals.
+  const rowOf = new Map<string, number>();
+  layout.forEach((r, k) => rowOf.set(r.label, first + k + 1));
+  const all = cols.length + 1; // channel / Total columns + ABC
+  layout.forEach((r, k) => {
+    const row = first + k + 1;
+    if (r.kind === 'pack') {
+      data.push([
+        str(r.label),
+        ...cols.map((c) => (c.kind === 'ch' ? num(0) : formula(`SUM(${colName(c.from!)}${row}:${colName(c.to!)}${row})`))),
+        chanCols.length ? formula(chanCols.map((x) => `${x}${row}`).join('+')) : num(0),
+      ]);
+      return;
+    }
+    const refs = r.refs.map((x) => rowOf.get(x)).filter((x): x is number => x !== undefined);
     data.push([
-      str(p.code),
-      ...cols.map((c) => (c.kind === 'ch' ? num(0) : formula(`SUM(${colName(c.from!)}${r}:${colName(c.to!)}${r})`))),
-      chanCols.length ? formula(chanCols.map((x) => `${x}${r}`).join('+')) : num(0),
+      bold(r.label),
+      ...Array.from({ length: all }, (_, j) => ({ value: refs.length ? `SUM(${refs.map((x) => `${colName(j + 1)}${x}`).join(',')})` : '0', type: 'Formula', fontWeight: 'bold' as const })),
     ]);
   });
   return { sheet, data };

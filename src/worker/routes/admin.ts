@@ -4,6 +4,7 @@ import { requireAdmin, requireUser, type AppEnv } from '../auth';
 import { h, p } from './handler';
 import { backupIndex, backupPage, listAudit } from '../services/export';
 import importRoutes from './imports';
+import { applyHierarchySync, listPeople, previewHierarchySync } from '../services/hierarchySync';
 import monthRoutes from './months';
 import {
   bulkMapLeaves, createLeaf, createNode, deleteLeaf, deleteNode, listLeaves, listNodes, optionalDept,
@@ -43,6 +44,9 @@ admin.get('/api/admin/settings', h(async (c, db) => c.json({ capPct: await getCa
 admin.put('/api/admin/settings', h(async (c, db, me, body) =>
   c.json({ capPct: await setCapPct(db, me, await body()) })));
 
+admin.get('/api/admin/people', h(async (c, db) => c.json({ people: await listPeople(db) })));
+admin.post('/api/admin/hierarchy/sync/preview', h(async (c, db, _me, body) => c.json(await previewHierarchySync(db, await body()))));
+admin.post('/api/admin/hierarchy/sync/apply', h(async (c, db, me, body) => c.json(await applyHierarchySync(db, me, await body()))));
 admin.get('/api/admin/nodes', h(async (c, db) =>
   c.json({ nodes: await listNodes(db, optionalDept(c.req.query('dept'))) })));
 admin.post('/api/admin/nodes', h(async (c, db, me, body) =>

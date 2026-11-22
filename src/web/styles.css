@@ -353,3 +353,6 @@ code.detail { font-size: 12px; word-break: break-word; white-space: pre-wrap; }
 .cy-head-summary { margin-block: 10px; }
 @media (max-width: 640px) { .cy-mp { font-size: 11px; padding: 2px 6px; } }
 .cy-table th:first-child, .cy-table td:first-child { text-align: start; }
+.cy-month { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cy-month select { font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--input); color: var(--ink); }
+.seg { display: flex; gap: 4px; flex-wrap: wrap; }
