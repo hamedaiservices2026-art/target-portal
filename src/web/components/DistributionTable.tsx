@@ -8,7 +8,7 @@ import type { PackGroup } from '../../shared/types';
 import { fmtNum, t, tf, type Lang, type TextKey } from '../i18n';
 import { FilterRow, type FilterLabels, type FilterState } from './Filters';
 import { StatusBadge } from './StatusBadge';
-import { BenchLine, type BenchFn } from '../pages/cycle/DistributeExtras';
+import { BenchCells, BenchHead, sumBench, type BenchFn } from '../pages/cycle/DistributeExtras';
 
 /** A pack's live state, derived from its raw cell texts (cached per raw array). */
 export interface PackInfo {
@@ -87,12 +87,13 @@ class PackRow extends Component<RowProps> {
       <tr data-pack={pack}>
         <td class="s pack">{pack}</td>
         <td class="tgt">{fmtNum(total)}</td>
+        {bench && <BenchCells v={total} b={sumBench(vis.map((i) => bench(pack, i)))} team />}
         {vis.map((i) => {
           const start = starts[i] ?? 0;
           const hint = hintFor(info, start, i);
           const overCap = !info.invalid[i] && Math.abs((info.nums[i] ?? 0) - start) > check.cap;
           const hintId = `h-${idx}-${i}`;
-          return (
+          return [
             <td key={i}>
               <div class={`cell${info.invalid[i] || overCap ? ' over' : ''}`}>
                 <input
@@ -105,10 +106,10 @@ class PackRow extends Component<RowProps> {
                   onBlur={() => onCommit(pack, i)}
                 />
                 <span id={hintId} class={hint.cls} data-testid={`hint-${pack}-${i}`}>{hint.text}</span>
-                {bench && <BenchLine v={Number.isFinite(info.nums[i]) ? info.nums[i]! : 0} b={bench(pack, i) ?? { avg: 0, pago: 0, yago: 0 }} />}
               </div>
-            </td>
-          );
+            </td>,
+            bench ? <BenchCells key={`b${i}`} v={Number.isFinite(info.nums[i]) ? info.nums[i]! : 0} b={sumBench([bench(pack, i)])} /> : null,
+          ];
         })}
         <td>
           <span class={`moved${check.moved > check.cap ? ' bad' : ''}`} data-testid={`moved-${pack}`}>
@@ -158,7 +159,8 @@ export function DistributionTable(props: {
   bench?: BenchFn;
 }) {
   const { groups, members, vis, totals, starts, raw, info, collapsed, editable, lang } = props;
-  const cols = vis.length + 5;
+  const nb = props.bench ? 3 : 0;
+  const cols = vis.length * (1 + nb) + nb + 5;
   const rows = [];
   for (const g of groups) {
     if (!g.shown.length) continue;
@@ -176,6 +178,7 @@ export function DistributionTable(props: {
           <span class="gsub">{tparts('dsShown', { n: ltr(`${g.shown.length} / ${g.all.length}`) })}</span>
         </td>
         <td>{fmtNum(target)}</td>
+        {props.bench && <BenchCells v={target} b={sumBench(g.all.flatMap((p) => vis.map((i) => props.bench!(p, i))))} team />}
         {vis.map((i) => {
           let now = 0;
           let st = 0;
@@ -185,14 +188,15 @@ export function DistributionTable(props: {
             st += starts[p]?.[i] ?? 0;
           }
           const d = now - st;
-          return (
+          return [
             <td key={i}>
               {fmtNum(now)}
               <span class={`gsub${d > 0 ? ' up' : d < 0 ? ' down' : ''}`}>
                 {d === 0 ? tparts('dsHintStart', { n: ltr(fmtNum(st)) }) : signed(d)}
               </span>
-            </td>
-          );
+            </td>,
+            props.bench ? <BenchCells key={`b${i}`} v={now} b={sumBench(g.all.map((p) => props.bench!(p, i)))} /> : null,
+          ];
         })}
         <td />
         <td class="s">
@@ -220,16 +224,18 @@ export function DistributionTable(props: {
           <tr class="h1">
             <th class="s" scope="col">{t('dsColPack')}</th>
             <th scope="col">{t('dsColTarget')}<span class="sub">{t('dsLocked')}</span></th>
-            {vis.map((i) => (
-              <th scope="col" key={i}>{members[i]?.title}<span class="sub">{members[i]?.sub}</span></th>
-            ))}
+            {props.bench && <BenchHead team />}
+            {vis.map((i) => [
+              <th scope="col" key={i}>{members[i]?.title}<span class="sub">{members[i]?.sub}</span></th>,
+              props.bench ? <BenchHead key={`b${i}`} /> : null,
+            ])}
             <th scope="col">{t('dsColMoved')}</th>
             <th class="s" scope="col">{t('dsColStatus')}</th>
             <th scope="col"><span class="visually-hidden">{t('dsColReset')}</span></th>
           </tr>
           <FilterRow
             f={props.filters} vis={vis} memberNames={members.map((m) => m.title)} labels={props.filterLabels}
-            onChange={props.onFilters}
+            onChange={props.onFilters} extra={nb}
           />
         </thead>
         <tbody>

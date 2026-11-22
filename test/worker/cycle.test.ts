@@ -118,9 +118,12 @@ describe('target cycle (handover flow)', () => {
 
     // Only the Head approves; approval starts the department.
     expect((await api('POST', `/cycle/ops/${P}/heads/${tt}/approve`, other)).status).toBe(403);
+    // Sending opens the Head's distribution turn at once (review and distribute before approving).
+    const st0 = await one<{ state: string }>(env.DB, `SELECT state FROM month_depts WHERE month_id = ? AND dept_id = ?`, monthId, tt);
+    expect(st0!.state).toBe('running');
     expect((await api('POST', `/cycle/ops/${P}/heads/${tt}/approve`, head)).status).toBe(200);
     const st = await one<{ state: string }>(env.DB, `SELECT state FROM month_depts WHERE month_id = ? AND dept_id = ?`, monthId, tt);
-    expect(st!.state).toBe('running');
+    expect(['running', 'complete']).toContain(st!.state);
     cyc = await json(await api('GET', `/cycle/ops/${P}`, admin));
     expect(cyc.heads.find((x: Json) => x.deptId === tt).status).toBe('approved');
 

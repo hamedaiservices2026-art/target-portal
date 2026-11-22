@@ -40,7 +40,7 @@ function usePackMeta(ws: Workspace) {
  */
 export function useBench(ws: Workspace | null, mid: string, nid: string) {
   const period = ws?.month.period ?? '';
-  const [on, setOn] = useState(false);
+  const [on, setOn] = useState(true);
   const [picked, setMonths] = useState<string[] | null>(null);
   const months = picked ?? (period ? [addMonths(period, -3), addMonths(period, -2), addMonths(period, -1)] : []);
   const wsName = ws?.node.workspace ?? '';
@@ -74,6 +74,38 @@ export function BenchControls({ ws, b }: { ws: Workspace; b: BenchState }) {
       {b.error && <div class="alert">{b.error}</div>}
     </div>
   );
+}
+
+export function sumBench(list: (Bench | undefined)[]): Bench {
+  const t = { avg: 0, pago: 0, yago: 0 };
+  for (const b of list) if (b) { t.avg += b.avg; t.pago += b.pago; t.yago += b.yago; }
+  return t;
+}
+
+/** The three benchmark column headers (after the target, and after each team member). */
+export function BenchHead({ team }: { team?: boolean }) {
+  useLang();
+  return (
+    <>
+      <th scope="col" class={`bench${team ? '' : ' pb'}`}>{tc('avgSales')}</th>
+      <th scope="col" class={`bench${team ? '' : ' pb'}`}>PAGO</th>
+      <th scope="col" class={`bench${team ? '' : ' pb'}`}>YAGO</th>
+    </>
+  );
+}
+
+/** Avg sales, PAGO and YAGO as three cells, each with the gap of the number against it. */
+export function BenchCells({ v, b, team }: { v: number; b: Bench; team?: boolean }) {
+  const cell = (x: number, k: string) => {
+    const g = x > 0 ? v / x - 1 : null;
+    return (
+      <td key={k} class={`num bench${team ? '' : ' pb'}`}>
+        {fmtNum(Math.round(x))}
+        {x > 0 && <span class={`gsub ${gapClass(g)}`}>{fmtGap(g)}</span>}
+      </td>
+    );
+  };
+  return <>{cell(b.avg, 'a')}{cell(b.pago, 'p')}{cell(b.yago, 'y')}</>;
 }
 
 /** "Avg · PAGO · YAGO" under a number, each with the gap of the target against it. */
@@ -116,19 +148,20 @@ export function ByCategory({ ws, codes, info, totals, editable, onApply, bench }
 
   const row = (key: string, label: preact.ComponentChild, packs: string[], cls: string) => {
     const canEdit = editable && people.length > 1;
+    const tgt = packs.reduce((s, p) => s + (totals[p] ?? 0), 0);
     return (
       <tr key={key} class={cls}>
         <td>{label}</td>
-        <td class="num">{fmtNum(packs.reduce((s, p) => s + (totals[p] ?? 0), 0))}</td>
+        <td class="num">{fmtNum(tgt)}</td>
+        {bench && <BenchCells v={tgt} b={sumBench(packs.flatMap((p) => people.map((_c, i) => bench(p, i))))} team />}
         {people.map((c, i) => {
           const v = packs.reduce((s, p) => s + fin(info(p).nums[i]), 0);
-          const b = bench ? packs.reduce<Bench>((t, p) => { const x = bench(p, i) ?? ZERO; return { avg: t.avg + x.avg, pago: t.pago + x.pago, yago: t.yago + x.yago }; }, ZERO) : null;
-          return (
+          return [
             <td key={c.key} class="num">
               {canEdit ? <NumCell value={v} label={`${key} ${c.label}`} onChange={(n) => change(packs, i, n)} /> : fmtNum(v)}
-              {b && <BenchLine v={v} b={b} />}
-            </td>
-          );
+            </td>,
+            bench ? <BenchCells key={`b${c.key}`} v={v} b={sumBench(packs.map((p) => bench(p, i)))} /> : null,
+          ];
         })}
       </tr>
     );
@@ -142,7 +175,7 @@ export function ByCategory({ ws, codes, info, totals, editable, onApply, bench }
       </div>
       {err && <div class="alert" role="alert">{err}</div>}
       <div class="tablewrap"><table class="ad-table cy-table">
-        <thead><tr><th>{tc('category')}</th><th class="num">{tc('target')}</th>{people.map((c) => <th key={c.key} class="num"><bdi>{c.label}</bdi>{c.sub && <div class="muted small">{c.sub}</div>}</th>)}</tr></thead>
+        <thead><tr><th>{tc('category')}</th><th class="num">{tc('target')}</th>{bench && <BenchHead team />}{people.map((c) => [<th key={c.key} class="num"><bdi>{c.label}</bdi>{c.sub && <div class="muted small">{c.sub}</div>}</th>, bench ? <BenchHead key={`b${c.key}`} /> : null])}</tr></thead>
         <tbody>{CATEGORIES.flatMap((c) => {
           const packs = inCat(c);
           if (!packs.length) return [];

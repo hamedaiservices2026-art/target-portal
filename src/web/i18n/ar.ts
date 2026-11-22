@@ -37,6 +37,7 @@ export const ar: Record<TextKey, string> = {
   navDepartments: 'الأقسام',
   navPacks: 'العبوات',
   navSettings: 'الإعدادات',
+  navGeneral: 'عام',
   navHierarchy: 'الهيكل التنظيمي',
   navMonths: 'الأشهر',
   navHistory: 'السجل',

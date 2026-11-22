@@ -107,12 +107,13 @@ test('the whole cycle: CD splits and submits, Admin calculates and sends, the He
   await row.getByRole('button', { name: 'Send', exact: true }).click();
   await expect(row).toContainText('Waiting for approval');
 
-  // The Head approves; the distribution starts.
+  // The Head reviews and distributes first (the turn is open), then approves: the split goes to the managers.
   await cd.goto('/approve');
   const item = cd.getByTestId('approval').filter({ hasText: P });
   await expect(item).toContainText('40');
   await expect(item.getByTestId('head-summary')).toBeVisible();
-  await item.getByRole('button', { name: 'Approve and start distribution' }).click();
+  await expect(item.getByTestId('review-distribute')).toBeVisible();
+  await item.getByRole('button', { name: 'Approve and send to managers' }).click();
   await expect(item).toContainText('Approved');
   await cd.getByTestId('bell').click();
   await expect(cd.getByRole('dialog', { name: 'Notifications' })).toContainText(P);

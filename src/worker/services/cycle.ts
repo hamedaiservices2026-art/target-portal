@@ -15,9 +15,9 @@ import { auditStatement } from './audit';
 import { month as parseMonth } from './cycleData';
 import { ApiError, bad, forbidden, notFound, writeBatch, type Obj } from './masters';
 import { createMonth, resetDept, startDept } from './months';
+import { submitNode } from './distribution';
 import { ADMINS, CDS, notifySql, type NotifyText } from './notify';
 import { getRules } from './rulesSettings';
-import { capFor } from '../../shared/rules';
 
 const MAX_VALUE = 1_000_000_000;
 /** calc_json is limited well below D1's 2 MB per value. */
@@ -424,19 +424,7 @@ export async function submitCd(db: D1Database, user: SessionUser, ws: Workspace,
   const depts = (await all<{ id: number }>(db, `SELECT id FROM departments WHERE workspace = ? ORDER BY id`, ws)).map((d) => String(d.id));
   const cats = await packCategories(db);
   const problems = cdSubmitProblems(work, cats, depts);
-  // The CAP %: no pack's New Target may move more than the cap from the uploaded target.
-  const settings = { ...defaultSettings(period), ...parseJson<CycleSettings>(c.settings_json) };
-  if (settings.capPct !== null) {
-    const up = await one<{ v: string }>(db, `SELECT values_json AS v FROM data_months WHERE ws = ? AND kind = 'new_target' AND month = ?`, ws, period);
-    const byPack = parseJson<{ byPack?: Record<string, number> }>(up?.v ?? null)?.byPack;
-    if (byPack) {
-      const over = Object.keys(work.nt).filter((p) => {
-        const base = Math.round(byPack[p] ?? 0);
-        return Math.abs((work.nt[p] ?? 0) - base) > capFor(base, settings.capPct!);
-      });
-      if (over.length) problems.push(`${over.length} packs move more than the ${settings.capPct}% cap: ${over.slice(0, 10).join(', ')}`);
-    }
-  }
+  // The CAP % is not applied to the Commercial Director (it limits the distribution levels only).
   if (problems.length) throw new ApiError(400, { error: 'invalid_request', detail: problems.join('; ') });
   const dept = cdFinal(work, cats, depts);
   const res = await writeBatch(db, [
@@ -543,7 +531,7 @@ async function deptOfWs(db: D1Database, ws: Workspace, deptId: number): Promise<
  * missing packs = 0, salesman ID from the latest previous target), and marks
  * the Head's approval pending.
  */
-export async function sendToHead(db: D1Database, actorId: number, ws: Workspace, periodRaw: string, deptId: number): Promise<{ monthId: number }> {
+export async function sendToHead(db: D1Database, actorId: number, ws: Workspace, periodRaw: string, deptId: number, env?: Env): Promise<{ monthId: number }> {
   const period = parseMonth(periodRaw, 'period');
   await deptOfWs(db, ws, deptId);
   const c = await requireCycle(db, ws, period);
@@ -620,6 +608,8 @@ export async function sendToHead(db: D1Database, actorId: number, ws: Workspace,
         `هدف ${period} (${total.toLocaleString('en-US')} صندوق) بانتظار موافقتك. الموعد: ${settings.deadlines.head ?? '-'}.`),
       `/approve/${ws}/${period}`),
   ], 'conflict');
+  // The Head reviews and distributes to the managers before approving: their turn opens now.
+  if (env) await startDept(db, env, actorId, m.id, deptId);
   return { monthId: m.id };
 }
 
@@ -640,14 +630,37 @@ export async function approveHead(db: D1Database, env: Env, user: SessionUser, w
   const period = parseMonth(periodRaw, 'period');
   const h = await headContext(db, user, ws, period, deptId);
   if (!h.month_id) throw conflict('the month is not open');
-  await startDept(db, env, user.id, h.month_id, deptId);
+  const state = await one<{ state: string }>(db, `SELECT state FROM month_depts WHERE month_id = ? AND dept_id = ?`, h.month_id, deptId);
+  if (state?.state === 'loading') {
+    // Sent before the Head could distribute first: open the Head's turn (they distribute after approving).
+    await startDept(db, env, user.id, h.month_id, deptId);
+  } else {
+    // Approving sends the Head's split (as saved on the distribution screen, else as sent) to the managers.
+    const root = await one<{ node_id: number; status: string }>(db,
+      `SELECT node_id, status FROM month_nodes WHERE month_id = ? AND dept_id = ? AND parent_id IS NULL`, h.month_id, deptId);
+    if (root?.status === 'in_progress') await submitNode(db, env, h.month_id, root.node_id, user.id, 'draft', { asManager: true });
+  }
+  await markHeadApproved(db, user, ws, period, deptId, h.month_id);
+}
+
+async function markHeadApproved(db: D1Database, user: SessionUser, ws: Workspace, period: string, deptId: number, monthId: number): Promise<void> {
   await writeBatch(db, [
     db.prepare(`UPDATE head_approvals SET status = 'approved', decided_at = ? WHERE period = ? AND dept_id = ? AND status = 'pending'`)
       .bind(new Date().toISOString(), period, deptId),
-    auditStatement(db, user.id, 'cycle.head_approve', { monthId: h.month_id }, { ws, period, deptId }),
+    auditStatement(db, user.id, 'cycle.head_approve', { monthId }, { ws, period, deptId }),
     notifySql(db, ADMINS, [], 'head_approved',
       txt(`${user.name} approved the ${period} target.`, `وافق ${user.name} على هدف ${period}.`), `/admin/cycle/${ws}/${period}`),
   ], 'conflict');
+}
+
+/** After a submit on the distribution screen: the Head's own split approves a pending target. */
+export async function approveOnRootSubmit(db: D1Database, user: SessionUser, monthId: number, nodeId: number): Promise<void> {
+  const r = await one<{ dept_id: number; period: string; ws: Workspace; status: HeadStatus }>(db,
+    `SELECT mn.dept_id, m.period, d.workspace AS ws, h.status FROM month_nodes mn
+       JOIN months m ON m.id = mn.month_id JOIN departments d ON d.id = mn.dept_id
+       JOIN head_approvals h ON h.period = m.period AND h.dept_id = mn.dept_id
+      WHERE mn.month_id = ? AND mn.node_id = ? AND mn.parent_id IS NULL`, monthId, nodeId);
+  if (r?.status === 'pending') await markHeadApproved(db, user, r.ws, r.period, r.dept_id, monthId);
 }
 
 /** Head returns the target to Admin with a comment. */
@@ -656,6 +669,8 @@ export async function returnHead(db: D1Database, user: SessionUser, ws: Workspac
   const comment = typeof body.comment === 'string' ? body.comment.trim().slice(0, 2000) : '';
   if (!comment) throw bad('a comment is required to return the target');
   const h = await headContext(db, user, ws, period, deptId);
+  // The Head's distribution turn was opened on send: close it again so the admin can re-send.
+  if (h.month_id) await resetDept(db, user.id, h.month_id, deptId);
   await writeBatch(db, [
     db.prepare(`UPDATE head_approvals SET status = 'returned', decided_at = ?, comment = ? WHERE period = ? AND dept_id = ? AND status = 'pending'`)
       .bind(new Date().toISOString(), comment, period, deptId),
@@ -680,10 +695,12 @@ export async function restartHead(db: D1Database, actorId: number, ws: Workspace
 }
 
 /** Targets waiting for the signed-in Head's approval (any workspace). */
-export async function myApprovals(db: D1Database, userId: number): Promise<{ ws: Workspace; period: string; deptId: number; deptName: string; status: HeadStatus; sentTotal: number | null; sentByCategory: Record<string, number> | null; sentAt: string | null; deadline: string | null; comment: string | null }[]> {
-  const rows = await all<{ ws: Workspace; period: string; dept_id: number; dept_name: string; status: HeadStatus; sent_total: number | null; sent_json: string | null; sent_at: string | null; settings_json: string | null; comment: string | null }>(db,
+export async function myApprovals(db: D1Database, userId: number): Promise<{ ws: Workspace; period: string; deptId: number; deptName: string; status: HeadStatus; sentTotal: number | null; sentByCategory: Record<string, number> | null; sentAt: string | null; deadline: string | null; comment: string | null; monthId: number | null; rootNodeId: number | null; rootStatus: string | null }[]> {
+  const rows = await all<{ ws: Workspace; period: string; dept_id: number; dept_name: string; status: HeadStatus; sent_total: number | null; sent_json: string | null; sent_at: string | null; settings_json: string | null; comment: string | null; month_id: number | null; root_status: string | null }>(db,
     `SELECT d.workspace AS ws, h.period, h.dept_id, d.name AS dept_name, h.status, h.sent_total, h.sent_json, h.sent_at, h.comment,
-            (SELECT settings_json FROM cycles c WHERE c.ws = d.workspace AND c.period = h.period) AS settings_json
+            (SELECT settings_json FROM cycles c WHERE c.ws = d.workspace AND c.period = h.period) AS settings_json,
+            (SELECT id FROM months m WHERE m.period = h.period) AS month_id,
+            (SELECT mn.status FROM month_nodes mn JOIN months m ON m.id = mn.month_id WHERE m.period = h.period AND mn.node_id = r.id) AS root_status, r.id AS root_id
      FROM head_approvals h JOIN departments d ON d.id = h.dept_id
      JOIN nodes r ON r.dept_id = d.id AND r.parent_id IS NULL
      WHERE r.manager_user_id = ? AND h.status <> 'draft'
@@ -692,6 +709,7 @@ export async function myApprovals(db: D1Database, userId: number): Promise<{ ws:
     ws: r.ws, period: r.period, deptId: r.dept_id, deptName: r.dept_name, status: r.status, sentTotal: r.sent_total,
     sentByCategory: parseJson<Record<string, number>>(r.sent_json), sentAt: r.sent_at,
     deadline: parseJson<CycleSettings>(r.settings_json)?.deadlines.head ?? null, comment: r.comment,
+    monthId: r.month_id, rootNodeId: r.root_status ? (r as unknown as { root_id: number }).root_id : null, rootStatus: r.root_status,
   }));
 }
 

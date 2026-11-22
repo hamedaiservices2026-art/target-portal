@@ -101,7 +101,8 @@ function GmTab({ work, edit, l, setWork, onApproved }: { work: CdWork; edit: boo
   const rows = cdRows(packs, cats);
   const sum = (g: Grid, list: string[]) => list.reduce((s, p) => s + (g[p] ?? 0), 0);
   const editable = edit && !work.ntOk;
-  const cap = l.cycle.settings.capPct;
+  // The CAP % is not applied to the Commercial Director.
+  const cap = null;
   const over = new Set(overCap(work, bench.uploaded, cap));
 
   function approve() {
@@ -209,7 +210,10 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
   const byChan = useMemo(() => groupSales(bench.sales, (r) => { const i = idx.get(r); return i ? `${i.deptId}\u0000${i.channel}` : null; }), [bench.sales]);
   if (!work.ntOk) return <p class="card muted">{tc('splitNeedsNt')}</p>;
   const months = cdMonths(work, l);
-  const cols = org.depts.map((d) => ({ id: String(d.id), name: d.name, chans: d.channels.length ? d.channels.map((c) => c.channel) : [NO_CHANNEL] }));
+  // Departments and channels in the order of the department target file (TT, MT, HoReCa, WS…).
+  const cols = [...org.depts]
+    .map((d, i) => ({ id: String(d.id), name: d.name, i, chans: d.channels.length ? sortChannels(d.channels.map((c) => c.channel)) : [NO_CHANNEL] }))
+    .sort((a, b) => channelRank(a.chans[0]!) - channelRank(b.chans[0]!) || a.i - b.i);
   const packs = Object.keys(work.nt);
   const hasSplit = Object.keys(work.dm).length > 0;
   const rows = cdRows(packs, cats).filter((r) => !hideZero || r.kind === 'sub' || (work.nt[r.pack] ?? 0) !== 0);
@@ -231,6 +235,15 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
   function split(how: 'sales' | 'uploaded') {
     const r = splitFor(work, l, work.nt, how);
     setWork({ ...work, dm: r.dm, basis: r.basis, splitNt: { ...work.nt } });
+  }
+  /** Back to the starting split for one pack (by the average sales, or the uploaded split it came from). */
+  function resetPack(p: string) {
+    const how = (work.basis[p] ?? '').startsWith('uploaded') ? 'uploaded' : 'sales';
+    const r = splitFor(work, l, { [p]: work.nt[p] ?? 0 }, how);
+    const dm = structuredClone(work.dm);
+    for (const d of Object.keys(dm)) for (const c of Object.keys(dm[d]!)) delete dm[d]![c]![p];
+    for (const [d, ch] of Object.entries(r.dm)) for (const [c, g] of Object.entries(ch)) if (p in g) ((dm[d] ??= {})[c] ??= {})[p] = g[p]!;
+    setWork({ ...work, dm, basis: { ...work.basis, ...r.basis } });
   }
   function setMonths(m: string[]) {
     // New months: the split by sales is made again with them.
@@ -263,6 +276,7 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
               <tr><th rowSpan={2}>{tc('pack')}</th>
                 {cols.map((d) => <th key={d.id} colSpan={d.chans.length + (d.chans.length > 1 ? 1 : 0)} class="grp">{d.name}</th>)}
                 <th rowSpan={2} class="num">ABC</th><th rowSpan={2} class="num">{tc('newTarget')}</th>
+                {edit && <th rowSpan={2}><span class="visually-hidden">{tc('resetRow')}</span></th>}
               </tr>
               <tr>{cols.flatMap((d) => [
                 ...d.chans.map((c) => <th key={`${d.id}${c}`} class="num">{c === NO_CHANNEL ? d.name : c}</th>),
@@ -293,6 +307,7 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
                   ])}
                   <td class="num tot">{view === 'cases' ? fmtNum(abc) : <Gap v={gap(abc, abcBench)} />}</td>
                   <td class="num">{fmtNum(nt)}{off && <div class="small bad-text">{fmtNum(abc - nt)}</div>}</td>
+                  {edit && <td>{r.kind === 'pack' && <button type="button" class="btn link" data-testid={`reset-${r.pack}`} title={tc('resetRowHelp')} onClick={() => resetPack(r.pack)}>{tc('resetRow')}</button>}</td>}
                 </tr>
               );
             })}</tbody>
@@ -303,6 +318,22 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
     </>
   );
 }
+
+// ---------- order of the department target file ----------
+
+const CHANNEL_ORDER = ['tt dmm', 'tt outer', 'tt', 'mt', 'mt ssv', 'mt bulk', 'horeca', 'ws', 'kam', 'kae'];
+const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+/** Rank of a channel in the department file (TT DMM, TT Outer, MT, MT SSV, MT Bulk, HoReCa, WS); unknown last. */
+export function channelRank(c: string): number {
+  const n = norm(c);
+  const exact = CHANNEL_ORDER.indexOf(n);
+  if (exact >= 0) return exact;
+  // "Presell – TT" or "TT - DMM": the longest known name the channel ends with or contains.
+  let best = -1;
+  for (const [i, k] of CHANNEL_ORDER.entries()) if (new RegExp(`(^| )${k}( |$)`).test(n) && (best < 0 || k.length > CHANNEL_ORDER[best]!.length)) best = i;
+  return best >= 0 ? best : CHANNEL_ORDER.length;
+}
+const sortChannels = (list: string[]) => list.map((c, i) => ({ c, i })).sort((a, b) => channelRank(a.c) - channelRank(b.c) || a.i - b.i).map((x) => x.c);
 
 // ---------- the summary cards (category vs YAGO / PAGO sales / AOP) ----------
 
@@ -393,7 +424,6 @@ export function CdPage({ ws: wsParam, period: periodParam }: { ws?: string; peri
   const cats = l ? new Map([...catMap(l.org)].map(([k, v]) => [k, v as string])) : new Map<string, string>();
   const problems = work && l ? [
     ...cdSubmitProblems({ ...work, colJ: {}, gm: {} }, cats, l.org.depts.map((d) => String(d.id))),
-    ...(overCap(work, l.bench.uploaded, l.cycle.settings.capPct).length ? [tc('overCapShort', { n: overCap(work, l.bench.uploaded, l.cycle.settings.capPct).length })] : []),
   ] : [];
 
   async function save(): Promise<boolean> {

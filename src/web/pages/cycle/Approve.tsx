@@ -120,6 +120,7 @@ function HeadSummary({ a, meta }: { a: Approval; meta: PackMeta }) {
 type Approval = {
   ws: Workspace; period: string; deptId: number; deptName: string; status: HeadStatus; sentTotal: number | null;
   sentByCategory: Record<string, number> | null; sentAt: string | null; deadline: string | null; comment: string | null;
+  monthId: number | null; rootNodeId: number | null; rootStatus: string | null;
 };
 
 function Item({ a, onDone, meta }: { a: Approval; onDone: () => void; meta: PackMeta }) {
@@ -154,14 +155,25 @@ function Item({ a, onDone, meta }: { a: Approval; onDone: () => void; meta: Pack
       {a.status !== 'draft' && <HeadSummary a={a} meta={meta} />}
       {a.status === 'pending' && (
         <>
+          {a.rootStatus === 'in_progress' && a.monthId && a.rootNodeId && (
+            <div class="banner info" data-testid="review-first">
+              {tc('reviewFirst')}
+              <a class="btn" href={`/m/${a.monthId}/n/${a.rootNodeId}`} data-testid="review-distribute">{tc('reviewDistribute')}</a>
+            </div>
+          )}
           <div class="actions">
-            <button type="button" class="btn primary" disabled={busy} onClick={() => void act('approve')}>{tc('approveDistribute')}</button>
+            <button type="button" class="btn primary" disabled={busy} onClick={() => void act('approve')}>
+              {a.rootStatus === 'in_progress' ? tc('approveSendMgrs') : tc('approveDistribute')}
+            </button>
           </div>
           <textarea rows={2} value={comment} placeholder={tc('returnHeadHelp')} aria-label={tc('comment')} onInput={(e) => setComment(e.currentTarget.value)} />
           <div class="actions">
             <button type="button" class="btn danger" disabled={busy || !comment.trim()} onClick={() => void act('return')}>{tc('returnToAdmin')}</button>
           </div>
         </>
+      )}
+      {a.status === 'approved' && a.rootStatus === 'in_progress' && a.monthId && a.rootNodeId && (
+        <div class="actions"><a class="btn primary" href={`/m/${a.monthId}/n/${a.rootNodeId}`}>{tc('reviewDistribute')}</a></div>
       )}
       {a.status === 'returned' && a.comment && <p class="small">{tc('yourComment')}: <q>{a.comment}</q></p>}
       {err && <div class="alert" role="alert">{err}</div>}

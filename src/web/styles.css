@@ -64,6 +64,8 @@ a { color: var(--brand); }
   padding: 5px 14px; font: inherit; text-decoration: none; white-space: nowrap;
 }
 .tab.on { background: var(--brand); border-color: var(--brand); color: var(--on-brand); }
+.subnav { background: var(--bg); padding-block: 8px; }
+.subnav .tab { padding: 3px 12px; font-size: 13px; }
 
 /* Content */
 .page { padding: 16px; max-inline-size: 1320px; margin-inline: auto; }
@@ -366,3 +368,6 @@ code.detail { font-size: 12px; word-break: break-word; white-space: pre-wrap; }
 .hz-add .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .hz-add .row > b { min-width: 130px; }
 .hz-name { min-width: 180px; }
+th.bench, td.bench { background: var(--chip); color: var(--muted); font-size: 12px; white-space: nowrap; }
+th.bench.pb, td.bench.pb { background: transparent; border-inline-start: 1px dashed var(--line); }
+td.bench .gsub { display: block; font-size: 11px; }

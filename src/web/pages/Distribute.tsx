@@ -461,7 +461,7 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
               {busy === 'save' ? t('dsSaving') : t('dsSave')}
             </button>
             <button type="button" class="btn primary" disabled={!canSubmit} onClick={() => setConfirming(true)}>
-              {busy === 'submit' ? t('dsSubmitting') : t('dsSubmit')}
+              {busy === 'submit' ? t('dsSubmitting') : ws.node.level === 'head' ? tc('approveSendMgrs') : t('dsSubmit')}
             </button>
           </>
         )}

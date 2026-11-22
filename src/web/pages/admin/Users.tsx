@@ -34,13 +34,33 @@ function newPassword(): string {
   return Array.from(a, (x, i) => (i < 4 ? L[x % L.length] : D[x % D.length])).join('');
 }
 
+type Kind = 'cd' | 'admin' | 'head' | 'manager' | 'supervisor' | 'other';
+type NodeLite = { id: number; name: string; parent_id: number | null; manager_user_id: number | null };
+const DEPTH: Partial<Record<Kind, number>> = { head: 0, manager: 1, supervisor: 2 };
+
+/** Hierarchy people of one level (Head 0, Manager 1, Supervisor 2+) without an account yet. */
+function openNodes(nodes: NodeLite[], depth: number): NodeLite[] {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const depthOf = (n: NodeLite) => { let d = 0; for (let p = n.parent_id; p !== null && d < 20; p = byId.get(p)?.parent_id ?? null) d++; return d; };
+  return nodes.filter((n) => n.manager_user_id === null && (depth === 2 ? depthOf(n) >= 2 : depthOf(n) === depth)).sort((a, b) => a.name.localeCompare(b.name));
+}
+
 function AddAccount({ taken, onDone }: { taken: Set<string>; onDone: (msg: string) => void }) {
   useLang();
+  const nodesRes = useResource<{ nodes: NodeLite[] }>('/api/admin/nodes');
   const [name, setName] = useState('');
   const [username, setUsername] = useState('');
-  const [kind, setKind] = useState<'cd' | 'admin' | 'manager'>('cd');
+  const [kind, setKind] = useState<Kind>('supervisor');
+  const [nodeId, setNodeId] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const depth = DEPTH[kind];
+  const choices = depth === undefined ? [] : openNodes(nodesRes.data?.nodes ?? [], depth);
+  function pickNode(v: string) {
+    setNodeId(v);
+    const n = choices.find((x) => String(x.id) === v);
+    if (n && !name.trim()) { setName(n.name); if (!username) setUsername(slug(n.name)); }
+  }
   async function save(e: Event) {
     e.preventDefault();
     setErr(null);
@@ -52,6 +72,7 @@ function AddAccount({ taken, onDone }: { taken: Set<string>; onDone: (msg: strin
       const pw = newPassword();
       const { user } = await api<{ user: { id: number } }>('POST', '/api/admin/users', { username: u, name: name.trim(), role: kind === 'admin' ? 'admin' : 'manager', password: pw });
       if (kind === 'cd') await api('PUT', `/api/admin/users/${user.id}/cd`, { cd: ['ops', 'ka'] });
+      if (nodeId && depth !== undefined) await api('PATCH', `/api/admin/nodes/${nodeId}`, { managerUserId: user.id });
       onDone(tc('urCreated', { u, pw }));
     } catch (x) {
       setErr(errText(x));
@@ -63,16 +84,55 @@ function AddAccount({ taken, onDone }: { taken: Set<string>; onDone: (msg: strin
     <form class="card ad-card" onSubmit={save} data-testid="add-account">
       <h2>{tc('urAddTitle')}</h2>
       <div class="toolbar">
-        <label>{tc('ppName')} <input value={name} onInput={(e) => { const v = e.currentTarget.value; setName(v); if (!username || username === slug(name)) setUsername(slug(v)); }} /></label>
-        <label>{t('username')} <input value={username} onInput={(e) => setUsername(e.currentTarget.value)} autocapitalize="none" spellcheck={false} /></label>
-        <label>{tc('ppPosition')} <select value={kind} onChange={(e) => setKind(e.currentTarget.value as 'cd')}>
+        <label>{tc('ppPosition')} <select value={kind} data-testid="add-kind" onChange={(e) => { setKind(e.currentTarget.value as Kind); setNodeId(''); }}>
+          <option value="supervisor">{tc('ppSupervisor')}</option>
+          <option value="manager">{tc('ppManager')}</option>
+          <option value="head">{tc('ppHead')}</option>
+          <option value="other">{tc('urOther')}</option>
           <option value="cd">{tc('ppCd')}</option>
           <option value="admin">{tc('urAdmin')}</option>
-          <option value="manager">{tc('urOther')}</option>
         </select></label>
+        {depth !== undefined && (
+          <label>{tc('urLinkTo')} <select value={nodeId} data-testid="add-node" onChange={(e) => pickNode(e.currentTarget.value)}>
+            <option value="">{tc('urNoLink')}</option>
+            {choices.map((n) => <option key={n.id} value={String(n.id)}>{n.name}</option>)}
+          </select></label>
+        )}
+        <label>{tc('ppName')} <input value={name} onInput={(e) => { const v = e.currentTarget.value; setName(v); if (!username || username === slug(name)) setUsername(slug(v)); }} /></label>
+        <label>{t('username')} <input value={username} onInput={(e) => setUsername(e.currentTarget.value)} autocapitalize="none" spellcheck={false} /></label>
         <button type="submit" class="btn primary" disabled={busy}>{tc('urCreate')}</button>
       </div>
       <p class="muted small">{tc('urAddHelp')}</p>
+      {err && <div class="alert" role="alert">{err}</div>}
+    </form>
+  );
+}
+
+/** Inline edit of a person's name and username. */
+function EditAccount({ a, taken, onDone }: { a: AccountDto; taken: Set<string>; onDone: (msg: string) => void }) {
+  useLang();
+  const [name, setName] = useState(a.name);
+  const [username, setUsername] = useState(a.username);
+  const [err, setErr] = useState<string | null>(null);
+  async function save(e: Event) {
+    e.preventDefault();
+    const u = username.trim().toLowerCase();
+    if (!name.trim() || !u || /\s/.test(u)) return setErr(tc('urNeedName'));
+    if (u !== a.username && taken.has(u)) return setErr(tc('urTaken', { u }));
+    setErr(null);
+    try {
+      await api('PATCH', `/api/admin/users/${a.id}`, { name: name.trim(), username: u });
+      onDone(tc('urEdited', { u }));
+    } catch (x) {
+      setErr(errText(x));
+    }
+  }
+  return (
+    <form class="toolbar" onSubmit={save} data-testid="edit-account">
+      <label>{tc('ppName')} <input value={name} onInput={(e) => setName(e.currentTarget.value)} /></label>
+      <label>{t('username')} <input value={username} autocapitalize="none" spellcheck={false} onInput={(e) => setUsername(e.currentTarget.value)} /></label>
+      <button type="submit" class="btn primary">{tc('save')}</button>
+      <button type="button" class="btn" onClick={() => onDone('')}>{tc('cancel')}</button>
       {err && <div class="alert" role="alert">{err}</div>}
     </form>
   );
@@ -114,6 +174,7 @@ export function Users() {
   const [flash, setFlash] = useState<{ ok: boolean; text: string } | null>(null);
   const [arm, setArm] = useState<number | null>(null);
   const [setting, setSetting] = useState<number | null>(null);
+  const [editing, setEditing] = useState<number | null>(null);
   const [adding, setAdding] = useState(false);
   const [sync, setSync] = useState<{ done: number; left: number } | null>(null);
   const [made, setMade] = useState<string[][]>([]);
@@ -227,10 +288,14 @@ export function Users() {
                           {!self && (arm === a.id
                             ? <button type="button" class="btn link" onClick={() => void reset(a)}>{tc('urConfirmReset')}</button>
                             : <button type="button" class="btn link" onClick={() => setArm(a.id)}>{tc('urReset')}</button>)}
-                          <button type="button" class="btn link" onClick={() => setSetting(setting === a.id ? null : a.id)}>{tc('urChangePw')}</button>
+                          <button type="button" class="btn link" onClick={() => { setEditing(editing === a.id ? null : a.id); setSetting(null); }}>{tc('urEdit')}</button>
+                          <button type="button" class="btn link" onClick={() => { setSetting(setting === a.id ? null : a.id); setEditing(null); }}>{tc('urChangePw')}</button>
                           {!self && <button type="button" class={`btn link${a.active ? ' danger' : ''}`} onClick={() => void toggle(a)}>{a.active ? t('adDisable') : t('adEnable')}</button>}
                         </td>
                       </tr>
+                      {editing === a.id && (
+                        <tr key={`e${a.id}`}><td colSpan={7}><EditAccount a={a} taken={new Set(accounts.map((x) => x.username))} onDone={(m) => { setEditing(null); if (m) setFlash({ ok: true, text: m }); res.reload(); }} /></td></tr>
+                      )}
                       {setting === a.id && (
                         <tr key={`p${a.id}`}><td colSpan={7}><SetPassword a={a} onDone={(m) => { setSetting(null); if (m) setFlash({ ok: true, text: m }); res.reload(); }} /></td></tr>
                       )}

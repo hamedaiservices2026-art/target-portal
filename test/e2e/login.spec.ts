@@ -105,8 +105,10 @@ test('an expired session returns to login and then to the page that was asked fo
 test('the admin sees the admin navigation', async ({ page }) => {
   await page.goto('/login');
   await signIn(page, { username: 'admin', password: 'admin-pass-123' });
-  for (const name of ['Users', 'Departments', 'Packs', 'Settings', 'Hierarchy', 'Months', 'History']) {
-    await expect(page.getByRole('navigation').getByRole('link', { name })).toBeVisible();
+  await page.getByTestId('nav-settings').click();
+  await expect(page).toHaveURL(/\/admin\/settings$/);
+  for (const name of ['General', 'Packs', 'Users', 'Hierarchy', 'Months', 'History', 'Departments']) {
+    await expect(page.getByTestId('settings-nav').getByRole('link', { name })).toBeVisible();
   }
   await page.getByRole('link', { name: 'Hierarchy' }).click();
   await expect(page).toHaveURL(/\/admin\/hierarchy$/);

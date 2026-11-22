@@ -90,6 +90,8 @@ export async function syncNextAccount(db: D1Database, actorId: number): Promise<
   if (link.length) {
     await batch(db, [
       ...link.map((n) => db.prepare(`UPDATE nodes SET manager_user_id = ? WHERE id = ?`).bind(byName.get(n.name.trim().toLowerCase())!, n.id)),
+      // Months already running: the person gets their turn there too.
+      ...link.map((n) => db.prepare(`UPDATE month_nodes SET manager_user_id = ? WHERE node_id = ? AND manager_user_id IS NULL`).bind(byName.get(n.name.trim().toLowerCase())!, n.id)),
       auditStatement(db, actorId, 'accounts.link', {}, { nodes: link.length }),
     ]);
   }
@@ -118,6 +120,7 @@ export async function syncNextAccount(db: D1Database, actorId: number): Promise<
   await batch(db, [
     db.prepare(`INSERT INTO users(username, name, pw_hash, pw_salt, role, lang, must_change_pw, first_pw) VALUES (?, ?, ?, ?, 'manager', 'en', 1, ?)`).bind(username, name, hash, salt, pw),
     ...ids.map((id) => db.prepare(`UPDATE nodes SET manager_user_id = (SELECT id FROM users WHERE username = ?) WHERE id = ?`).bind(username, id)),
+    ...ids.map((id) => db.prepare(`UPDATE month_nodes SET manager_user_id = (SELECT id FROM users WHERE username = ?) WHERE node_id = ? AND manager_user_id IS NULL`).bind(username, id)),
     auditStatement(db, actorId, 'user.create', {}, { username, name, nodes: ids.length }),
   ]);
   return { created: { name, username, password: pw }, linked: link.length, remaining: names.length - 1 };

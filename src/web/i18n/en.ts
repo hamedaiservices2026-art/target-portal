@@ -35,6 +35,7 @@ export const en = {
   navDepartments: 'Departments',
   navPacks: 'Packs',
   navSettings: 'Settings',
+  navGeneral: 'General',
   navHierarchy: 'Hierarchy',
   navMonths: 'Months',
   navHistory: 'History',

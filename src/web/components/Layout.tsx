@@ -6,15 +6,17 @@ import { tc } from '../cycle/i18n';
 import { Bell } from './Bell';
 import { LangToggle } from './LangToggle';
 
+/** The admin pages grouped under the one "Settings" tab, shown as sub-tabs. */
 export const ADMIN_NAV: { path: string; label: TextKey }[] = [
-  { path: '/admin/users', label: 'navUsers' },
-  { path: '/admin/departments', label: 'navDepartments' },
+  { path: '/admin/settings', label: 'navGeneral' },
   { path: '/admin/packs', label: 'navPacks' },
-  { path: '/admin/settings', label: 'navSettings' },
+  { path: '/admin/users', label: 'navUsers' },
   { path: '/admin/hierarchy', label: 'navHierarchy' },
   { path: '/admin/months', label: 'navMonths' },
   { path: '/admin/history', label: 'navHistory' },
+  { path: '/admin/departments', label: 'navDepartments' },
 ];
+const inSettings = (path: string) => ADMIN_NAV.some((n) => path === n.path || path.startsWith(`${n.path}/`));
 
 export function Layout({ children }: { children?: ComponentChildren }) {
   useLang();
@@ -56,7 +58,14 @@ export function Layout({ children }: { children?: ComponentChildren }) {
         <nav class="nav" aria-label={t('mainNav')}>
           <a class={`tab${path === '/' ? ' on' : ''}`} href="/">{t('navHome')}</a>
           {cycleNav.map((n) => tab(n.path, n.label))}
-          {isAdmin && ADMIN_NAV.map((n) => tab(n.path, t(n.label)))}
+          {isAdmin && (
+            <a class={`tab${inSettings(path) ? ' on' : ''}`} href="/admin/settings" data-testid="nav-settings">{t('navSettings')}</a>
+          )}
+        </nav>
+      )}
+      {!blocked && isAdmin && inSettings(path) && (
+        <nav class="nav subnav" aria-label={t('navSettings')} data-testid="settings-nav">
+          {ADMIN_NAV.map((n) => tab(n.path, t(n.label)))}
         </nav>
       )}
       <main class="page">{children}</main>

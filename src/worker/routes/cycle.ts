@@ -70,7 +70,7 @@ cycle.put('/api/admin/cycle/:ws/:period/dept-target', h(async (c, db, me, body) 
 }));
 cycle.put('/api/admin/cycle/:ws/:period/calc', h(async (c, db, me, body) => c.json(await applyCalc(db, me, ws(c), per(c), await body()))));
 cycle.post('/api/admin/cycle/:ws/:period/heads/:deptId/send', h(async (c, db, me) =>
-  c.json(await sendToHead(db, me, ws(c), per(c), parseId(p(c, 'deptId'))))));
+  c.json(await sendToHead(db, me, ws(c), per(c), parseId(p(c, 'deptId')), c.env))));
 cycle.post('/api/admin/cycle/:ws/:period/heads/:deptId/restart', h(async (c, db, me) => {
   await restartHead(db, me, ws(c), per(c), parseId(p(c, 'deptId')));
   return c.json({ ok: true });

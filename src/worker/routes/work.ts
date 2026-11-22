@@ -5,6 +5,7 @@ import { Hono } from 'hono';
 import { requireUser, type AppEnv } from '../auth';
 import { getBranch, getWorkspace, myTasks, saveDraft, submitNode } from '../services/distribution';
 import { bad, int, parseId } from '../services/masters';
+import { approveOnRootSubmit } from '../services/cycle';
 import { h, p, type Ctx } from './handler';
 
 const work = new Hono<AppEnv>();
@@ -25,7 +26,9 @@ work.post('/api/months/:mid/nodes/:nid/submit', h(async (c, db, me, body) => {
   const [mid, nid] = ids(c);
   const expectedVersion = int((await body()).version, 'version');
   if (expectedVersion < 0) throw bad('version must be an integer of at least 0');
-  return c.json(await submitNode(db, c.env, mid, nid, me, 'draft', { expectedVersion, asManager: true }));
+  const out = await submitNode(db, c.env, mid, nid, me, 'draft', { expectedVersion, asManager: true });
+  await approveOnRootSubmit(db, c.var.user, mid, nid);
+  return c.json(out);
 }));
 
 export default work;
