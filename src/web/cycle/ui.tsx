@@ -132,12 +132,66 @@ export function downloadCsv(file: string, columns: string[], rows: (string | num
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-/** Several sheets in one .xlsx (the CD workbook, the calculator). */
-export async function writeWorkbook(file: string, sheets: { name: string; columns: string[]; rows: (string | number | null)[][] }[]): Promise<void> {
+/** Several sheets in one .xlsx (the CD workbook, the calculator, the templates). `head` rows go above the column row. */
+export async function writeWorkbook(file: string, sheets: { name: string; columns: string[]; rows: (string | number | null)[][]; head?: (string | number | null)[][] }[]): Promise<void> {
   const { default: write } = await import('write-excel-file/browser');
   const data = sheets.map((s) => ({
     sheet: s.name.slice(0, 31),
-    data: [s.columns.map((value) => ({ value, fontWeight: 'bold' as const })), ...s.rows.map((r) => r.map((v) => ({ value: v ?? '' })))],
+    data: [
+      ...(s.head ?? []).map((r) => r.map((v) => ({ value: v ?? '', fontWeight: 'bold' as const }))),
+      s.columns.map((value) => ({ value, fontWeight: 'bold' as const })),
+      ...s.rows.map((r) => r.map((v) => (v === null || v === undefined ? null : { value: v }))),
+    ],
   }));
   await (write as unknown as (d: unknown) => { toFile: (f: string) => Promise<void> })(data).toFile(file);
+}
+
+const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** "Jul–Sep 2026" style label of a month list. */
+export function monthsLabel(months: string[]): string {
+  if (!months.length) return '—';
+  const s = [...months].sort();
+  const f = (m: string) => `${MONTH_SHORT[Number(m.slice(5)) - 1]} ${m.slice(0, 4)}`;
+  return s.length === 1 ? f(s[0]!) : `${f(s[0]!)} – ${f(s[s.length - 1]!)}`;
+}
+
+/**
+ * Month checkboxes for the average sales: the target year and the year
+ * before, 12 months each. Months with no sales uploaded are greyed; PAGO and
+ * YAGO are marked (they always show their own month).
+ */
+export function MonthPicker({ period, months, onChange, available, title, disabled }: {
+  period: string; months: string[]; onChange: (m: string[]) => void; available: Set<string> | null; title?: string; disabled?: boolean;
+}) {
+  useLang();
+  const year = Number(period.slice(0, 4));
+  const pm = addMonths(period, -1);
+  const ym = addMonths(period, -12);
+  const toggle = (m: string) => onChange(months.includes(m) ? months.filter((x) => x !== m) : [...months, m].sort());
+  return (
+    <section class="card cy-section cy-monthpick" data-testid="month-picker">
+      <div class="cy-section-head">
+        <h2>{title ?? tc('avgBasedOn')}</h2>
+        <span class="muted small">{tc('avgNow', { n: months.length, label: monthsLabel(months) })}</span>
+      </div>
+      {[year, year - 1].map((y) => (
+        <div class="cy-mp-row" key={y}>
+          <b>{y}</b>
+          {MONTH_SHORT.map((name, i) => {
+            const m = `${y}-${String(i + 1).padStart(2, '0')}`;
+            const on = months.includes(m);
+            const has = !available || available.has(m);
+            const tag = m === pm ? ' · PAGO' : m === ym ? ' · YAGO' : '';
+            return (
+              <label key={m} class={`cy-mp${has ? '' : ' off'}${on ? ' on' : ''}`} title={has ? '' : tc('noSalesData')}>
+                <input type="checkbox" checked={on} disabled={disabled || (!has && !on)} onChange={() => toggle(m)} /> {name}{tag}
+              </label>
+            );
+          })}
+        </div>
+      ))}
+      <p class="muted small">{tc('avgPickHelp')}</p>
+    </section>
+  );
 }

@@ -328,3 +328,28 @@ code.detail { font-size: 12px; word-break: break-word; white-space: pre-wrap; }
 .bell-list li { padding-block: 6px; border-block-end: 1px solid var(--line); font-size: 13px; }
 .bell-list li.unread { font-weight: 600; }
 .narrow { max-inline-size: 460px; margin-inline: auto; }
+
+/* ---- new target process ---- */
+.status.warn { background: var(--warn-bg); color: var(--warn); }
+.cy-monthpick .cy-mp-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-block: 4px; }
+.cy-monthpick .cy-mp-row > b { inline-size: 3.2em; font-size: 13px; }
+.cy-mp { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; padding: 3px 8px; border-radius: 999px; background: var(--chip); border: 1px solid transparent; cursor: pointer; white-space: nowrap; }
+.cy-mp.on { background: var(--ok-bg); color: var(--ok); border-color: var(--ok); }
+.cy-mp.off { opacity: .45; cursor: not-allowed; }
+.cy-mp input { margin: 0; }
+.cy-tall { max-block-size: 70vh; overflow: auto; }
+.cy-tall thead th { position: sticky; inset-block-start: 0; background: var(--panel); z-index: 1; }
+.cy-flow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.cy-mini-cards { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); margin-block-end: 12px; }
+.cy-mini-cards .big { font-size: 20px; }
+.cy-table tr.edited td { background: var(--warn-bg); }
+.cy-end { justify-content: flex-end; display: flex; gap: 8px; flex-wrap: wrap; }
+.cy-table th.bench, .cy-table td.bench { color: var(--muted); }
+.cy-bench { display: flex; flex-direction: column; gap: 1px; font-size: 11px; color: var(--muted); font-weight: 400; line-height: 1.3; text-align: end; white-space: nowrap; }
+.cell .cy-bench { text-align: start; }
+.cy-bench-controls { margin-block: 10px; display: flex; flex-direction: column; gap: 6px; }
+.cy-extra .cy-section-head h2 .n, .cy-step-title .n { display: inline-flex; inline-size: 22px; block-size: 22px; border-radius: 50%; background: var(--brand); color: var(--on-brand); font-size: 13px; align-items: center; justify-content: center; }
+.cy-step-title { font-size: 17px; margin: 16px 0 6px; display: flex; gap: 8px; align-items: center; }
+.cy-head-summary { margin-block: 10px; }
+@media (max-width: 640px) { .cy-mp { font-size: 11px; padding: 2px 6px; } }
+.cy-table th:first-child, .cy-table td:first-child { text-align: start; }

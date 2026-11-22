@@ -78,43 +78,41 @@ test('the whole cycle: CD splits and submits, Admin calculates and sends, the He
   await page.getByRole('button', { name: 'Send to the Commercial Director' }).click();
   await expect(page.getByTestId('cd-status')).toHaveText('With the Commercial Director');
 
-  // The CD (head1 here) approves the New Target, copies column I to J and submits.
+  // The CD (head1 here) approves the New Target (the split by department is
+  // made on approval), checks the department tab and returns it to Admin.
   const cdCtx = await browser.newContext();
   const cd = await cdCtx.newPage();
   await signIn(cd, 'head1', 'manager-pass-123', `/cd/ops/${P}`);
   await expect(cd.getByTestId('cd-page')).toBeVisible();
   await expect(cd.getByTestId('submit-reason')).toContainText('the New Target is not approved');
-  await cd.getByRole('button', { name: 'Approve New Target' }).click();
-  await cd.getByRole('tab', { name: 'Target by department' }).click();
-  await expect(cd.getByRole('cell', { name: 'CSD_CANS150' })).toBeVisible();
-  await cd.getByRole('tab', { name: 'Share of mix' }).click();
-  await cd.getByRole('button', { name: 'Copy column I to J' }).click();
-  await cd.getByRole('tab', { name: 'Water' }).click();
-  await cd.getByRole('button', { name: 'Copy column I to J' }).click();
-  await cd.getByRole('tab', { name: 'LRB-Others' }).click();
-  await cd.getByRole('button', { name: 'Copy column I to J' }).click();
-  await cd.getByRole('tab', { name: 'Dashboard' }).click();
-  await expect(cd.getByText('Total LRB')).toBeVisible();
-  await cd.getByRole('button', { name: 'Submit to Admin' }).click();
+  await expect(cd.getByTestId('gm-table')).toContainText('CSD_CANS150');
+  await cd.getByTestId('approve-nt').click();
+  await expect(cd.getByTestId('dept-table')).toContainText('CSD_CANS150');
+  await expect(cd.getByTestId('month-picker')).toBeVisible();
+  await cd.getByRole('tab', { name: 'vs PAGO sales' }).click();
+  await cd.getByRole('button', { name: 'Approve and return to Admin' }).click();
   await expect(cd.getByTestId('cd-status')).toHaveText('Submitted by the Commercial Director');
 
   // Admin calculates the route targets, applies them and sends to the Head.
   await page.reload();
   await page.getByRole('tab', { name: 'Target calculator' }).click();
-  await page.getByRole('button', { name: 'Calculate' }).click();
-  await expect(page.getByText('Reconciliation')).toBeVisible();
-  await page.getByRole('button', { name: 'Apply' }).click();
+  await page.getByRole('button', { name: 'Calculate target on route by pack' }).click();
+  await expect(page.getByText('Matches').first()).toBeVisible();
+  await page.getByTestId('apply-calc').click();
   await expect(page.getByRole('status')).toContainText(/Applied for \d+ Heads/);
+  await page.getByRole('tab', { name: 'Workflow' }).click();
+  await expect(page.getByTestId('wf-head').filter({ hasText: 'Head TT' })).toBeVisible();
   await page.getByRole('tab', { name: 'Send to Heads' }).click();
   const row = page.getByTestId('head-row').filter({ hasText: 'Head TT' });
-  await row.getByRole('button', { name: 'Send' }).click();
+  await row.getByRole('button', { name: 'Send', exact: true }).click();
   await expect(row).toContainText('Waiting for approval');
 
   // The Head approves; the distribution starts.
   await cd.goto('/approve');
   const item = cd.getByTestId('approval').filter({ hasText: P });
   await expect(item).toContainText('40');
-  await item.getByRole('button', { name: 'Approve' }).click();
+  await expect(item.getByTestId('head-summary')).toBeVisible();
+  await item.getByRole('button', { name: 'Approve and start distribution' }).click();
   await expect(item).toContainText('Approved');
   await cd.getByTestId('bell').click();
   await expect(cd.getByRole('dialog', { name: 'Notifications' })).toContainText(P);

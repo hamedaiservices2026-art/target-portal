@@ -161,7 +161,7 @@ export type OrgDto = {
   depts: { id: number; code: string; name: string; sort: number; channels: { channel: string; grp: string }[] }[];
   nodes: { id: number; deptId: number; parentId: number | null; name: string; managerUserId: number | null; managerName: string | null }[];
   leaves: { id: number; deptId: number; nodeId: number; routeCode: string; deliverySystem: string; label: string }[];
-  packs: { code: string; grp: string; active: boolean; sort: number }[];
+  packs: { code: string; grp: string; active: boolean; sort: number; sub?: string | null }[];
 };
 
 /** The live hierarchy of one workspace, with channels and the pack master. */
@@ -174,7 +174,7 @@ export async function readOrg(db: D1Database, ws: Workspace): Promise<OrgDto> {
                 WHERE d.workspace = ? ORDER BY n.name, n.id`).bind(ws),
     db.prepare(`SELECT l.id, l.dept_id, l.node_id, l.route_code, l.delivery_system, l.label FROM leaves l
                 JOIN departments d ON d.id = l.dept_id WHERE d.workspace = ? ORDER BY l.route_code, l.id`).bind(ws),
-    db.prepare(`SELECT code, grp, active, sort FROM packs ORDER BY sort, code`),
+    db.prepare(`SELECT code, grp, active, sort, sub FROM packs ORDER BY sort, code`),
   ]);
   const [depts, chans, nodes, leaves, packs] = res.map((r) => r.results as Obj[]);
   return {
@@ -190,7 +190,7 @@ export async function readOrg(db: D1Database, ws: Workspace): Promise<OrgDto> {
       id: l.id as number, deptId: l.dept_id as number, nodeId: l.node_id as number, routeCode: l.route_code as string,
       deliverySystem: l.delivery_system as string, label: l.label as string,
     })),
-    packs: packs!.map((p) => ({ code: p.code as string, grp: p.grp as string, active: p.active === 1, sort: p.sort as number })),
+    packs: packs!.map((p) => ({ code: p.code as string, grp: p.grp as string, active: p.active === 1, sort: p.sort as number, sub: (p.sub as string | null) ?? null })),
   };
 }
 
@@ -250,4 +250,33 @@ export async function setCdRoles(db: D1Database, actorId: number, userId: number
 
 export async function listCdRoles(db: D1Database): Promise<{ userId: number; workspace: Workspace }[]> {
   return all(db, `SELECT user_id AS userId, workspace FROM user_roles WHERE role = 'cd' ORDER BY user_id, workspace`);
+}
+
+// ---------- pack sub categories (pack mapping file) ----------
+
+/** Pack -> {grp, sub} for every signed-in user (the distribution and summary screens group by them). */
+export async function packSubs(db: D1Database): Promise<Record<string, { grp: string; sub: string | null }>> {
+  const rows = await all<{ code: string; grp: string; sub: string | null }>(db, `SELECT code, grp, sub FROM packs`);
+  return Object.fromEntries(rows.map((r) => [r.code, { grp: r.grp, sub: r.sub }]));
+}
+
+/** Sets the sub category of the packs listed (`{map: {code: sub}}`); packs not listed keep theirs. */
+export async function setPackSubs(db: D1Database, actorId: number, body: Obj): Promise<{ updated: number }> {
+  const raw = body.map;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw bad('map must be an object of pack to sub category');
+  const list = Object.entries(raw as Obj).map(([code, sub]) => {
+    if (!code || code.length > 100) throw bad('bad pack code');
+    if (sub !== null && (typeof sub !== 'string' || sub.trim().length > 40)) throw bad(`sub category of ${code} must be a text of at most 40 characters`);
+    return { code, sub: typeof sub === 'string' && sub.trim() ? sub.trim() : null };
+  });
+  if (list.length > 2000) throw bad('at most 2000 packs at once');
+  if (!list.length) return { updated: 0 };
+  const res = await writeBatch(db, [
+    db.prepare(
+      `UPDATE packs SET sub = (SELECT json_extract(value, '$.sub') FROM json_each(?1) WHERE json_extract(value, '$.code') = packs.code)
+       WHERE code IN (SELECT json_extract(value, '$.code') FROM json_each(?1))`,
+    ).bind(JSON.stringify(list)),
+    auditStatement(db, actorId, 'packs.sub', {}, { count: list.length }),
+  ], 'conflict');
+  return { updated: res[0]!.meta.changes ?? 0 };
 }

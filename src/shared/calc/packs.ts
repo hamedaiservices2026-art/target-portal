@@ -132,3 +132,43 @@ export function summaryGroups(name: string, master?: ReadonlyMap<string, Categor
 export function editableGroupOf(name: string, master?: ReadonlyMap<string, Category>): SummaryGroup | null {
   return summaryGroups(name, master).find((g) => EDITABLE_SUMMARY_GROUPS.includes(g)) ?? null;
 }
+
+/**
+ * Sub category of a pack (the "Pacage" column of the pack mapping file):
+ * CSD -> SSNR / MSPET / PMIX, Water -> Water, LRB-Others -> LIT / LRB_Other.
+ * The pack master's own sub category wins when it has one.
+ */
+export const SUB_CATEGORIES: readonly { sub: string; cat: Category }[] = [
+  { sub: 'SSNR', cat: 'CSD' }, { sub: 'MSPET', cat: 'CSD' }, { sub: 'PMIX', cat: 'CSD' }, { sub: 'CSD Other', cat: 'CSD' },
+  { sub: 'Water', cat: 'Water' },
+  { sub: 'LIT', cat: 'LRB-Others' }, { sub: 'LRB_Other', cat: 'LRB-Others' },
+];
+
+export function subCategoryByName(name: string, cat: Category = categoryByName(name)): string {
+  if (cat === 'Water') return 'Water';
+  if (cat === 'LRB-Others') return isLit(name) ? 'LIT' : 'LRB_Other';
+  if (isPmix(name)) return 'PMIX';
+  if (isSsnr(name, cat)) return 'SSNR';
+  if (isMspet(name, cat)) return 'MSPET';
+  return 'CSD Other';
+}
+
+/** Category a sub category belongs to (unknown sub categories: null). */
+export function categoryOfSub(sub: string): Category | null {
+  const k = sub.replace(/[\s_\-]+/g, '').toUpperCase();
+  if (k === 'WATER') return 'Water';
+  if (k === 'SSNR' || k === 'MSPET' || k === 'MPT' || k === 'PMIX' || k === 'CSD' || k === 'CSDOTHER') return 'CSD';
+  if (k === 'LIT' || k === 'LRBOTHER' || k === 'LRBOTHERS' || k === 'OTHERLRB') return 'LRB-Others';
+  return null;
+}
+
+/** The sub categories of a category in display order, for the packs given. */
+export function subsOf(cat: Category, packs: readonly string[], subOf: (p: string) => string): string[] {
+  const order = SUB_CATEGORIES.filter((s) => s.cat === cat).map((s) => s.sub);
+  const found = [...new Set(packs.map(subOf))];
+  return found.sort((a, b) => {
+    const ia = order.indexOf(a);
+    const ib = order.indexOf(b);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
+  });
+}

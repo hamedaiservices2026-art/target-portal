@@ -29,6 +29,20 @@ export interface CascadeInput {
   categoryAvg: (routeId: string, pack: string) => number;
   /** Route -> uploaded route target of the pack (monthly target file). */
   routeTarget: (routeId: string, pack: string) => number;
+  /**
+   * Admin edits: a node's (or route's) own cases of a pack. The siblings that
+   * are not fixed share what is left of the parent's cases by their weights.
+   */
+  fixed?: (nodeId: string, pack: string) => number | undefined;
+}
+
+export interface CascadeIssue {
+  /** The parent node whose children were fixed. */
+  node: string;
+  pack: string;
+  /** over: fixed children exceed the parent's cases; short: every child fixed and cases are left over. */
+  kind: 'over' | 'short';
+  cases: number;
 }
 
 export interface CascadeResult {
@@ -40,6 +54,8 @@ export interface CascadeResult {
   basisCount: Record<CascadeBasis, number>;
   /** Packs where at least one split fell back from pack sales. */
   fallbackPacks: Record<Exclude<CascadeBasis, 'pack_sales'>, string[]>;
+  /** Problems with the admin edits (empty without `fixed`). */
+  issues: CascadeIssue[];
 }
 
 function pos(v: number): number {
@@ -67,6 +83,7 @@ export function cascade(inp: CascadeInput): CascadeResult {
     nodes: {},
     basisCount: { pack_sales: 0, category_sales: 0, route_target: 0, equal: 0 },
     fallbackPacks: { category_sales: [], route_target: [], equal: [] },
+    issues: [],
   };
   for (const { node } of prep.values()) {
     if (node.children.length === 0) result.routes[node.id] = {};
@@ -104,6 +121,25 @@ export function cascade(inp: CascadeInput): CascadeResult {
       if (amount > 0) {
         result.basisCount[basis] += 1;
         used.add(basis);
+      }
+      const fx = inp.fixed ? kids.map((c) => {
+        const v = inp.fixed!(c.id, pack);
+        return v !== undefined && Number.isInteger(v) && v >= 0 ? v : undefined;
+      }) : [];
+      if (fx.some((v) => v !== undefined)) {
+        const fixedSum = fx.reduce<number>((s, v) => s + (v ?? 0), 0);
+        let rest = amount - fixedSum;
+        if (rest < 0) {
+          result.issues.push({ node: n.id, pack, kind: 'over', cases: -rest });
+          rest = 0;
+        }
+        const free = kids.map((c, i) => ({ c, i })).filter((x) => fx[x.i] === undefined);
+        if (!free.length && rest > 0) result.issues.push({ node: n.id, pack, kind: 'short', cases: rest });
+        const fw = free.map((x) => w[x.i]!);
+        const any = fw.some((x) => x > 0);
+        const split = free.length ? largestRemainder(free.map((x, j) => ({ key: x.c.id, value: any ? fw[j]! : kidRoutes[x.i]!.length })), rest) : {};
+        kids.forEach((c, i) => walk(c, fx[i] ?? split[c.id] ?? 0));
+        return;
       }
       const split = largestRemainder(kids.map((c, i) => ({ key: c.id, value: w[i]! })), amount);
       kids.forEach((c) => walk(c, split[c.id]!));
