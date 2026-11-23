@@ -11,6 +11,7 @@ import { errText, LoadError, PageHead, TreeChangeBanner, useResource, type TreeC
 import { fmtNum, t, useLang } from '../../i18n';
 import { tc } from '../../cycle/i18n';
 import { HierarchyUpload } from './HierarchyUpload';
+import { KaCleanup } from './KaCleanup';
 
 type Node = NodeDto & { dept_id: number; depth: number; head: Node | null; mgr: Node | null };
 
@@ -31,14 +32,22 @@ export function Hierarchy() {
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [arm, setArm] = useState<string | null>(null);
   const [f, setF] = useState('');
-  const [add, setAdd] = useState({ head: '', headWs: 'ops', mgr: '', mgrP: '', sup: '', supP: '', route: '', label: '', ds: '', routeP: '' });
+  const [add, setAdd] = useState({ head: '', mgr: '', mgrP: '', sup: '', supP: '', route: '', label: '', ds: '', routeP: '' });
+  // One tab per workspace: the Operation hierarchy and the Key Account hierarchy are kept apart.
+  const [ws, setWs] = useState<'ops' | 'ka'>(() => (new URLSearchParams(location.search).get('ws') === 'ka' ? 'ka' : 'ops'));
+  const pickWs = (w: 'ops' | 'ka') => {
+    setWs(w); setMsg(null); setChange(null); setArm(null);
+    try { const u = new URL(location.href); u.searchParams.set('ws', w); history.replaceState(null, '', u); } catch { /* ignore */ }
+  };
 
-  const deptList = depts.data?.departments ?? [];
+  const allDepts = depts.data?.departments ?? [];
+  const deptList = allDepts.filter((d) => (d.workspace ?? 'ops') === ws);
+  const inWs = new Set(deptList.map((d) => d.id));
   const deptCode = new Map(deptList.map((d) => [d.id, d.code]));
-  const leaves = leavesRes.data?.leaves ?? [];
+  const leaves = (leavesRes.data?.leaves ?? []).filter((l) => inWs.has(l.dept_id));
 
   const { all, heads, managers, supervisors, byId } = useMemo(() => {
-    const raw = nodesRes.data?.nodes ?? [];
+    const raw = (nodesRes.data?.nodes ?? []).filter((n) => inWs.has(n.dept_id ?? 0));
     const byId = new Map<number, Node>();
     for (const n of raw) byId.set(n.id, { ...n, dept_id: n.dept_id ?? 0, depth: 0, head: null, mgr: null });
     for (const n of byId.values()) {
@@ -56,7 +65,7 @@ export function Hierarchy() {
       managers: all.filter((n) => n.depth === 1).sort((a, b) => (a.head?.name ?? '').localeCompare(b.head?.name ?? '') || by(a, b)),
       supervisors: all.filter((n) => n.depth >= 2).sort((a, b) => (a.mgr?.name ?? '').localeCompare(b.mgr?.name ?? '') || by(a, b)),
     };
-  }, [nodesRes.data]);
+  }, [nodesRes.data, depts.data, ws]);
 
   const kids = useMemo(() => {
     const m = new Map<number, number>();
@@ -98,8 +107,8 @@ export function Hierarchy() {
     const name = add.head.trim();
     if (!name) return setMsg({ ok: false, text: tc('hzNeedName') });
     const ok = await run(async () => {
-      const { department } = await api<{ department: DepartmentDto }>('POST', '/api/admin/departments', { code: codeFor(name, new Set(deptList.map((d) => d.code))), name });
-      if (add.headWs === 'ka') await api('PUT', `/api/admin/departments/${department.id}/workspace`, { workspace: 'ka' });
+      const { department } = await api<{ department: DepartmentDto }>('POST', '/api/admin/departments', { code: codeFor(name, new Set(allDepts.map((d) => d.code))), name });
+      if (ws === 'ka') await api('PUT', `/api/admin/departments/${department.id}/workspace`, { workspace: 'ka' });
       return api('POST', '/api/admin/nodes', { deptId: department.id, parentId: null, name });
     }, tc('hzAdded', { name }));
     if (ok) set('head', '');
@@ -138,27 +147,33 @@ export function Hierarchy() {
     .filter(({ l, node }) => !needle || [l.route_code, l.label, l.delivery_system, node?.name ?? '', node?.mgr?.name ?? '', node?.head?.name ?? ''].join(' ').toLowerCase().includes(needle))
     .sort((a, b) => a.l.route_code.localeCompare(b.l.route_code));
 
+  // Key Account names: MDM (Head), KAM (manager), KAE (supervisor), KAE ID (route).
+  const L = ws === 'ka'
+    ? { head: 'MDM', mgr: 'KAM', sup: 'KAE', heads: 'MDM', mgrs: 'KAM', sups: 'KAE', routes: 'KAE ID', route: 'KAE ID' }
+    : { head: tc('ppHead'), mgr: tc('ppManager'), sup: tc('ppSupervisor'), heads: tc('hzHeads'), mgrs: tc('hzManagers'), sups: tc('hzSupervisors'), routes: tc('routes'), route: tc('route') };
   const err = depts.error ?? nodesRes.error ?? leavesRes.error;
   return (
     <section data-testid="admin-hierarchy">
       <PageHead title={t('navHierarchy')} intro={tc('hzIntro')} />
       {err && <LoadError message={err} onRetry={reload} />}
-      <HierarchyUpload depts={deptList} onApplied={reload} />
+      <div class="toolbar" role="tablist" data-testid="hz-tabs">
+        <button type="button" role="tab" class={`tab${ws === 'ops' ? ' on' : ''}`} aria-selected={ws === 'ops'} onClick={() => pickWs('ops')}>{tc('hzTabOps')}</button>
+        <button type="button" role="tab" class={`tab${ws === 'ka' ? ' on' : ''}`} aria-selected={ws === 'ka'} onClick={() => pickWs('ka')}>{tc('hzTabKa')}</button>
+      </div>
+      <HierarchyUpload key={ws} depts={deptList} ws={ws} onApplied={reload} />
+      {ws === 'ops' && <KaCleanup onDone={reload} />}
       <TreeChangeBanner change={change} />
       {msg && <div class={msg.ok ? 'banner ok' : 'alert'} role={msg.ok ? 'status' : 'alert'} data-testid="hz-msg">{msg.text}</div>}
 
       <div class="card ad-card hz-add" data-testid="hz-add">
         <h2>{tc('hzAdd')}</h2>
         <div class="row">
-          <b>{tc('ppHead')}</b>
+          <b>{L.head}</b>
           <input aria-label={tc('hzNewHead')} placeholder={tc('ppName')} value={add.head} onInput={(e) => set('head', e.currentTarget.value)} />
-          <select aria-label={tc('hzWorkspace')} value={add.headWs} onChange={(e) => set('headWs', e.currentTarget.value)}>
-            <option value="ops">{tc('wsOps')}</option><option value="ka">{tc('wsKa')}</option>
-          </select>
           <button type="button" class="btn primary" onClick={() => void addHead()}>{tc('hzAddBtn')}</button>
         </div>
         <div class="row">
-          <b>{tc('ppManager')}</b>
+          <b>{L.mgr}</b>
           <input aria-label={tc('hzNewManager')} placeholder={tc('ppName')} value={add.mgr} onInput={(e) => set('mgr', e.currentTarget.value)} />
           <span class="muted">{tc('hzReportsTo')}</span>
           <select aria-label={tc('hzManagerParent')} value={add.mgrP} onChange={(e) => set('mgrP', e.currentTarget.value)}>
@@ -168,7 +183,7 @@ export function Hierarchy() {
           <button type="button" class="btn primary" onClick={() => void addUnder('mgr')}>{tc('hzAddBtn')}</button>
         </div>
         <div class="row">
-          <b>{tc('ppSupervisor')}</b>
+          <b>{L.sup}</b>
           <input aria-label={tc('hzNewSupervisor')} placeholder={tc('ppName')} value={add.sup} onInput={(e) => set('sup', e.currentTarget.value)} />
           <span class="muted">{tc('hzReportsTo')}</span>
           <select aria-label={tc('hzSupervisorParent')} value={add.supP} onChange={(e) => set('supP', e.currentTarget.value)}>
@@ -178,7 +193,7 @@ export function Hierarchy() {
           <button type="button" class="btn primary" onClick={() => void addUnder('sup')}>{tc('hzAddBtn')}</button>
         </div>
         <div class="row">
-          <b>{tc('route')}</b>
+          <b>{L.route}</b>
           <input aria-label={tc('hzNewRoute')} placeholder={t('adRouteCode')} value={add.route} style={{ width: '120px' }} onInput={(e) => set('route', e.currentTarget.value)} />
           <input aria-label={tc('salesman')} placeholder={tc('salesman')} value={add.label} style={{ width: '120px' }} onInput={(e) => set('label', e.currentTarget.value)} />
           <input aria-label={t('adDeliverySystem')} placeholder={t('adDeliverySystem')} list="hz-ch" value={add.ds} style={{ width: '150px' }} onInput={(e) => set('ds', e.currentTarget.value)} />
@@ -194,9 +209,9 @@ export function Hierarchy() {
       </div>
 
       <div class="card ad-card">
-        <h2>{tc('hzHeads')} <span class="muted">({fmtNum(heads.length)})</span></h2>
+        <h2>{L.heads} <span class="muted">({fmtNum(heads.length)})</span></h2>
         <div class="tablewrap"><table class="ad-table" data-testid="hz-heads">
-          <thead><tr><th>{tc('ppName')}</th><th>{tc('ppDept')}</th><th class="num">{tc('hzManagers')}</th><th class="num">{tc('hzSupervisors')}</th><th class="num">{tc('routes')}</th><th /></tr></thead>
+          <thead><tr><th>{tc('ppName')}</th><th>{tc('ppDept')}</th><th class="num">{L.mgrs}</th><th class="num">{L.sups}</th><th class="num">{L.routes}</th><th /></tr></thead>
           <tbody>{heads.map((h) => {
             const c = kids.get(h.id) ?? 0;
             return (
@@ -214,9 +229,9 @@ export function Hierarchy() {
       </div>
 
       <div class="card ad-card">
-        <h2>{tc('hzManagers')} <span class="muted">({fmtNum(managers.length)})</span></h2>
+        <h2>{L.mgrs} <span class="muted">({fmtNum(managers.length)})</span></h2>
         <div class="tablewrap"><table class="ad-table" data-testid="hz-managers">
-          <thead><tr><th>{tc('ppName')}</th><th>{tc('ppHead')}</th><th class="num">{tc('hzSupervisors')}</th><th class="num">{tc('routes')}</th><th /></tr></thead>
+          <thead><tr><th>{tc('ppName')}</th><th>{L.head}</th><th class="num">{L.sups}</th><th class="num">{L.routes}</th><th /></tr></thead>
           <tbody>{managers.map((m) => {
             const c = kids.get(m.id) ?? 0;
             return (
@@ -233,9 +248,9 @@ export function Hierarchy() {
       </div>
 
       <div class="card ad-card">
-        <h2>{tc('hzSupervisors')} <span class="muted">({fmtNum(supervisors.length)})</span></h2>
+        <h2>{L.sups} <span class="muted">({fmtNum(supervisors.length)})</span></h2>
         <div class="tablewrap" style={{ maxHeight: '440px' }}><table class="ad-table" data-testid="hz-supervisors">
-          <thead><tr><th>{tc('ppName')}</th><th>{tc('ppManager')}</th><th class="num">{tc('routes')}</th><th /></tr></thead>
+          <thead><tr><th>{tc('ppName')}</th><th>{L.mgr}</th><th class="num">{L.routes}</th><th /></tr></thead>
           <tbody>{supervisors.map((s) => {
             const c = kids.get(s.id) ?? 0;
             const options = all.filter((n) => n.dept_id === s.dept_id && n.depth === s.depth - 1);
@@ -243,7 +258,7 @@ export function Hierarchy() {
               <tr key={s.id} data-testid="hz-supervisor">
                 <td>{nameInput(s)}</td>
                 <td>
-                  <select aria-label={`${tc('ppManager')} ${s.name}`} value={s.parent_id ?? ''} onChange={(e) => move(s, Number(e.currentTarget.value))}>
+                  <select aria-label={`${L.mgr} ${s.name}`} value={s.parent_id ?? ''} onChange={(e) => move(s, Number(e.currentTarget.value))}>
                     {options.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
                   </select>
                 </td>
@@ -256,13 +271,13 @@ export function Hierarchy() {
       </div>
 
       <div class="card ad-card">
-        <h2>{tc('routes')} <span class="muted">({fmtNum(leaves.length)})</span></h2>
+        <h2>{L.routes} <span class="muted">({fmtNum(leaves.length)})</span></h2>
         <div class="toolbar">
           <input type="search" aria-label={tc('hzFilter')} placeholder={tc('hzFilter')} value={f} onInput={(e) => setF(e.currentTarget.value)} style={{ flex: 1, maxWidth: '420px' }} />
           <span class="muted">{tc('hzOf', { n: fmtNum(routes.length), total: fmtNum(leaves.length) })}</span>
         </div>
         <div class="tablewrap" style={{ maxHeight: '480px' }}><table class="ad-table" data-testid="hz-routes">
-          <thead><tr><th>{tc('route')}</th><th>{tc('salesman')}</th><th>{t('adDeliverySystem')}</th><th>{tc('ppSupervisor')}</th><th>{tc('ppManager')}</th><th /></tr></thead>
+          <thead><tr><th>{L.route}</th><th>{tc('salesman')}</th><th>{t('adDeliverySystem')}</th><th>{L.sup}</th><th>{L.mgr}</th><th /></tr></thead>
           <tbody>{routes.slice(0, 400).map(({ l, node }) => (
             <tr key={l.id} data-testid="hz-route">
               <td>{l.route_code}</td>
@@ -270,7 +285,7 @@ export function Hierarchy() {
                 onChange={(e) => { const v = e.currentTarget.value.trim(); if (v && v !== l.label) void run(() => api('PATCH', `/api/admin/leaves/${l.id}`, { label: v }), t('adSaved')); }} /></td>
               <td>{l.delivery_system}</td>
               <td>
-                <select aria-label={`${tc('ppSupervisor')} ${l.route_code}`} value={l.node_id} onChange={(e) => { const v = Number(e.currentTarget.value); if (v !== l.node_id) void run(() => api('PATCH', `/api/admin/leaves/${l.id}`, { nodeId: v }), t('adSaved')); }}>
+                <select aria-label={`${L.sup} ${l.route_code}`} value={l.node_id} onChange={(e) => { const v = Number(e.currentTarget.value); if (v !== l.node_id) void run(() => api('PATCH', `/api/admin/leaves/${l.id}`, { nodeId: v }), t('adSaved')); }}>
                   {all.filter((n) => n.dept_id === l.dept_id && (n.depth >= 2 || n.id === l.node_id)).sort((a, b) => a.name.localeCompare(b.name)).map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}
                 </select>
               </td>

@@ -352,3 +352,39 @@ export async function setCapPct(db: D1Database, actorId: number, body: Obj): Pro
   ], 'conflict');
   return v;
 }
+
+// ---------- packs the admin added (AOP option): rename or delete ----------
+
+const ADDED_PACKS_SQL = `SELECT code FROM packs WHERE code IN (
+  SELECT json_extract(detail_json, '$.code') FROM audit WHERE action = 'pack.create'
+  UNION SELECT json_extract(detail_json, '$.to') FROM audit WHERE action = 'pack.rename') ORDER BY code`;
+
+/** Packs added by the admin in the app (not the original pack master). */
+export async function listAddedPacks(db: D1Database): Promise<string[]> {
+  return (await all<{ code: string }>(db, ADDED_PACKS_SQL)).map((r) => r.code);
+}
+
+async function requireAdded(db: D1Database, code: string): Promise<void> {
+  if (!(await listAddedPacks(db)).includes(code)) throw bad(`${code} is not a pack you added, so it cannot be renamed or deleted here`);
+}
+
+export async function renamePack(db: D1Database, actorId: number, code: string, body: Obj): Promise<PackDto> {
+  await requireAdded(db, code);
+  const to = text(body.code, 'code', 50);
+  if (to === code) throw bad('the new name is the same');
+  if (await one(db, `SELECT 1 AS x FROM packs WHERE lower(code) = lower(?) AND code <> ?`, to, code)) throw new ApiError(409, { error: 'conflict', detail: `${to} already exists` });
+  await writeBatch(db, [
+    db.prepare(`UPDATE packs SET code = ? WHERE code = ?`).bind(to, code),
+    auditStatement(db, actorId, 'pack.rename', {}, { from: code, to }),
+  ], 'pack code already exists');
+  const row = await one<PackRow>(db, `SELECT code, grp, active, sort FROM packs WHERE code = ?`, to);
+  return toPack(row!);
+}
+
+export async function deletePack(db: D1Database, actorId: number, code: string): Promise<void> {
+  await requireAdded(db, code);
+  await writeBatch(db, [
+    db.prepare(`DELETE FROM packs WHERE code = ?`).bind(code),
+    auditStatement(db, actorId, 'pack.delete', {}, { code }),
+  ], 'conflict');
+}

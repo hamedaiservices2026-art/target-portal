@@ -5,7 +5,7 @@ import { h, p } from './handler';
 import { backupIndex, backupPage, listAudit } from '../services/export';
 import importRoutes from './imports';
 import { deleteUser, getPositions, listAccounts, listKaLinks, setKaLink, setPositions, syncNextAccount, unlockUser } from '../services/accounts';
-import { applyHierarchySync, listPeople, previewHierarchySync } from '../services/hierarchySync';
+import { applyHierarchySync, listPeople, previewHierarchySync, removeKaFromOps } from '../services/hierarchySync';
 import monthRoutes from './months';
 import {
   bulkMapLeaves, createLeaf, createNode, deleteLeaf, deleteNode, listLeaves, listNodes, optionalDept,
@@ -13,7 +13,7 @@ import {
 } from '../services/hierarchy';
 import {
   createDepartment, createPack, createUser, getCapPct, listDepartments,
-  listPacks, listUsers, parseId, setCapPct, setUserPassword, updateDepartment, updatePack, updateUser,
+  deletePack, listAddedPacks, listPacks, listUsers, renamePack, parseId, setCapPct, setUserPassword, updateDepartment, updatePack, updateUser,
 } from '../services/masters';
 
 const admin = new Hono<AppEnv>();
@@ -46,6 +46,9 @@ admin.patch('/api/admin/departments/:id', h(async (c, db, me, body) =>
 admin.get('/api/admin/packs', h(async (c, db) => c.json({ packs: await listPacks(db) })));
 admin.post('/api/admin/packs', h(async (c, db, me, body) =>
   c.json({ pack: await createPack(db, me, await body()) }, 201)));
+admin.get('/api/admin/packs-added', h(async (c, db) => c.json({ packs: await listAddedPacks(db) })));
+admin.post('/api/admin/packs/:code/rename', h(async (c, db, me, body) => c.json({ pack: await renamePack(db, me, p(c, 'code'), await body()) })));
+admin.delete('/api/admin/packs/:code', h(async (c, db, me) => { await deletePack(db, me, p(c, 'code')); return c.json({ ok: true }); }));
 admin.patch('/api/admin/packs/:code', h(async (c, db, me, body) =>
   c.json({ pack: await updatePack(db, me, p(c, 'code'), await body()) })));
 
@@ -55,6 +58,7 @@ admin.put('/api/admin/settings', h(async (c, db, me, body) =>
 
 admin.get('/api/admin/people', h(async (c, db) => c.json({ people: await listPeople(db) })));
 admin.post('/api/admin/hierarchy/sync/preview', h(async (c, db, _me, body) => c.json(await previewHierarchySync(db, await body()))));
+admin.post('/api/admin/hierarchy/remove-ka-from-ops', h(async (c, db, me, body) => c.json(await removeKaFromOps(db, me, await body()))));
 admin.post('/api/admin/hierarchy/sync/apply', h(async (c, db, me, body) => c.json(await applyHierarchySync(db, me, await body()))));
 admin.get('/api/admin/nodes', h(async (c, db) =>
   c.json({ nodes: await listNodes(db, optionalDept(c.req.query('dept'))) })));

@@ -96,7 +96,9 @@ test('the whole cycle: CD splits and submits, Admin calculates and sends, the He
   await cell.fill('500');
   await cell.press('Tab');
   await expect(cd.getByTestId('submit-reason')).toHaveCount(0);
+  await expect(cd.getByTestId('split-formula')).toContainText('Formula:');
   await cd.getByRole('tab', { name: 'vs PAGO sales' }).click();
+  await expect(cd.getByTestId('head-sales-cat')).toContainText('CSD');
   await cd.getByRole('button', { name: 'Approve and return to Admin' }).click();
   await expect(cd.getByTestId('cd-status')).toHaveText('Submitted by the Commercial Director');
 

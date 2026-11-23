@@ -78,6 +78,87 @@ async function loadAll(ws: Workspace, period: string): Promise<Loaded> {
 /** The months the CD's split averages: the CD's own pick, else the cycle's. */
 const cdMonths = (work: CdWork, l: Loaded) => (work.avgMonths?.length ? work.avgMonths : l.cycle.settings.avgMonths);
 
+// ---------- vs YAGO / vs PAGO: sales by month per Head, and each Head's share ----------
+
+function HeadSales({ work, l, cols, byChan, refMonth }: {
+  work: CdWork; l: Loaded; cols: { id: string; name: string; chans: string[] }[]; byChan: Record<string, Record<string, Grid>>; refMonth: string;
+}) {
+  useLang();
+  const cats = catMap(l.org);
+  const period = l.cycle.period;
+  // YAGO and the six months before the target month (PAGO included), where sales are loaded.
+  const months = [...new Set([yagoOf(period), ...[-6, -5, -4, -3, -2, -1].map((k) => addMonths(period, k))])].filter((m) => byChan[m]).sort();
+  const headSales = (m: string, d: { id: string; chans: string[] }): Grid => {
+    const g: Grid = {};
+    for (const c of d.chans) for (const [p, n] of Object.entries(byChan[m]?.[`${d.id}\u0000${c}`] ?? {})) g[p] = (g[p] ?? 0) + n;
+    return g;
+  };
+  const headTarget = (d: { id: string }): Grid => {
+    const g: Grid = {};
+    for (const ch of Object.values(work.dm[d.id] ?? {})) for (const [p, n] of Object.entries(ch)) g[p] = (g[p] ?? 0) + n;
+    return g;
+  };
+  const tot = (g: Grid) => Object.values(g).reduce((a, b) => a + b, 0);
+  const pct = (a: number, b: number) => (b > 0 ? `${((a / b) * 100).toFixed(1)}%` : '—');
+  const byMonth = months.map((m) => ({ m, heads: cols.map((d) => tot(headSales(m, d))) }));
+  const ref = cols.map((d) => headSales(refMonth, d));
+  const tgt = cols.map((d) => headTarget(d));
+  const groups: { label: string; of: (g: Grid) => number }[] = [
+    ...CATEGORIES.map((c) => ({ label: c as string, of: (g: Grid) => sumCat(g, cats, c) })),
+    { label: 'Total', of: tot },
+  ];
+  return (
+    <Section title={tc('hsalesTitle')}>
+      <p class="small muted">{tc('hsalesHelp', { m: refMonth })}</p>
+      <div class="tablewrap"><table class="ad-table cy-table" data-testid="head-sales-month">
+        <thead><tr><th>{tc('monthWord')}</th>{cols.map((d) => <th key={d.id} class="num">{d.name}</th>)}<th class="num">{tc('total')}</th></tr></thead>
+        <tbody>{byMonth.map((r) => {
+          const all = r.heads.reduce((a, b) => a + b, 0);
+          return (
+            <tr key={r.m} class={r.m === refMonth ? 'sub l2' : ''}>
+              <td>{r.m}{r.m === yagoOf(period) ? ' (YAGO)' : r.m === pagoOf(period) ? ' (PAGO)' : ''}</td>
+              {r.heads.map((v, i) => <td key={cols[i]!.id} class="num">{fmtNum(Math.round(v))}<div class="small muted">{pct(v, all)}</div></td>)}
+              <td class="num"><b>{fmtNum(Math.round(all))}</b></td>
+            </tr>
+          );
+        })}</tbody>
+      </table></div>
+      <h3>{tc('hsalesByCat', { m: refMonth })}</h3>
+      <div class="tablewrap"><table class="ad-table cy-table" data-testid="head-sales-cat">
+        <thead>
+          <tr><th rowSpan={2}>{tc('head')}</th>{groups.map((g) => <th key={g.label} colSpan={4} class="grp">{g.label}</th>)}</tr>
+          <tr>{groups.map((g) => [
+            <th key={`${g.label}s`} class="num">{tc('hsalesSales')}</th>, <th key={`${g.label}sp`} class="num">%</th>,
+            <th key={`${g.label}t`} class="num">{tc('newTarget')}</th>, <th key={`${g.label}tp`} class="num">%</th>,
+          ])}</tr>
+        </thead>
+        <tbody>
+          {cols.map((d, i) => (
+            <tr key={d.id}>
+              <td>{d.name}</td>
+              {groups.map((g) => {
+                const sAll = ref.reduce((a, x) => a + g.of(x), 0);
+                const tAll = tgt.reduce((a, x) => a + g.of(x), 0);
+                return [
+                  <td key={`${g.label}s`} class="num">{fmtNum(Math.round(g.of(ref[i]!)))}</td>, <td key={`${g.label}sp`} class="num muted">{pct(g.of(ref[i]!), sAll)}</td>,
+                  <td key={`${g.label}t`} class="num">{fmtNum(g.of(tgt[i]!))}</td>, <td key={`${g.label}tp`} class="num"><b>{pct(g.of(tgt[i]!), tAll)}</b></td>,
+                ];
+              })}
+            </tr>
+          ))}
+          <tr class="sub l1">
+            <td>{tc('total')}</td>
+            {groups.map((g) => [
+              <td key={`${g.label}s`} class="num">{fmtNum(Math.round(ref.reduce((a, x) => a + g.of(x), 0)))}</td>, <td key={`${g.label}sp`} class="num">100%</td>,
+              <td key={`${g.label}t`} class="num">{fmtNum(tgt.reduce((a, x) => a + g.of(x), 0))}</td>, <td key={`${g.label}tp`} class="num">100%</td>,
+            ])}
+          </tr>
+        </tbody>
+      </table></div>
+    </Section>
+  );
+}
+
 // ---------- Tab 1 · GM Adjustment ----------
 
 /** Packs whose New Target moved more than the CAP % from the uploaded target. */
@@ -273,7 +354,11 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
   return (
     <>
       <MonthPicker period={cycle.period} months={months} available={bench.available} disabled={!edit} onChange={setMonths} title={tc('avgBasedOn')} />
-      <div class="banner info small" data-testid="split-how">{fromUpload ? tc('splitHowUploaded') : fromPrev ? tc('splitHowPrev', { months: monthsLabel(prevTargetMonths(bench.deptChannel, months)) }) : tc('splitHowSales', { months: monthsLabel(months), pago: pm })}</div>
+      <div class="banner info small" data-testid="split-how">{fromUpload ? tc('splitHowUploaded') : fromPrev ? tc('splitHowPrev', { months: monthsLabel(prevTargetMonths(bench.deptChannel, months)) }) : tc('splitHowSales', { months: monthsLabel(months), pago: pm })}
+        <div class="cy-formula" data-testid="split-formula"><b>{tc('formulaWord')}</b> {fromUpload ? tc('formulaUploaded') : fromPrev
+          ? tc('formulaPrev', { months: monthsLabel(prevTargetMonths(bench.deptChannel, months)) })
+          : tc('formulaSales', { months: monthsLabel(months) })}</div>
+      </div>
       <Section title={tc('deptTitle', { period: cycle.period })} right={
         <div class="toolbar">
           {edit && prevOk && <button type="button" class="btn primary" data-testid="split-prev" onClick={() => split('prev')}>{tc('splitByPrev')}</button>}
@@ -328,6 +413,7 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
         )}
         <p class="small muted">{view === 'cases' ? tc('deptFoot') : tc('deptFootGap', { m: view === 'pago' ? pm : ym })}</p>
       </Section>
+      {view !== 'cases' && hasSplit && <HeadSales work={work} l={l} cols={cols} byChan={byChan} refMonth={view === 'pago' ? pm : ym} />}
     </>
   );
 }

@@ -11,7 +11,8 @@
 // bulkMapLeaves), so audits and open-month updates behave the same.
 import { all } from '../db';
 import { bulkMapLeaves, createNode, updateNode } from './hierarchy';
-import { ApiError, bad, createDepartment, type Obj } from './masters';
+import { ApiError, bad, createDepartment, writeBatch, type Obj } from './masters';
+import { auditStatement } from './audit';
 import type { TreeChangeResult } from './flow';
 
 export const SYNC_MAX_ROWS = 20000;
@@ -79,10 +80,12 @@ function pathOf(r: SyncRow): string[] {
 async function plan(db: D1Database, body: Obj): Promise<{ plan: SyncPlan; rows: SyncRow[]; deptOf: Map<string, number>; nodes: NodeRow[]; leaves: LeafRow[]; channels: Map<number, string> }> {
   const { rows, problems } = parseRows(body.rows);
   const given = (body.depts && typeof body.depts === 'object' && !Array.isArray(body.depts) ? body.depts : {}) as Obj;
+  // One workspace at a time: an Operation file never matches Key Account departments, and the other way round.
+  const ws = body.workspace === 'ka' ? 'ka' : 'ops';
   const [depts, nodes, leaves, chans] = await Promise.all([
-    all<DeptRow>(db, `SELECT id, code, name FROM departments ORDER BY id`),
-    all<NodeRow>(db, `SELECT id, dept_id, parent_id, name FROM nodes`),
-    all<LeafRow>(db, `SELECT id, dept_id, delivery_system, route_code, node_id FROM leaves`),
+    all<DeptRow>(db, `SELECT id, code, name FROM departments WHERE workspace = ? ORDER BY id`, ws),
+    all<NodeRow>(db, `SELECT n.id, n.dept_id, n.parent_id, n.name FROM nodes n JOIN departments d ON d.id = n.dept_id WHERE d.workspace = ?`, ws),
+    all<LeafRow>(db, `SELECT l.id, l.dept_id, l.delivery_system, l.route_code, l.node_id FROM leaves l JOIN departments d ON d.id = l.dept_id WHERE d.workspace = ?`, ws),
     all<{ dept_id: number; channel: string }>(db, `SELECT dept_id, channel FROM dept_channels ORDER BY dept_id, sort, channel`),
   ]);
   const channels = new Map<number, string>();
@@ -326,4 +329,63 @@ export async function listPeople(db: D1Database): Promise<PersonDto[]> {
   }
   const order: Record<Position, number> = { cd: 0, head: 1, manager: 2, supervisor: 3 };
   return out.sort((a, b) => order[a.position] - order[b.position] || (a.dept ?? '').localeCompare(b.dept ?? '') || a.name.localeCompare(b.name));
+}
+
+// ---------- clean-up: a Key Account file that landed in Operation ----------
+
+export type KaCleanup = {
+  leaves: { id: number; route: string; node: string; dept: string }[];
+  nodes: { id: number; name: string; dept: string }[];
+  /** Names of the file found in Operation but kept: they still hold Operation routes or people. */
+  kept: string[];
+};
+
+/**
+ * The KAMs, KAEs and KAE routes of a Key Account hierarchy file that were
+ * added to Operation departments (before the Hierarchy screen had one upload
+ * per workspace). Preview with `apply: false`; `apply: true` removes them.
+ * Only non-top nodes named in the file are touched, and a node is kept when it
+ * still has Operation routes or people under it.
+ */
+export async function removeKaFromOps(db: D1Database, actorId: number, body: Obj): Promise<KaCleanup & { applied: boolean }> {
+  const { rows } = parseRows(body.rows);
+  if (!rows.length) throw bad('rows must list the Key Account hierarchy');
+  const names = new Set(rows.flatMap((r) => [r.manager, r.supervisor]).filter(Boolean).map(norm));
+  const routes = new Set(rows.map((r) => r.route).filter(Boolean));
+  const [depts, nodes, leaves] = await Promise.all([
+    all<DeptRow>(db, `SELECT id, code, name FROM departments WHERE workspace = 'ops'`),
+    all<NodeRow>(db, `SELECT n.id, n.dept_id, n.parent_id, n.name FROM nodes n JOIN departments d ON d.id = n.dept_id WHERE d.workspace = 'ops'`),
+    all<LeafRow & { label: string }>(db, `SELECT l.id, l.dept_id, l.delivery_system, l.route_code, l.node_id, l.label FROM leaves l JOIN departments d ON d.id = l.dept_id WHERE d.workspace = 'ops'`),
+  ]);
+  const deptName = new Map(depts.map((d) => [d.id, d.name]));
+  const nodeById = new Map(nodes.map((n) => [n.id, n]));
+  const named = nodes.filter((n) => n.parent_id !== null && names.has(norm(n.name)));
+  const namedIds = new Set(named.map((n) => n.id));
+  const goLeaves = leaves.filter((l) => routes.has(l.route_code) && namedIds.has(l.node_id));
+  const goLeafIds = new Set(goLeaves.map((l) => l.id));
+  // Keep a node that still has other routes or children that stay.
+  const go = new Set(namedIds);
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const id of [...go]) {
+      const busy = leaves.some((l) => l.node_id === id && !goLeafIds.has(l.id)) || nodes.some((c) => c.parent_id === id && !go.has(c.id));
+      if (busy) { go.delete(id); changed = true; }
+    }
+  }
+  const out: KaCleanup = {
+    leaves: goLeaves.map((l) => ({ id: l.id, route: l.route_code, node: nodeById.get(l.node_id)?.name ?? '', dept: deptName.get(l.dept_id) ?? '' })),
+    nodes: named.filter((n) => go.has(n.id)).map((n) => ({ id: n.id, name: n.name, dept: deptName.get(n.dept_id) ?? '' })),
+    kept: [...new Set(named.filter((n) => !go.has(n.id)).map((n) => n.name))],
+  };
+  if (body.apply !== true || (!out.leaves.length && !out.nodes.length)) return { ...out, applied: false };
+  const leafIds = JSON.stringify(out.leaves.map((l) => l.id));
+  const nodeIds = JSON.stringify(out.nodes.map((n) => n.id));
+  await writeBatch(db, [
+    db.prepare(`DELETE FROM month_leaves WHERE leaf_id IN (SELECT value FROM json_each(?))`).bind(leafIds),
+    db.prepare(`DELETE FROM leaves WHERE id IN (SELECT value FROM json_each(?))`).bind(leafIds),
+    db.prepare(`DELETE FROM month_nodes WHERE node_id IN (SELECT value FROM json_each(?))`).bind(nodeIds),
+    db.prepare(`DELETE FROM nodes WHERE id IN (SELECT value FROM json_each(?))`).bind(nodeIds),
+    auditStatement(db, actorId, 'hierarchy.remove_ka_from_ops', {}, { leaves: out.leaves, nodes: out.nodes }),
+  ], 'conflict');
+  return { ...out, applied: true };
 }

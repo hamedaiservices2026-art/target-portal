@@ -46,3 +46,58 @@ describe('revert the target month to the beginning', () => {
     expect((await api('PUT', `/admin/cycle/ops/${P}/settings`, admin, {})).status).toBe(200);
   });
 });
+
+describe('Hierarchy: Operation and Key Account kept apart', () => {
+  it('a Key Account file makes Key Account departments even when an MDM has an Operation Head of the same name; the clean-up takes KA people out of Operation', async () => {
+    for (const t of ['notifications', 'head_approvals', 'cycles', 'data_months', 'data_routes', 'user_roles', 'dept_channels', 'audit', 'settings',
+      'month_leaves', 'month_files', 'month_nodes', 'month_depts', 'months', 'leaves', 'nodes', 'departments', 'packs', 'sessions', 'login_failures', 'users']) {
+      await run(env.DB, `DELETE FROM ${t}`);
+    }
+    await addUser('admin', 'admin');
+    const admin = await login('admin');
+    const mt = (await run(env.DB, `INSERT INTO departments(code, name, workspace) VALUES ('MS', 'Mohammed Shehadeh', 'ops')`)).lastRowId;
+    const root = (await run(env.DB, `INSERT INTO nodes(dept_id, parent_id, name) VALUES (?, NULL, 'Mohammed Shehadeh')`, mt)).lastRowId;
+    const mgr = (await run(env.DB, `INSERT INTO nodes(dept_id, parent_id, name) VALUES (?, ?, 'Walid Abdou')`, mt, root)).lastRowId;
+    const sup = (await run(env.DB, `INSERT INTO nodes(dept_id, parent_id, name) VALUES (?, ?, 'Sup One')`, mt, mgr)).lastRowId;
+    await run(env.DB, `INSERT INTO leaves(dept_id, delivery_system, route_code, node_id, label) VALUES (?, 'MT', '314001', ?, '314001')`, mt, sup);
+    // The old mistake: KA people under the Operation Head.
+    const kam = (await run(env.DB, `INSERT INTO nodes(dept_id, parent_id, name) VALUES (?, ?, 'Kam One')`, mt, root)).lastRowId;
+    const kae = (await run(env.DB, `INSERT INTO nodes(dept_id, parent_id, name) VALUES (?, ?, 'Kae One')`, mt, kam)).lastRowId;
+    await run(env.DB, `INSERT INTO leaves(dept_id, delivery_system, route_code, node_id, label) VALUES (?, 'Mohammed Shehadeh', '41461', ?, '41461')`, mt, kae);
+    const rows = [{ head: 'Mohammed Shehadeh', manager: 'Kam One', supervisor: 'Kae One', route: '41461', ds: '' }];
+
+    const pre = await json(await api('POST', '/admin/hierarchy/remove-ka-from-ops', admin, { rows, apply: false }));
+    expect(pre.nodes.map((n: Json) => n.name).sort()).toEqual(['Kae One', 'Kam One']);
+    expect(pre.leaves.map((l: Json) => l.route)).toEqual(['41461']);
+    expect((await api('POST', '/admin/hierarchy/remove-ka-from-ops', admin, { rows, apply: true })).status).toBe(200);
+    expect(await one(env.DB, `SELECT COUNT(*) AS n FROM nodes WHERE dept_id = ?`, mt)).toEqual({ n: 3 });
+    expect(await one(env.DB, `SELECT COUNT(*) AS n FROM leaves WHERE dept_id = ?`, mt)).toEqual({ n: 1 });
+
+    // The Key Account upload does not match the Operation department of the same name.
+    const plan = await json(await api('POST', '/admin/hierarchy/sync/preview', admin, { rows, depts: { 'Mohammed Shehadeh': 'new' }, workspace: 'ka' }));
+    expect(plan.problems).toEqual([]);
+    expect((await api('POST', '/admin/hierarchy/sync/apply', admin, { rows, depts: { 'Mohammed Shehadeh': 'new' }, workspace: 'ka' })).status).toBe(200);
+    expect(await one(env.DB, `SELECT COUNT(*) AS n FROM departments WHERE workspace = 'ka'`)).toEqual({ n: 1 });
+    expect(await one(env.DB, `SELECT COUNT(*) AS n FROM nodes WHERE dept_id = ?`, mt)).toEqual({ n: 3 });
+    // Without picking, the Operation department is not offered for a Key Account file.
+    const p2 = await json(await api('POST', '/admin/hierarchy/sync/preview', admin, { rows, workspace: 'ka' }));
+    expect(p2.heads[0].deptId).not.toBe(mt);
+  });
+});
+
+describe('packs the admin added', () => {
+  it('can be renamed and deleted; the original packs cannot', async () => {
+    for (const t of ['audit', 'packs', 'sessions', 'login_failures', 'user_roles', 'users']) await run(env.DB, `DELETE FROM ${t}`);
+    await addUser('admin', 'admin');
+    const admin = await login('admin');
+    await run(env.DB, `INSERT INTO packs(code, grp) VALUES ('CSD_CANS150', 'CSD')`);
+    expect((await api('POST', '/admin/packs', admin, { code: 'CSD_SSPET50', grp: 'CSD' })).status).toBe(201);
+    expect(await json(await api('GET', '/admin/packs-added', admin))).toEqual({ packs: ['CSD_SSPET50'] });
+    expect((await api('POST', '/admin/packs/CSD_SSPET50/rename', admin, { code: 'CSD_SSPET500' })).status).toBe(200);
+    expect(await json(await api('GET', '/admin/packs-added', admin))).toEqual({ packs: ['CSD_SSPET500'] });
+    expect((await api('POST', '/admin/packs/CSD_CANS150/rename', admin, { code: 'X' })).status).toBe(400);
+    expect((await api('DELETE', '/admin/packs/CSD_CANS150', admin)).status).toBe(400);
+    expect((await api('DELETE', '/admin/packs/CSD_SSPET500', admin)).status).toBe(200);
+    expect(await one(env.DB, `SELECT COUNT(*) AS n FROM packs`)).toEqual({ n: 1 });
+  });
+});

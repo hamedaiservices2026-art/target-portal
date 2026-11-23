@@ -195,3 +195,14 @@ test('users: reset password, disable and enable; the pages work in Arabic', asyn
   await page.getByTestId('lang-toggle').click();
   await back;
 });
+
+test('hierarchy: one tab for Operation and one for Key Account', async ({ page }) => {
+  await signInAdmin(page);
+  await page.goto('/admin/hierarchy');
+  await expect(page.getByTestId('hz-tabs')).toBeVisible();
+  await expect(page.getByTestId('ka-cleanup')).toBeVisible();
+  await page.getByRole('tab', { name: 'Key Account hierarchy' }).click();
+  await expect(page.getByRole('heading', { name: 'Upload the Key Account hierarchy' })).toBeVisible();
+  await expect(page.getByTestId('ka-cleanup')).toHaveCount(0);
+  await expect(page.getByTestId('hz-heads')).toContainText('KAM');
+});

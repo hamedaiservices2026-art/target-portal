@@ -431,6 +431,31 @@ function AopTargetStep({ ws, period, org, saved, locked, modePicker, onSaved, on
   const edited = grid !== null;
   const done = saved?.mode === 'aop';
 
+  const added = useAsync(() => api<{ packs: string[] }>('GET', '/api/admin/packs-added'), [org]);
+  /** A pack the admin added: new name in the pack master and in this target. */
+  async function renamePack(code: string, raw: string) {
+    const to = raw.trim();
+    if (!to || to === code) return;
+    setErr(null);
+    try {
+      await api('POST', `/api/admin/packs/${encodeURIComponent(code)}/rename`, { code: to });
+      if (code in g) { const next: Grid = {}; for (const [k, v] of Object.entries(g)) next[k === code ? to : k] = v; setGrid(next); }
+      onPacksChanged();
+    } catch (x) {
+      setErr(errText(x));
+    }
+  }
+  /** A pack the admin added: out of the pack master and of this target. */
+  async function deletePack(code: string) {
+    setErr(null);
+    try {
+      await api('DELETE', `/api/admin/packs/${encodeURIComponent(code)}`);
+      if (code in g) { const next = { ...g }; delete next[code]; setGrid(next); }
+      onPacksChanged();
+    } catch (x) {
+      setErr(errText(x));
+    }
+  }
   /** Adds a pack of the master (turned on again when it is inactive, so the calculation uses it). */
   async function addPack(code: string) {
     setErr(null);
@@ -522,6 +547,18 @@ function AopTargetStep({ ws, period, org, saved, locked, modePicker, onSaved, on
               {edited && <button type="button" class="btn" onClick={() => setGrid(null)}>{tc('undoAll')}</button>}
               <button type="button" class="btn primary" data-testid="aop-save" disabled={busy || total(g) === 0} onClick={() => void save()}>{tc('aopUse')}</button>
             </div>
+          )}
+          {!locked && (added.data?.packs.length ?? 0) > 0 && (
+            <details class="cy-added" data-testid="aop-added">
+              <summary>{tc('aopAddedTitle', { n: added.data!.packs.length })}</summary>
+              <p class="small muted">{tc('aopAddedHelp')}</p>
+              <table class="ad-table cy-table"><tbody>{added.data!.packs.map((code) => (
+                <tr key={code}>
+                  <td><input defaultValue={code} aria-label={`${tc('aopRename')} ${code}`} data-testid={`aop-name-${code}`} onChange={(e) => void renamePack(code, e.currentTarget.value)} /></td>
+                  <td><ConfirmButton testId={`aop-del-${code}`} label={tc('remove')} question={tc('aopDeleteQ', { code })} yesLabel={tc('remove')} onConfirm={() => deletePack(code)} /></td>
+                </tr>
+              ))}</tbody></table>
+            </details>
           )}
         </>
       )}
