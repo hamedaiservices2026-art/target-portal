@@ -138,4 +138,11 @@ test('admin sets the department columns of the CD screen', async ({ page }) => {
   await step.getByTestId('dc-save').click();
   await expect(step.getByRole('status')).toContainText('Saved');
   await expect(step.getByTestId('dc-order')).toContainText(/TT DMM · TT Outer · .*Total TT/);
+  // Before sending to the CD the missing steps are named.
+  await expect(page.getByTestId('send-missing')).toContainText('3. AOP');
+  // Revert the month to the beginning.
+  await page.getByTestId('revert').click();
+  await page.getByRole('button', { name: 'Revert the target' }).last().click();
+  await expect(page.getByTestId('revert-done')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Open the cycle' })).toBeVisible();
 });

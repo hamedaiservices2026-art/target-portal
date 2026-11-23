@@ -550,6 +550,12 @@ export const CY = {
   dcReadFile: ["Read from the department file", "القراءة من ملف الأقسام"],
   aopNewPack: ["New pack code", "رمز عبوة جديد"],
   aopAddNew: ["Add new pack", "إضافة عبوة جديدة"],
+  sendMissingTitle: ["Before you send to the Commercial Director, these steps are not done yet:", "قبل الإرسال إلى المدير التجاري، هذه الخطوات لم تكتمل بعد:"],
+  sendMissingHelp: ["Finish them above for a complete target and comparison. You can still send without them.", "أكملها في الأعلى للحصول على هدف ومقارنة كاملين. ما زال بإمكانك الإرسال بدونها."],
+  revertHelp: ["Start {period} again from the beginning.", "ابدأ {period} من جديد من البداية."],
+  revertBtn: ["Revert the target", "إرجاع الهدف"],
+  revertQ: ["Revert {period} to the beginning? The new target, the CD's work, the calculation and the Heads' distribution of this month are cleared. Sales, AOP and previous targets are kept.", "إرجاع {period} إلى البداية؟ سيتم مسح الهدف الجديد وعمل المدير التجاري والحساب وتوزيع رؤساء الأقسام لهذا الشهر. يتم الاحتفاظ بالمبيعات والخطة والأهداف السابقة."],
+  revertDone: ["{period} is back at the beginning. Start again with step 1.", "عاد {period} إلى البداية. ابدأ من جديد بالخطوة 1."],
   // Admin › Hierarchy (v16)
   hzIntro: ['Add, move, rename or delete here, or upload the whole hierarchy in one file. Every Channel Head is the top of one department.', 'أضف أو انقل أو أعد التسمية أو احذف هنا، أو ارفع الهيكل كاملًا في ملف واحد. كل رئيس قناة هو أعلى قسم واحد.'],
   hzAdd: ['Add', 'إضافة'],

@@ -205,7 +205,7 @@ function SettingsStep({ ws, period, cycle, exists, onSaved }: { ws: Workspace; p
 
 // ---------- step 8: send ----------
 
-function SendStep({ ws, period, l, onDone }: { ws: Workspace; period: string; l: Loaded; onDone: () => void }) {
+function SendStep({ ws, period, l, onDone, missing }: { ws: Workspace; period: string; l: Loaded; onDone: () => void; missing: string[] }) {
   useLang();
   const { cycle, org } = l;
   const [preview, setPreview] = useState<{ nt: Grid; source: NtSource; upload: NtUpload | null } | null>(null);
@@ -344,6 +344,13 @@ function SendStep({ ws, period, l, onDone }: { ws: Workspace; period: string; l:
       {cycle.settings.cdStep ? (
         <div class="cy-step-body">
           <p>{tc('cdStatus')}: <b data-testid="cd-status">{tc(`cd_${cycle.cdStatus}` as 'cd_draft')}</b></p>
+          {(cycle.cdStatus === 'draft' || cycle.cdStatus === 'returned') && missing.length > 0 && (
+            <div class="banner warn" data-testid="send-missing" role="alert">
+              <b>{tc('sendMissingTitle')}</b>
+              <ul>{missing.map((m) => <li key={m}>{m}</li>)}</ul>
+              {tc('sendMissingHelp')}
+            </div>
+          )}
           {(cycle.cdStatus === 'draft' || cycle.cdStatus === 'returned') && !preview && (
             <button type="button" class="btn" disabled={busy} onClick={() => void prepare()}>{tc('prepareNt')}</button>
           )}
@@ -612,6 +619,7 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
   const locked = cycle.cdStatus === 'with_cd' || cycle.cdStatus === 'submitted';
   const cats = catMap(org);
   const [modeBusy, setModeBusy] = useState(false);
+  const [revertMsg, setRevertMsg] = useState<string | null>(null);
   const ntData = useAsync(exists ? () => loadMonthData<NtUpload>(ws, 'new_target') : null, [ws, period, cycle.version, status.length]);
   const nt = ntData.data?.[period] ?? null;
   const ka = ws === 'ka';
@@ -626,6 +634,15 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
     : [exists, ntDone, status.some((s) => s.kind === 'aop'), salesDone, prevDone,
       cycle.settings.cdStep ? cycle.cdStatus === 'with_cd' || cycle.cdStatus === 'submitted' : cycle.dept !== null];
   const n = done.filter(Boolean).length;
+  // Steps not done yet, named for the admin before sending to the CD.
+  const colsDone = org.depts.length > 0 && org.depts.every((d) => d.channels.length > 0);
+  const missing = ka ? [] : [
+    ...(!ntDone ? [tc('step2', { period })] : []),
+    ...(!done[2] ? [tc('step3')] : []),
+    ...(!salesDone ? [`${tc('step5')} (${cycle.settings.avgMonths.filter((m) => !has(status, 'sales', m)).join(', ')})`] : []),
+    ...(!prevDone ? [tc('stepPrevDept')] : []),
+    ...(!colsDone ? [tc('dcTitle')] : []),
+  ];
 
   async function setMode(m: NtUpload['mode'] | 'ops') {
     setModeBusy(true);
@@ -659,6 +676,20 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
         <div class="bar"><span style={{ width: `${(n / of) * 100}%` }} /></div>
         <b>{tc('stepsDone', { n, of })}</b>
       </div>
+      {exists && (
+        <div class="toolbar cy-revert">
+          <span class="muted small">{tc('revertHelp', { period })}</span>
+          <span class="spacer" />
+          <ConfirmButton testId="revert" label={tc('revertBtn')} question={tc('revertQ', { period })} yesLabel={tc('revertBtn')} onConfirm={async () => {
+            await api('POST', `/api/admin/cycle/${ws}/${period}/revert`, {});
+            clearRouteCache();
+            setRevertMsg(tc('revertDone', { period }));
+            reload();
+            ntData.reload();
+          }} />
+        </div>
+      )}
+      {revertMsg && <div class="banner ok" role="status" data-testid="revert-done">{revertMsg}</div>}
       <SettingsStep ws={ws} period={period} cycle={cycle} exists={exists} onSaved={reload} />
       {exists && (
         <>
@@ -760,7 +791,7 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
                 return after(tc('mappingSaved', { n: r.updated }));
               }} />
           )}
-          {!ka && <SendStep ws={ws} period={period} l={l} onDone={reload} />}
+          {!ka && <SendStep ws={ws} period={period} l={l} onDone={reload} missing={missing} />}
         </>
       )}
     </>

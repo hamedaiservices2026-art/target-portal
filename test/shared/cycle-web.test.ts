@@ -128,7 +128,7 @@ describe('cycle compute', () => {
   it('CD rows carry the workbook subtotals', () => {
     const cats = new Map([['CSD_CANS150', 'CSD' as const], ['CSD_PET2250', 'CSD' as const], ['AquafinA_330', 'Water' as const], ['LIT_PET500', 'LRB-Others' as const]]);
     const labels = cdRows(['CSD_CANS150', 'CSD_PET2250', 'AquafinA_330', 'LIT_PET500'], cats).map((r) => (r.kind === 'sub' ? r.label : r.pack));
-    expect(labels).toEqual(['CSD_CANS150', 'Total CANS', 'Total SSNR', 'CSD_PET2250', 'Total MSPET 2.0/2.2/2.25', 'Total MSPET', 'Total CSD',
+    expect(labels).toEqual(['CSD_CANS150', 'Total CANS', 'Total SSNR', 'CSD_PET2250', 'Total BIG MSPET', 'Total MSPET', 'Total CSD',
       'AquafinA_330', 'Total Water', 'LIT_PET500', 'Total LRB-Others', 'Total LRB']);
   });
 });

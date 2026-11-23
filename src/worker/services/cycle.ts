@@ -796,3 +796,25 @@ export async function headSummary(db: D1Database, user: SessionUser, ws: Workspa
     leaves: leaves.map((l) => ({ nodeId: l.nodeId, routeCode: l.routeCode, values: parseJson<Record<string, number>>(l.values_json) ?? {} })),
   };
 }
+
+/**
+ * Admin › Target cycle: revert the target month to the beginning. The cycle
+ * (settings, CD work, department target, calculation), the Heads' approvals,
+ * the month's distribution of this workspace and the month's New Target upload
+ * are cleared; the shared history (sales, AOP, previous targets) is kept.
+ */
+export async function revertCycle(db: D1Database, actorId: number, ws: Workspace, periodRaw: string): Promise<void> {
+  const period = parseMonth(periodRaw, 'period');
+  const depts = await all<{ id: number }>(db, `SELECT id FROM departments WHERE workspace = ?`, ws);
+  const m = await one<{ id: number }>(db, `SELECT id FROM months WHERE period = ?`, period);
+  if (m) {
+    const inMonth = new Set((await all<{ dept_id: number }>(db, `SELECT dept_id FROM month_depts WHERE month_id = ?`, m.id)).map((r) => r.dept_id));
+    for (const d of depts) if (inMonth.has(d.id)) await resetDept(db, actorId, m.id, d.id);
+  }
+  await writeBatch(db, [
+    db.prepare(`DELETE FROM head_approvals WHERE period = ? AND dept_id IN (SELECT id FROM departments WHERE workspace = ?)`).bind(period, ws),
+    db.prepare(`DELETE FROM cycles WHERE ws = ? AND period = ?`).bind(ws, period),
+    db.prepare(`DELETE FROM data_months WHERE ws = ? AND kind = 'new_target' AND month = ?`).bind(ws, period),
+    auditStatement(db, actorId, 'cycle.revert', { monthId: m?.id }, { ws, period }),
+  ], 'conflict');
+}

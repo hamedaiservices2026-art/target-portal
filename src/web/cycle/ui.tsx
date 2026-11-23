@@ -64,7 +64,8 @@ export function WsPeriod({ ws, period, onChange, allowed }: {
   const year = Number(period.slice(0, 4));
   const month = Number(period.slice(5, 7));
   const now = new Date().getUTCFullYear();
-  const years = Array.from(new Set([now - 2, now - 1, now, now + 1, now + 2, year])).sort((a, b) => a - b);
+  // From two years back up to 2050.
+  const years = Array.from(new Set([...Array.from({ length: Math.max(0, 2050 - (now - 2) + 1) }, (_x, i) => now - 2 + i), year])).sort((a, b) => a - b);
   const go = (y: number, m: number) => onChange(ws, `${y}-${String(m).padStart(2, '0')}`);
   return (
     <div class="toolbar cy-picker">

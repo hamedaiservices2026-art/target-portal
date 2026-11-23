@@ -5,7 +5,7 @@
 import type { OrgDto } from '../../worker/services/cycleData';
 import { averageSales } from '../../shared/calc/averages';
 import { cascade, reconcile, type CascadeNode, type CascadeResult } from '../../shared/calc/cascade';
-import { brandFamily, cdSubtotals, subCategoryByName, type Category, CATEGORIES } from '../../shared/calc/packs';
+import { brandFamily, cdSubtotals, packKey, subCategoryByName, type Category, CATEGORIES } from '../../shared/calc/packs';
 import { addMonths, pago as pagoOf, yago as yagoOf, type Month } from '../../shared/calc/periods';
 import { channelSplit, departmentSplit, splitByWeights } from '../../shared/calc/splits';
 import type { RouteMonthData } from './parsers';
@@ -351,8 +351,22 @@ export type CdRow = { kind: 'pack'; pack: string } | { kind: 'sub'; label: strin
  * Pack rows with the CD workbook subtotals: CANS -> SSNR -> MSPET -> CSD,
  * Water, LRB-Others by brand family, then Total LRB.
  */
+/** Pack order of the "Target by Pack by Department" file; packs it doesn't list follow in A-Z order. */
+export const FILE_PACK_ORDER = [
+  'CSD_CANS150', 'STING_240', 'CSD_CANS240', 'CSD_CANS300', 'CSD_CANS320', 'CSD_CANS325', 'CSD_CANS330', 'CSD_CANS355', 'CSD_CANS360',
+  'CSD_NRB', 'STING_250', 'CSD_SSPET250', 'CSD_SSPET400', 'CSD_SSPET500',
+  'CSD_PET1000', 'CSD_PET2000', 'CSD_PET2200', 'CSD_PET2250', 'PMIX',
+  'AquafinA_200', 'AquafinA_330', 'AquafinA_500', 'AquafinA_1500', 'AquafinA_Sparkling_250', 'AquafinA_NRB_330', 'AquafinA_NRB_750',
+  'LIT_CANS150', 'LIT_CANS240', 'LIT_CANS310', 'LIT_CANS315', 'LIT_FSY', 'GATORADE', 'MPLUS_NRB300', 'Rockstar_185', 'Rockstar_250',
+  'Sting Energy_185', 'Sting Energy_240', 'Sting Energy_300', 'Britvic_300', 'Britvic_Soda',
+];
+const FILE_RANK = new Map(FILE_PACK_ORDER.map((p, i) => [packKey(p), i]));
+const fileRank = (p: string) => FILE_RANK.get(packKey(p)) ?? FILE_PACK_ORDER.length;
+/** Packs in the order of the department file. */
+export const sortPacksLikeFile = (list: string[]) => [...list].sort((a, b) => fileRank(a) - fileRank(b) || a.localeCompare(b));
+
 export function cdRows(packs: string[], cats: Map<string, Category>): CdRow[] {
-  const sorted = [...packs].sort();
+  const sorted = sortPacksLikeFile(packs);
   const master = new Map([...cats.entries()]);
   const out: CdRow[] = [];
   const csd = sorted.filter((p) => cats.get(p) === 'CSD');
@@ -370,7 +384,7 @@ export function cdRows(packs: string[], cats: Map<string, Category>): CdRow[] {
     if (cans.length + ssnr.length) out.push({ kind: 'sub', label: 'Total SSNR', packs: [...cans, ...ssnr], level: 2 });
     push(ms1);
     push(ms2);
-    if (ms2.length) out.push({ kind: 'sub', label: 'Total MSPET 2.0/2.2/2.25', packs: ms2, level: 2 });
+    if (ms2.length) out.push({ kind: 'sub', label: 'Total BIG MSPET', packs: ms2, level: 2 });
     if (ms1.length + ms2.length) out.push({ kind: 'sub', label: 'Total MSPET', packs: [...ms1, ...ms2], level: 2 });
     push(restCsd);
     out.push({ kind: 'sub', label: 'Total CSD', packs: csd, level: 1 });

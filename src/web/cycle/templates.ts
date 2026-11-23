@@ -6,6 +6,7 @@ import { addMonths } from '../../shared/calc/periods';
 import type { Workspace } from '../../worker/auth';
 import { packKey } from '../../shared/calc/packs';
 import { subMap, type Org } from './compute';
+import { deptColumns, orderedDeptCols } from './deptOrder';
 
 type Cell = { value: string | number; type?: unknown; fontWeight?: 'bold'; format?: string } | null;
 type Sheet = { sheet: string; data: Cell[][] };
@@ -67,8 +68,8 @@ export function newTargetByPack(org: Org, period: string): Promise<void> {
 const DEPT_LAYOUT: ({ pack: string } | { total: string; refs: string[]; cat?: 'CSD' | 'Water' | 'LRB-Others' })[] = [
   ...['CSD_CANS150', 'STING_240', 'CSD_CANS240', 'CSD_CANS300', 'CSD_CANS320', 'CSD_CANS325', 'CSD_CANS330', 'CSD_CANS355', 'CSD_CANS360'].map((pack) => ({ pack })),
   { total: 'Total CANS', refs: ['CSD_CANS150', 'STING_240', 'CSD_CANS240', 'CSD_CANS300', 'CSD_CANS320', 'CSD_CANS325', 'CSD_CANS330', 'CSD_CANS355', 'CSD_CANS360'] },
-  ...['CSD_NRB', 'STING_250', 'CSD_SSPET250', 'CSD_SSPET500'].map((pack) => ({ pack })),
-  { total: 'Total SSNR', refs: ['Total CANS', 'CSD_NRB', 'STING_250', 'CSD_SSPET250', 'CSD_SSPET500'] },
+  ...['CSD_NRB', 'STING_250', 'CSD_SSPET250', 'CSD_SSPET400', 'CSD_SSPET500'].map((pack) => ({ pack })),
+  { total: 'Total SSNR', refs: ['Total CANS', 'CSD_NRB', 'STING_250', 'CSD_SSPET250', 'CSD_SSPET400', 'CSD_SSPET500'] },
   ...['CSD_PET1000', 'CSD_PET2000', 'CSD_PET2200', 'CSD_PET2250'].map((pack) => ({ pack })),
   { total: 'Total BIG MSPET', refs: ['CSD_PET2000', 'CSD_PET2200', 'CSD_PET2250'] },
   { total: 'Total MSPET', refs: ['Total BIG MSPET', 'CSD_PET1000'] },
@@ -117,21 +118,21 @@ export function deptLayout(packs: { code: string; grp: string }[]): LayoutRow[] 
 }
 
 /** The department & channel grid (step 2B and step 7): Head names above, Pack | channels | Total <group> | ABC. */
-function channelGridSheet(org: Org, sheet: string, title: string | null): Sheet {
-  type Col = { label: string; head: string; kind: 'ch' | 'tot'; from?: number; to?: number };
+export function channelGridSheet(org: Org, sheet: string, title: string | null): Sheet {
+  // Columns as in the department target file: TT DMM, TT Outer, Total TT, MT, MT SSV, MT Bulk, Total MT, HoReCa, WS, then ABC.
+  type Col = { label: string; head: string; kind: 'ch' | 'tot'; sums?: number[] };
   const cols: Col[] = [];
-  for (const d of org.depts) {
-    const chans = d.channels.length ? d.channels : [{ channel: d.name, grp: '' }];
-    const groups = new Map<string, string[]>();
-    for (const c of chans) {
-      const g = c.grp || c.channel;
-      if (!groups.has(g)) groups.set(g, []);
-      groups.get(g)!.push(c.channel);
-    }
-    for (const [g, list] of groups) {
-      const start = cols.length + 1; // +1: the Pack column
-      list.forEach((c, i) => cols.push({ label: c, head: i === 0 ? d.name : '', kind: 'ch' }));
-      if (list.length > 1) cols.push({ label: `Total ${g}`, head: '', kind: 'tot', from: start, to: start + list.length - 1 });
+  const { flat } = deptColumns(orderedDeptCols(org.depts, '_'), (name) => `Total ${name}`);
+  const colOf = new Map<string, number>();
+  let lastDept = '';
+  for (const x of flat) {
+    if (x.kind === 'cell') {
+      colOf.set(`${x.d.id}\u0000${x.c}`, cols.length + 1); // +1: the Pack column
+      cols.push({ label: x.c === '_' ? x.d.name : x.c, head: x.d.id === lastDept ? '' : x.d.name, kind: 'ch' });
+      lastDept = x.d.id;
+    } else {
+      cols.push({ label: x.label, head: '', kind: 'tot', sums: x.cells.map((k) => colOf.get(`${k.d}\u0000${k.c}`)!) });
+      lastDept = '';
     }
   }
   const packs = templatePacks(org);
@@ -151,7 +152,7 @@ function channelGridSheet(org: Org, sheet: string, title: string | null): Sheet 
     if (r.kind === 'pack') {
       data.push([
         str(r.label),
-        ...cols.map((c) => (c.kind === 'ch' ? num(0) : formula(`SUM(${colName(c.from!)}${row}:${colName(c.to!)}${row})`))),
+        ...cols.map((c) => (c.kind === 'ch' ? num(0) : formula(c.sums!.map((i) => `${colName(i)}${row}`).join('+')))),
         chanCols.length ? formula(chanCols.map((x) => `${x}${row}`).join('+')) : num(0),
       ]);
       return;
