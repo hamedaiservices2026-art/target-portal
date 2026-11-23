@@ -848,17 +848,32 @@ function prevLoaded(status: DataStatus, kind: string): string | null {
 
 // ---------- tab: control ----------
 
+type SendResult = { monthId: number; ka?: { deptId: number; name: string; sent: boolean; reason?: string }[] };
+
+/** "Key Account sent with it: X · Not sent: Y (reason)" after an Operation send. */
+function kaNoteOf(results: SendResult[]): string | null {
+  const ka = results.flatMap((r) => r.ka ?? []);
+  if (!ka.length) return null;
+  const sent = ka.filter((k) => k.sent).map((k) => k.name);
+  const not = ka.filter((k) => !k.sent).map((k) => `${k.name} (${k.reason ?? ''})`);
+  return [sent.length ? tc('kaSentWith', { names: sent.join(', ') }) : '', not.length ? tc('kaNotSent', { names: not.join(' · ') }) : '']
+    .filter(Boolean).join(' ');
+}
+
 function ControlTab({ ws, period, l, reload }: { ws: Workspace; period: string; l: Loaded; reload: () => void }) {
   const [lang] = useLang();
   const { cycle } = l;
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
+  const [kaNote, setKaNote] = useState<string | null>(null);
+  const isKa = ws === 'ka';
 
   async function send(deptId: number) {
     setBusy(deptId);
     setErr(null);
     try {
-      await api('POST', `/api/admin/cycle/${ws}/${period}/heads/${deptId}/send`, {});
+      const r = await api<SendResult>('POST', `/api/admin/cycle/${ws}/${period}/heads/${deptId}/send`, {});
+      setKaNote(kaNoteOf([r]));
       reload();
     } catch (x) {
       setErr(errText(x));
@@ -881,28 +896,33 @@ function ControlTab({ ws, period, l, reload }: { ws: Workspace; period: string; 
   async function sendMany(ids: number[]) {
     setErr(null);
     const failed: string[] = [];
+    const results: SendResult[] = [];
     for (const id of ids) {
       setBusy(id);
       try {
-        await api('POST', `/api/admin/cycle/${ws}/${period}/heads/${id}/send`, {});
+        results.push(await api<SendResult>('POST', `/api/admin/cycle/${ws}/${period}/heads/${id}/send`, {}));
       } catch (x) {
         failed.push(`${cycle.heads.find((h) => h.deptId === id)?.name ?? id}: ${errText(x)}`);
       }
     }
     setBusy(null);
     setPicked(new Set());
+    setKaNote(kaNoteOf(results));
     if (failed.length) setErr(failed.join(' · '));
     reload();
   }
   return (
     <Section title={tc('controlTitle')} right={
       <div class="toolbar">
-        {picked.size > 0 && <button type="button" class="btn" disabled={busy !== null} onClick={() => void sendMany([...picked])}>{tc('sendSelected', { n: picked.size })}</button>}
-        <button type="button" class="btn primary" data-testid="send-all" disabled={busy !== null || sendable.length === 0} onClick={() => void sendMany(sendable.map((h) => h.deptId))}>{tc('sendToAll', { n: sendable.length })}</button>
+        {!isKa && picked.size > 0 && <button type="button" class="btn" disabled={busy !== null} onClick={() => void sendMany([...picked])}>{tc('sendSelected', { n: picked.size })}</button>}
+        {!isKa && <button type="button" class="btn primary" data-testid="send-all" disabled={busy !== null || sendable.length === 0} onClick={() => void sendMany(sendable.map((h) => h.deptId))}>{tc('sendToAll', { n: sendable.length })}</button>}
         {cycle.monthId ? <a class="btn" href={`/admin/months/${cycle.monthId}`}>{tc('openBoard')}</a> : null}
       </div>
     }>
+      {isKa && <p class="banner" data-testid="ka-sends-with-ops">{tc('kaSendsWithOps')}</p>}
+      {!isKa && <p class="muted small" data-testid="ops-sends-ka">{tc('opsSendsKa')}</p>}
       {!ready && <p class="muted">{tc('controlNotReady')}</p>}
+      {kaNote && <div class="banner" role="status" data-testid="ka-send-note">{kaNote}</div>}
       {err && <div class="alert" role="alert">{err}</div>}
       <div class="tablewrap"><table class="ad-table cy-table">
         <thead><tr>
@@ -914,7 +934,7 @@ function ControlTab({ ws, period, l, reload }: { ws: Workspace; period: string; 
           const canSend = ready && cycle.calcDepts.includes(String(h.deptId)) && (h.status === 'draft' || h.status === 'returned');
           return (
             <tr key={h.deptId} data-testid="head-row">
-              <td>{canSend && <input type="checkbox" aria-label={`${tc('select')} ${h.name}`} checked={picked.has(h.deptId)}
+              <td>{canSend && !isKa && <input type="checkbox" aria-label={`${tc('select')} ${h.name}`} checked={picked.has(h.deptId)}
                 onChange={(e) => { const next = new Set(picked); if (e.currentTarget.checked) next.add(h.deptId); else next.delete(h.deptId); setPicked(next); }} />}</td>
               <td><b>{h.name}</b><div class="muted small">{h.headName ?? tc('noHeadUser')}</div></td>
               <td><span class={`pill ${h.status}`}>{tc(`hs_${h.status}` as 'hs_draft')}</span>{h.monthState === 'complete' && <span class="pill ok">{tc('final')}</span>}</td>
@@ -923,7 +943,7 @@ function ControlTab({ ws, period, l, reload }: { ws: Workspace; period: string; 
               <td class="small">{pr ? tc('progressText', { s: pr.submitted, o: pr.in_progress, w: pr.waiting }) : '—'}</td>
               <td class="small">{h.comment ?? ''}</td>
               <td class="act">
-                {canSend && <button type="button" class="btn primary" disabled={busy === h.deptId} onClick={() => void send(h.deptId)}>{tc('sendToHead')}</button>}
+                {canSend && <button type="button" class={isKa ? 'btn' : 'btn primary'} disabled={busy === h.deptId} onClick={() => void send(h.deptId)}>{tc(isKa ? 'sendKaLate' : 'sendToHead')}</button>}
                 {h.status === 'pending' && <ConfirmButton label={tc('recall')} question={tc('recallHeadQ')} yesLabel={tc('recall')} onConfirm={() => restart(h.deptId)} />}
                 {(h.status === 'approved' || h.status === 'returned') && <ConfirmButton label={tc('restart')} question={tc('restartQ')} yesLabel={tc('restart')} onConfirm={() => restart(h.deptId)} />}
               </td>

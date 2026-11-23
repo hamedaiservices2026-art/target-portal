@@ -7,7 +7,7 @@ import { h, p, type Ctx } from './handler';
 import { benchmarks, salesMonths, setSalesman } from '../services/benchmarks';
 import {
   applyCalc, approveHead, getCalc, getCycle, getProgress, headSummary, listCycles, myApprovals, recallFromCd, restartHead, returnFromCd, revertCycle, returnHead,
-  saveCd, saveSettings, sendToCd, sendToHead, setDeptTarget, submitCd,
+  saveCd, saveSettings, sendToCd, sendToHeadAll, setDeptTarget, submitCd,
 } from '../services/cycle';
 import {
   clearRouteMonths, dataStatus, listCdRoles, logUpload, packSubs, readMonthData, readOrg, readRouteRows, saveMonthData, setCdRoles, setPackSubs,
@@ -70,7 +70,7 @@ cycle.put('/api/admin/cycle/:ws/:period/dept-target', h(async (c, db, me, body) 
 }));
 cycle.put('/api/admin/cycle/:ws/:period/calc', h(async (c, db, me, body) => c.json(await applyCalc(db, me, ws(c), per(c), await body()))));
 cycle.post('/api/admin/cycle/:ws/:period/heads/:deptId/send', h(async (c, db, me) =>
-  c.json(await sendToHead(db, me, ws(c), per(c), parseId(p(c, 'deptId')), c.env))));
+  c.json(await sendToHeadAll(db, me, ws(c), per(c), parseId(p(c, 'deptId')), c.env))));
 cycle.post('/api/admin/cycle/:ws/:period/revert', h(async (c, db, me) => {
   await revertCycle(db, me, ws(c), per(c));
   return c.json({ ok: true });

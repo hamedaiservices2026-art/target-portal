@@ -148,6 +148,26 @@ describe('target cycle (handover flow)', () => {
     expect((await api('POST', `/admin/cycle/ops/${P}/heads/${tt}/send`, admin)).status).toBe(200);
   });
 
+  it('sending an Operation Head also sends the linked Key Account department', async () => {
+    await api('PUT', `/admin/cycle/ops/${P}/settings`, admin, {});
+    await run(env.DB, `UPDATE cycles SET cd_status = 'submitted', dept_json = ? WHERE ws = 'ops' AND period = ?`, JSON.stringify({ [tt]: { CSD_CANS150: 10 } }), P);
+    expect((await api('PUT', `/admin/cycle/ops/${P}/calc`, admin, { calc: { [tt]: { R1: { CSD_CANS150: 10 } } } })).status).toBe(200);
+    const ka = (await run(env.DB, `INSERT INTO departments(code, name, workspace) VALUES ('KA_TT', 'KA TT', 'ka')`)).lastRowId;
+    const kroot = (await run(env.DB, `INSERT INTO nodes(dept_id, parent_id, name) VALUES (?, NULL, 'KA Head')`, ka)).lastRowId;
+    await run(env.DB, `INSERT INTO leaves(dept_id, delivery_system, route_code, node_id, label) VALUES (?, 'KA', 'K1', ?, 'K1')`, ka, kroot);
+    expect((await api('PUT', `/admin/ka-links/${ka}`, admin, { opsDeptId: tt })).status).toBe(200);
+    await api('PUT', `/admin/cycle/ka/${P}/settings`, admin, {});
+    await run(env.DB, `UPDATE cycles SET dept_json = ? WHERE ws = 'ka' AND period = ?`, JSON.stringify({ [ka]: { CSD_CANS150: 7 } }), P);
+    expect((await api('PUT', `/admin/cycle/ka/${P}/calc`, admin, { calc: { [ka]: { K1: { CSD_CANS150: 7 } } } })).status).toBe(200);
+    const r = await json(await api('POST', `/admin/cycle/ops/${P}/heads/${tt}/send`, admin));
+    expect(r.ka).toEqual([{ deptId: ka, name: 'KA TT', sent: true }]);
+    const hs = await all<{ dept_id: number; status: string }>(env.DB, `SELECT dept_id, status FROM head_approvals ORDER BY dept_id`);
+    expect(hs).toEqual([{ dept_id: tt, status: 'pending' }, { dept_id: ka, status: 'pending' }]);
+    // The Operation Head is the Key Account Head: both targets wait for the same person.
+    const ap = await json(await api('GET', '/my/approvals', head));
+    expect(ap.approvals.length).toBe(2);
+  });
+
   it('a pack turned on after the month was opened is added to the month when sending', async () => {
     await api('PUT', `/admin/cycle/ops/${P}/settings`, admin, {});
     await run(env.DB, `UPDATE cycles SET cd_status = 'submitted', dept_json = ? WHERE ws = 'ops' AND period = ?`, JSON.stringify({ [tt]: { CSD_CANS150: 10, LIT_CANS320: 4, NOPE: 1 } }), P);

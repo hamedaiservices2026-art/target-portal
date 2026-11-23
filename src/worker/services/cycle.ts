@@ -670,6 +670,33 @@ export async function sendToHead(db: D1Database, actorId: number, ws: Workspace,
   return { monthId: m.id };
 }
 
+/**
+ * One send for both workspaces: sending an Operation department also sends the
+ * Key Account department(s) linked to it, so the Head gets both targets at once.
+ * A linked Key Account department is sent when its target is calculated and it
+ * is not already with the Head; otherwise the reason is reported back.
+ */
+export async function sendToHeadAll(db: D1Database, actorId: number, ws: Workspace, periodRaw: string, deptId: number, env?: Env):
+  Promise<{ monthId: number; ka: { deptId: number; name: string; sent: boolean; reason?: string }[] }> {
+  const r = await sendToHead(db, actorId, ws, periodRaw, deptId, env);
+  const ka: { deptId: number; name: string; sent: boolean; reason?: string }[] = [];
+  if (ws !== 'ops') return { ...r, ka };
+  const period = parseMonth(periodRaw, 'period');
+  const linked = await all<{ id: number; name: string }>(db,
+    `SELECT id, name FROM departments WHERE workspace = 'ka' AND ops_dept_id = ? ORDER BY sort, code`, deptId);
+  for (const d of linked) {
+    const h = await one<{ status: HeadStatus }>(db, `SELECT status FROM head_approvals WHERE period = ? AND dept_id = ?`, period, d.id);
+    if (h && (h.status === 'pending' || h.status === 'approved')) { ka.push({ deptId: d.id, name: d.name, sent: false, reason: `already ${h.status}` }); continue; }
+    try {
+      await sendToHead(db, actorId, 'ka', period, d.id, env);
+      ka.push({ deptId: d.id, name: d.name, sent: true });
+    } catch (x) {
+      ka.push({ deptId: d.id, name: d.name, sent: false, reason: x instanceof Error ? x.message : String(x) });
+    }
+  }
+  return { ...r, ka };
+}
+
 async function headContext(db: D1Database, user: SessionUser, ws: Workspace, period: string, deptId: number) {
   await deptOfWs(db, ws, deptId);
   const h = await one<{ status: HeadStatus; root_manager: number | null; month_id: number | null }>(db,

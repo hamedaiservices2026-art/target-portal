@@ -590,6 +590,12 @@ export const CY = {
   aopAddedHelp: ["Type a new name and leave the box to rename it; Remove takes it out of the pack master. Only packs added here can be changed.", "اكتب اسمًا جديدًا واخرج من الخانة لإعادة التسمية؛ \"إزالة\" تحذفها من قائمة العبوات. يمكن تعديل العبوات المضافة هنا فقط."],
   aopRename: ["Rename", "إعادة تسمية"],
   aopDeleteQ: ["Delete {code} from the pack list?", "حذف {code} من قائمة العبوات؟"],
+  kaAvgSales: ["Avg sales", "متوسط المبيعات"],
+  kaSendsWithOps: ["Key Account targets are sent together with Operation: open the Operation cycle › Send to Heads and send the Head (for example MT or Non Retail). The linked Key Account department goes to the same Head in the same send.", "أهداف كبار العملاء تُرسل مع التشغيل: افتح دورة التشغيل › الإرسال لرؤساء الأقسام وأرسل للرئيس (مثل MT أو Non Retail). قسم كبار العملاء المرتبط يصل لنفس الرئيس في نفس الإرسال."],
+  opsSendsKa: ["Sending a Head also sends the Key Account department linked to it (calculated in the Key Account cycle), so the Head receives both targets in one send.", "الإرسال للرئيس يرسل معه قسم كبار العملاء المرتبط به (المحسوب في دورة كبار العملاء)، فيستلم الرئيس الهدفين في إرسال واحد."],
+  kaSentWith: ["Key Account sent with it: {names}.", "أُرسل معه كبار العملاء: {names}."],
+  kaNotSent: ["Key Account not sent: {names}.", "لم يُرسل كبار العملاء: {names}."],
+  sendKaLate: ["Send only Key Account (late)", "إرسال كبار العملاء فقط (متأخر)"],
   // Admin › Hierarchy (v16)
   hzIntro: ['Add, move, rename or delete here, or upload the whole hierarchy in one file. Every Channel Head is the top of one department.', 'أضف أو انقل أو أعد التسمية أو احذف هنا، أو ارفع الهيكل كاملًا في ملف واحد. كل رئيس قناة هو أعلى قسم واحد.'],
   hzAdd: ['Add', 'إضافة'],

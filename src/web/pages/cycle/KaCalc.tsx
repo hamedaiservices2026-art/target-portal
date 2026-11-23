@@ -16,14 +16,14 @@ import { achievement, upliftPct } from '../../cycle/kaUplift';
 import { tc } from '../../cycle/i18n';
 import { loadMonthData, loadRouteData, useAsync } from '../../cycle/load';
 import type { RouteMonthData } from '../../cycle/parsers';
-import { fmtPct, MonthPicker, monthsLabel, Section, Tabs, writeWorkbook } from '../../cycle/ui';
+import { fmtPct, MonthPicker, monthsLabel, NumCell, Section, Tabs, writeWorkbook } from '../../cycle/ui';
 import type { Loaded } from './AdminCycle';
 
 type Upload = { mode: string; byPack: Grid; byLeaf?: Record<string, Grid> };
 
 type Line = {
   key: string; dept: string; kam: string; kae: string; route: string | null; level: 'dept' | 'kam' | 'kae';
-  base: Grid; target: Grid; sales: Grid; prev: Grid; pct: number | null;
+  base: Grid; target: Grid; sales: Grid; prev: Grid; avg: Grid; pct: number | null;
 };
 
 const sumInto = (into: Grid, g: Grid) => { for (const [p, n] of Object.entries(g)) into[p] = (into[p] ?? 0) + n; };
@@ -101,13 +101,16 @@ export function KaCalcTab({ period, l, reload, onNext }: { period: string; l: Lo
     for (const dc of calc.depts) {
       const d = String(dc.deptId);
       const deptName = org.depts.find((x) => x.id === dc.deptId)?.name ?? d;
-      const dl: Line = { key: `d:${d}`, dept: deptName, kam: '', kae: '', route: null, level: 'dept', base: {}, target: {}, sales: {}, prev: {}, pct: null };
+      const dl: Line = { key: `d:${d}`, dept: deptName, kam: '', kae: '', route: null, level: 'dept', base: {}, target: {}, sales: {}, prev: {}, avg: {}, pct: null };
       const kams = new Map<number, Line>();
       const kaes: Line[] = [];
       for (const leaf of org.leaves.filter((x) => x.deptId === dc.deptId)) {
         const r = leaf.routeCode;
         const share = dc.routes[r] ?? {};
         const a = achievement(r, months, data.data.sales, data.data.prev);
+        // Average sales of the months picked (every month counts, a month without sales as 0).
+        const avg: Grid = {};
+        for (const m of months) for (const [p, n] of Object.entries(data.data.sales[m]?.[r] ?? {})) avg[p] = (avg[p] ?? 0) + n / Math.max(1, months.length);
         const target: Grid = {};
         for (const [p, n] of Object.entries(share)) target[p] = Math.round(n * (1 + (override[r] ?? upliftPct(a, p, min, max)) / 100));
         // KAM = the node right under the MDM; KAE = the node under the KAM (or the KAM when the KAM is also the KAE).
@@ -116,11 +119,11 @@ export function KaCalcTab({ period, l, reload, onNext }: { period: string; l: Lo
         const kaeNode = byId.get(leaf.nodeId);
         const kamId = kamNode?.id ?? leaf.nodeId;
         const kam = kamNode?.name ?? '';
-        const line: Line = { key: `r:${r}`, dept: deptName, kam, kae: kaeNode && depthOf(kaeNode.id) >= 2 ? kaeNode.name : kam, route: r, level: 'kae', base: share, target, sales: a.s, prev: a.t, pct: override[r] ?? null };
+        const line: Line = { key: `r:${r}`, dept: deptName, kam, kae: kaeNode && depthOf(kaeNode.id) >= 2 ? kaeNode.name : kam, route: r, level: 'kae', base: share, target, sales: a.s, prev: a.t, avg, pct: override[r] ?? null };
         kaes.push(line);
-        if (!kams.has(kamId)) kams.set(kamId, { key: `n:${kamId}`, dept: deptName, kam, kae: '', route: null, level: 'kam', base: {}, target: {}, sales: {}, prev: {}, pct: null });
+        if (!kams.has(kamId)) kams.set(kamId, { key: `n:${kamId}`, dept: deptName, kam, kae: '', route: null, level: 'kam', base: {}, target: {}, sales: {}, prev: {}, avg: {}, pct: null });
         const kl = kams.get(kamId)!;
-        for (const x of [kl, dl]) { sumInto(x.base, share); sumInto(x.target, target); sumInto(x.sales, a.s); sumInto(x.prev, a.t); }
+        for (const x of [kl, dl]) { sumInto(x.base, share); sumInto(x.target, target); sumInto(x.sales, a.s); sumInto(x.prev, a.t); sumInto(x.avg, avg); }
       }
       out.push(dl);
       for (const kl of [...kams.values()].sort((a, b) => a.kam.localeCompare(b.kam))) {
@@ -138,8 +141,21 @@ export function KaCalcTab({ period, l, reload, onNext }: { period: string; l: Lo
 
   const pct = (x: Line) => { const b = total(x.base); return b > 0 ? total(x.target) / b - 1 : null; };
   const added = (x: Line) => total(x.target) - total(x.base);
-  const ach = (x: Line) => (total(x.prev) > 0 ? total(x.sales) / total(x.prev) : null);
   const shown = lines.find((x) => x.key === sel) ?? lines[0] ?? null;
+  /** The KAE lines under a line (itself for a KAE). */
+  const kaesOf = (x: Line) => (x.level === 'kae' ? [x] : lines.filter((y) => y.level === 'kae' && y.dept === x.dept && (x.level === 'dept' || y.kam === x.kam)));
+  /** Uplift % typed on a line: every KAE under it gets it ('' goes back to the calculated uplift). */
+  function setUplift(x: Line, v: string) {
+    const rs = kaesOf(x).map((y) => y.route!).filter(Boolean);
+    setOverride((o) => { const n = { ...o }; for (const r of rs) { if (v === '') delete n[r]; else n[r] = Number(v); } return n; });
+  }
+  /** Key Account target typed on a line: the uplift that gives it, for every KAE under it. */
+  function setTarget(x: Line, v: number) {
+    const b = total(x.base);
+    if (b <= 0 || !Number.isFinite(v)) return;
+    setUplift(x, String(Math.round((v / b - 1) * 10000) / 100));
+  }
+  const avgTot = (x: Line) => Math.round(total(x.avg));
 
   async function apply() {
     if (!calc) return;
@@ -175,15 +191,14 @@ export function KaCalcTab({ period, l, reload, onNext }: { period: string; l: Lo
     void writeWorkbook(`key_account_target_${period}.xlsx`, [
       {
         name: 'By KAM and KAE',
-        columns: ['MDM', 'KAM', 'KAE', 'KAE ID', 'Level', 'Operation share', 'Sales', 'Previous target', 'Achievement', 'Uplift %', 'Cases added', 'Key Account target'],
-        rows: lines.map((x) => [x.dept, x.kam, x.kae, x.route ?? '', x.level, total(x.base), Math.round(total(x.sales)), Math.round(total(x.prev)),
-          ach(x) === null ? null : Math.round(ach(x)! * 10000) / 10000, pct(x) === null ? null : Math.round(pct(x)! * 10000) / 100, added(x), total(x.target)]),
+        columns: ['MDM', 'KAM', 'KAE', 'KAE ID', 'Level', 'Avg sales', 'Uplift %', 'Cases added', 'Key Account target'],
+        rows: lines.map((x) => [x.dept, x.kam, x.kae, x.route ?? '', x.level, avgTot(x), pct(x) === null ? null : Math.round(pct(x)! * 10000) / 100, added(x), total(x.target)]),
       },
       {
         name: 'By pack',
-        columns: ['MDM', 'KAM', 'KAE', 'KAE ID', 'Pack', 'Category', 'Operation share', 'Sales', 'Previous target', 'Uplift %', 'Key Account target'],
+        columns: ['MDM', 'KAM', 'KAE', 'KAE ID', 'Pack', 'Category', 'Avg sales', 'Uplift %', 'Key Account target'],
         rows: lines.filter((x) => x.level === 'kae').flatMap((x) => packs.filter((p) => x.base[p]).map((p) => [
-          x.dept, x.kam, x.kae, x.route ?? '', p, cats.get(p) ?? '', x.base[p] ?? 0, Math.round(x.sales[p] ?? 0), Math.round(x.prev[p] ?? 0),
+          x.dept, x.kam, x.kae, x.route ?? '', p, cats.get(p) ?? '', Math.round(x.avg[p] ?? 0),
           x.base[p] ? Math.round(((x.target[p] ?? 0) / x.base[p]! - 1) * 10000) / 100 : null, x.target[p] ?? 0,
         ])),
       },
@@ -227,8 +242,8 @@ export function KaCalcTab({ period, l, reload, onNext }: { period: string; l: Lo
           {view === 'kae' ? (
             <div class="tablewrap cy-tall"><table class="ad-table cy-table" data-testid="ka-people">
               <thead><tr>
-                <th>{tc('name')}</th><th>{tc('level')}</th><th class="num">{tc('kaOpsShare')}</th><th class="num">{tc('kaSales')}</th><th class="num">{tc('kaPrevTarget')}</th>
-                <th class="num">{tc('kaAch')}</th><th class="num">{tc('kaUpliftPct')}</th><th class="num">{tc('kaAdded')}</th><th class="num">{tc('kaKaTarget')}</th>
+                <th>{tc('name')}</th><th>{tc('level')}</th><th class="num">{tc('kaAvgSales')}</th>
+                <th class="num">{tc('kaUpliftPct')}</th><th class="num">{tc('kaAdded')}</th><th class="num">{tc('kaKaTarget')}</th>
               </tr></thead>
               <tbody>{lines.map((x) => (
                 <tr key={x.key} class={x.level === 'dept' ? 'sub l1' : x.level === 'kam' ? 'sub l2' : ''} data-testid={x.level === 'kae' ? 'ka-kae' : undefined}>
@@ -236,17 +251,14 @@ export function KaCalcTab({ period, l, reload, onNext }: { period: string; l: Lo
                     <button type="button" class="btn link" onClick={() => { setSel(x.key); setView('pack'); }}>{x.level === 'dept' ? x.dept : x.level === 'kam' ? x.kam : x.kae}</button>
                     {x.route && <span class="muted small"> {x.route}</span>}</span></td>
                   <td class="small">{x.level === 'dept' ? 'MDM' : x.level === 'kam' ? 'KAM' : 'KAE'}</td>
-                  <td class="num">{fmtNum(total(x.base))}</td>
-                  <td class="num">{fmtNum(Math.round(total(x.sales)))}</td>
-                  <td class="num">{fmtNum(Math.round(total(x.prev)))}</td>
-                  <td class="num">{fmtPct(ach(x), 1)}</td>
-                  <td class="num">{x.level === 'kae' && x.route ? (
-                    <input type="number" step="0.1" class="cy-num" style={{ width: '5.5em' }} aria-label={`${tc('kaUpliftPct')} ${x.kae}`}
-                      placeholder={(pct(x) === null ? 0 : pct(x)! * 100).toFixed(2)} value={override[x.route] ?? ''}
-                      onChange={(e) => { const v = e.currentTarget.value; const r = x.route!; setOverride((o) => { const n = { ...o }; if (v === '') delete n[r]; else n[r] = Number(v); return n; }); }} />
-                  ) : fmtPct(pct(x), 2)}</td>
+                  <td class="num">{fmtNum(avgTot(x))}</td>
+                  <td class="num">
+                    <input type="number" step="0.1" class="cy-num" style={{ width: '5.5em' }} aria-label={`${tc('kaUpliftPct')} ${x.level === 'dept' ? x.dept : x.level === 'kam' ? x.kam : x.kae}`}
+                      key={`u${x.key}${(pct(x) ?? 0).toFixed(4)}`} defaultValue={x.level === 'kae' && x.route && override[x.route] !== undefined ? String(override[x.route]) : (pct(x) === null ? '' : (pct(x)! * 100).toFixed(2))}
+                      onChange={(e) => setUplift(x, e.currentTarget.value)} />
+                  </td>
                   <td class="num">{fmtNum(added(x))}</td>
-                  <td class="num tot"><b>{fmtNum(total(x.target))}</b></td>
+                  <td class="num tot"><NumCell value={total(x.target)} label={`${tc('kaKaTarget')} ${x.level === 'dept' ? x.dept : x.level === 'kam' ? x.kam : x.kae}`} onChange={(n) => setTarget(x, n)} /></td>
                 </tr>
               ))}</tbody>
             </table></div>
@@ -260,19 +272,18 @@ export function KaCalcTab({ period, l, reload, onNext }: { period: string; l: Lo
                 </label>
               </div>
               <div class="tablewrap cy-tall"><table class="ad-table cy-table" data-testid="ka-packs">
-                <thead><tr><th>{tc('pack')}</th><th class="num">{tc('kaOpsShare')}</th><th class="num">{tc('kaSales')}</th><th class="num">{tc('kaPrevTarget')}</th><th class="num">{tc('kaAch')}</th><th class="num">{tc('kaUpliftPct')}</th><th class="num">{tc('kaAdded')}</th><th class="num">{tc('kaKaTarget')}</th></tr></thead>
+                <thead><tr><th>{tc('pack')}</th><th class="num">{tc('kaAvgSales')}</th><th class="num">{tc('kaUpliftPct')}</th><th class="num">{tc('kaAdded')}</th><th class="num">{tc('kaKaTarget')}</th></tr></thead>
                 <tbody>{packRows.map((p) => {
                   const b = shown.base[p] ?? 0;
                   const t = shown.target[p] ?? 0;
-                  const pv = shown.prev[p] ?? 0;
                   return (
-                    <tr key={p}><td><bdi>{p}</bdi></td><td class="num">{fmtNum(b)}</td><td class="num">{fmtNum(Math.round(shown.sales[p] ?? 0))}</td><td class="num">{fmtNum(Math.round(pv))}</td>
-                      <td class="num">{fmtPct(pv > 0 ? (shown.sales[p] ?? 0) / pv : null, 1)}</td><td class="num">{fmtPct(b > 0 ? t / b - 1 : null, 2)}</td>
+                    <tr key={p}><td><bdi>{p}</bdi></td><td class="num">{fmtNum(Math.round(shown.avg[p] ?? 0))}</td>
+                      <td class="num">{fmtPct(b > 0 ? t / b - 1 : null, 2)}</td>
                       <td class="num">{fmtNum(t - b)}</td><td class="num tot"><b>{fmtNum(t)}</b></td></tr>
                   );
                 })}</tbody>
-                <tfoot><tr class="sub l1"><td>{tc('total')}</td><td class="num">{fmtNum(total(shown.base))}</td><td class="num">{fmtNum(Math.round(total(shown.sales)))}</td><td class="num">{fmtNum(Math.round(total(shown.prev)))}</td>
-                  <td class="num">{fmtPct(ach(shown), 1)}</td><td class="num">{fmtPct(pct(shown), 2)}</td><td class="num">{fmtNum(added(shown))}</td><td class="num">{fmtNum(total(shown.target))}</td></tr></tfoot>
+                <tfoot><tr class="sub l1"><td>{tc('total')}</td><td class="num">{fmtNum(avgTot(shown))}</td>
+                  <td class="num">{fmtPct(pct(shown), 2)}</td><td class="num">{fmtNum(added(shown))}</td><td class="num">{fmtNum(total(shown.target))}</td></tr></tfoot>
               </table></div>
             </>
           )}
