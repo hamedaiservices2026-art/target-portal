@@ -3,11 +3,12 @@
 // Commercial Director of each workspace.
 import { useEffect, useState } from 'preact/hooks';
 import type { Workspace } from '../../../worker/auth';
-import type { OrgDto } from '../../../worker/services/cycleData';
+import type { OrgDto, SetupChange } from '../../../worker/services/cycleData';
 import type { DepartmentDto, UserDto } from '../../../worker/services/masters';
 import type { RulesSettings } from '../../../worker/services/rulesSettings';
 import { api } from '../../api';
-import { errText, PageHead, useResource } from '../../components/AdminBits';
+import { ConfirmButton, errText, PageHead, useResource } from '../../components/AdminBits';
+import { fmtDateTime } from '../../format';
 import { useLang } from '../../i18n';
 import { tc } from '../../cycle/i18n';
 import { useAsync } from '../../cycle/load';
@@ -128,6 +129,7 @@ function DeptSetup() {
     return [...ops.depts, ...ka.depts];
   }, []);
   const chans = (id: number) => orgs.data?.find((d) => d.id === id)?.channels ?? [];
+  const hist = useResource<{ changes: SetupChange[] }>('/api/admin/departments/setup-history');
   return (
     <Section title={tc('deptSetupTitle')}>
       <p class="muted small">{tc('deptSetupHelp')}</p>
@@ -135,10 +137,53 @@ function DeptSetup() {
       {depts.data && orgs.data && (
         <div class="tablewrap"><table class="ad-table cy-table">
           <thead><tr><th>{tc('head')}</th><th>{tc('workspace')}</th><th>{tc('order')}</th><th>{tc('channels')}</th><th /></tr></thead>
-          <tbody>{depts.data.departments.map((d) => <DeptRow key={`${d.id}${chans(d.id).length}`} d={d} channels={chans(d.id)} onSaved={() => { depts.reload(); orgs.reload(); }} />)}</tbody>
+          <tbody>{depts.data.departments.map((d) => <DeptRow key={`${d.id}${d.workspace}${d.sort}${chans(d.id).map((c) => c.channel).join()}`} d={d} channels={chans(d.id)} onSaved={() => { depts.reload(); orgs.reload(); hist.reload(); }} />)}</tbody>
         </table></div>
       )}
+      <SetupHistory hist={hist} onUndone={() => { depts.reload(); orgs.reload(); hist.reload(); }} />
     </Section>
+  );
+}
+
+/** Every change to the Heads' channels and workspace, with what it was before and an undo. */
+function SetupHistory({ hist, onUndone }: { hist: ReturnType<typeof useResource<{ changes: SetupChange[] }>>; onUndone: () => void }) {
+  const [lang] = useLang();
+  const [err, setErr] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  async function undo(c: SetupChange) {
+    setErr(null); setMsg(null);
+    try {
+      await api('POST', `/api/admin/departments/setup-history/${c.id}/undo`, {});
+      setMsg(tc('shUndone', { dept: c.dept, value: c.before ?? '' }));
+      onUndone();
+    } catch (x) {
+      setErr(errText(x));
+    }
+  }
+  const list = hist.data?.changes ?? [];
+  return (
+    <details class="card ad-card" data-testid="setup-history" open={list.length > 0}>
+      <summary><b>{tc('shTitle')}</b> <span class="muted small">({list.length})</span></summary>
+      <p class="small muted">{tc('shHelp')}</p>
+      {hist.error && <div class="alert">{hist.error}</div>}
+      {msg && <div class="banner ok" role="status">{msg}</div>}
+      {err && <div class="alert" role="alert">{err}</div>}
+      {list.length === 0 ? <p class="muted small">{tc('shNone')}</p> : (
+        <div class="tablewrap" style={{ maxHeight: '320px' }}><table class="ad-table cy-table">
+          <thead><tr><th>{tc('shWhen')}</th><th>{tc('head')}</th><th>{tc('shWhat')}</th><th>{tc('shBefore')}</th><th>{tc('shAfter')}</th><th /></tr></thead>
+          <tbody>{list.map((c) => (
+            <tr key={c.id} data-testid="setup-change">
+              <td class="small">{fmtDateTime(c.at, lang)}<div class="muted">{c.by ?? ''}</div></td>
+              <td><b>{c.dept}</b></td>
+              <td class="small">{c.kind === 'channels' ? tc('channels') : tc('workspace')}</td>
+              <td class="small">{c.before ?? <span class="muted">{tc('shNotRecorded')}</span>}</td>
+              <td class="small">{c.after}</td>
+              <td>{c.undoable && <ConfirmButton label={tc('shUndo')} question={tc('shUndoQ', { dept: c.dept, value: c.before ?? '' })} yesLabel={tc('shUndo')} danger={false} testId="setup-undo" onConfirm={() => undo(c)} />}</td>
+            </tr>
+          ))}</tbody>
+        </table></div>
+      )}
+    </details>
   );
 }
 

@@ -12,6 +12,7 @@ import {
 import {
   clearRouteMonths, dataStatus, listCdRoles, logUpload, packSubs, readMonthData, readOrg, readRouteRows, saveMonthData, setCdRoles, setPackSubs,
   setChannels, setDeptWorkspace, uploadRouteRows, workspace,
+  setupHistory, undoSetupChange,
 } from '../services/cycleData';
 import { forbidden, parseId } from '../services/masters';
 import { listNotifications, markRead } from '../services/notify';
@@ -43,6 +44,11 @@ cycle.put('/api/admin/departments/:id/workspace', h(async (c, db, me, body) => {
 }));
 cycle.put('/api/admin/departments/:id/channels', h(async (c, db, me, body) =>
   c.json(await setChannels(db, me, parseId(p(c, 'id')), await body()))));
+cycle.get('/api/admin/departments/setup-history', h(async (c, db) => c.json(await setupHistory(db))));
+cycle.post('/api/admin/departments/setup-history/:id/undo', h(async (c, db, me) => {
+  await undoSetupChange(db, me, parseId(p(c, 'id')));
+  return c.json({ ok: true });
+}));
 cycle.put('/api/admin/packs-sub', h(async (c, db, me, body) => c.json(await setPackSubs(db, me, await body()))));
 cycle.get('/api/admin/cd-roles', h(async (c, db) => c.json({ roles: await listCdRoles(db) })));
 cycle.put('/api/admin/users/:id/cd', h(async (c, db, me, body) => c.json(await setCdRoles(db, me, parseId(p(c, 'id')), await body()))));

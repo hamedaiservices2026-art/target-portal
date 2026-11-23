@@ -1,7 +1,7 @@
 import { env, SELF } from 'cloudflare:test';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { hashPassword } from '../../src/worker/auth';
-import { one, run } from '../../src/worker/db';
+import { all, one, run } from '../../src/worker/db';
 
 type Json = Record<string, any>;
 
@@ -108,5 +108,30 @@ describe('packs the admin added', () => {
     expect((await api('DELETE', '/admin/packs/CSD_CANS150', admin)).status).toBe(400);
     expect((await api('DELETE', '/admin/packs/CSD_SSPET500', admin)).status).toBe(200);
     expect(await one(env.DB, `SELECT COUNT(*) AS n FROM packs`)).toEqual({ n: 1 });
+  });
+});
+
+describe('Heads setup history', () => {
+  it('lists channel and workspace changes with the value before, skips saves without a change, and undoes', async () => {
+    for (const t of ['audit', 'dept_channels', 'leaves', 'nodes', 'departments', 'sessions', 'login_failures', 'user_roles', 'users']) await run(env.DB, `DELETE FROM ${t}`);
+    await addUser('admin', 'admin');
+    const admin = await login('admin');
+    const d = (await run(env.DB, `INSERT INTO departments(code, name, workspace) VALUES ('MT', 'MT', 'ops')`)).lastRowId;
+    const put = (path: string, body: unknown) => api('PUT', `/admin/departments/${d}/${path}`, admin, body);
+    expect((await put('channels', { channels: [{ channel: 'MT', grp: 'MT' }, { channel: 'MT SSV', grp: 'MT' }] })).status).toBe(200);
+    expect((await put('channels', { channels: [{ channel: 'MT', grp: 'MT' }, { channel: 'MT SSV', grp: 'MT' }] })).status).toBe(200); // no change
+    expect((await put('channels', { channels: [] })).status).toBe(200);
+    expect((await put('workspace', { workspace: 'ops', sort: 0 })).status).toBe(200); // no change
+    expect((await put('workspace', { workspace: 'ka', sort: 0 })).status).toBe(200);
+    const h = await json(await api('GET', '/admin/departments/setup-history', admin));
+    expect(h.changes.map((c: Json) => [c.kind, c.before, c.after])).toEqual([
+      ['workspace', 'Operations · order 0', 'Key Accounts · order 0'],
+      ['channels', 'MT, MT SSV', '(none)'],
+      ['channels', '(none)', 'MT, MT SSV'],
+    ]);
+    expect((await api('POST', `/admin/departments/setup-history/${h.changes[1].id}/undo`, admin)).status).toBe(200);
+    expect((await api('POST', `/admin/departments/setup-history/${h.changes[0].id}/undo`, admin)).status).toBe(200);
+    expect(await all(env.DB, `SELECT channel FROM dept_channels WHERE dept_id = ? ORDER BY sort`, d)).toEqual([{ channel: 'MT' }, { channel: 'MT SSV' }]);
+    expect(await one(env.DB, `SELECT workspace FROM departments WHERE id = ?`, d)).toEqual({ workspace: 'ops' });
   });
 });

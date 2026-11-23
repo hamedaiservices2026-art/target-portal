@@ -210,13 +210,17 @@ export async function setChannels(db: D1Database, actorId: number, deptId: numbe
   });
   const dept = await one<{ id: number }>(db, `SELECT id FROM departments WHERE id = ?`, deptId);
   if (!dept) throw new ApiError(404, { error: 'not_found' });
+  const before = await all<{ channel: string; grp: string }>(db, `SELECT channel, grp FROM dept_channels WHERE dept_id = ? ORDER BY sort, channel`, deptId);
+  if (before.length === channels.length && before.every((b, i) => b.channel === channels[i]!.channel && b.grp === channels[i]!.grp)) {
+    return { channels: channels.map(({ channel, grp }) => ({ channel, grp })) };
+  }
   await writeBatch(db, [
     db.prepare(`DELETE FROM dept_channels WHERE dept_id = ?`).bind(deptId),
     ...(channels.length ? [db.prepare(
       `INSERT INTO dept_channels(dept_id, channel, grp, sort)
        SELECT ?, json_extract(value, '$.channel'), json_extract(value, '$.grp'), json_extract(value, '$.sort') FROM json_each(?)`,
     ).bind(deptId, JSON.stringify(channels))] : []),
-    auditStatement(db, actorId, 'dept.channels', {}, { deptId, channels }),
+    auditStatement(db, actorId, 'dept.channels', {}, { deptId, channels, before: before.map((b, i) => ({ ...b, sort: i })) }),
   ], 'a channel name is already used by another Head of Department');
   return { channels: channels.map(({ channel, grp }) => ({ channel, grp })) };
 }
@@ -227,11 +231,77 @@ export async function setDeptWorkspace(db: D1Database, actorId: number, deptId: 
   if (ws !== 'ops' && ws !== 'ka') throw bad('workspace must be ops or ka');
   const sort = body.sort === undefined ? null : body.sort;
   if (sort !== null && (typeof sort !== 'number' || !Number.isInteger(sort))) throw bad('sort must be a whole number');
-  const res = await writeBatch(db, [
+  const cur = await one<{ workspace: Workspace; sort: number }>(db, `SELECT workspace, sort FROM departments WHERE id = ?`, deptId);
+  if (!cur) throw new ApiError(404, { error: 'not_found' });
+  if (cur.workspace === ws && (sort === null || cur.sort === sort)) return;
+  await writeBatch(db, [
     db.prepare(`UPDATE departments SET workspace = ?, sort = COALESCE(?, sort) WHERE id = ?`).bind(ws, sort, deptId),
-    auditStatement(db, actorId, 'dept.workspace', {}, { deptId, workspace: ws, sort }),
+    auditStatement(db, actorId, 'dept.workspace', {}, { deptId, workspace: ws, sort, before: { workspace: cur.workspace, sort: cur.sort } }),
   ], 'conflict');
-  if ((res[0]!.meta.changes ?? 0) === 0) throw new ApiError(404, { error: 'not_found' });
+}
+
+// ---------- history of the Heads setup (Cycle setup > Heads of Department) ----------
+
+export type SetupChange = {
+  id: number; at: string; by: string | null; deptId: number; dept: string; kind: 'channels' | 'workspace';
+  /** What it was before the change; null when the portal had not recorded it. */
+  before: string | null; after: string; undoable: boolean;
+};
+type ChDetail = { deptId: number; channels: { channel: string; grp: string }[]; before?: { channel: string; grp: string }[] };
+type WsDetail = { deptId: number; workspace: Workspace; sort: number | null; before?: { workspace: Workspace; sort: number } };
+const chText = (l: { channel: string }[]) => l.map((c) => c.channel).join(', ') || '(none)';
+const wsText = (w: Workspace, sort: number | null) => `${w === 'ka' ? 'Key Accounts' : 'Operations'}${sort === null ? '' : ` · order ${sort}`}`;
+
+/**
+ * The latest changes to the Heads' channels and workspace, each with what it
+ * was before: the value saved with the change, else the previous change of the
+ * same Head. Saving without a change is not listed (older saves were).
+ */
+export async function setupHistory(db: D1Database): Promise<{ changes: SetupChange[] }> {
+  const rows = await all<{ id: number; at: string; action: string; detail_json: string; by: string | null }>(db,
+    `SELECT a.id, a.at, a.action, a.detail_json, u.name AS by FROM audit a LEFT JOIN users u ON u.id = a.user_id
+     WHERE a.action IN ('dept.channels', 'dept.workspace') ORDER BY a.id`);
+  const names = new Map((await all<{ id: number; name: string }>(db, `SELECT id, name FROM departments`)).map((d) => [d.id, d.name]));
+  const lastCh = new Map<number, ChDetail['channels']>();
+  const lastWs = new Map<number, { workspace: Workspace; sort: number | null }>();
+  const out: SetupChange[] = [];
+  for (const r of rows) {
+    const base = { id: r.id, at: r.at, by: r.by };
+    if (r.action === 'dept.channels') {
+      const d = JSON.parse(r.detail_json) as ChDetail;
+      const prev = d.before ?? lastCh.get(d.deptId) ?? null;
+      lastCh.set(d.deptId, d.channels);
+      if (prev && chText(prev) === chText(d.channels)) continue;
+      out.push({ ...base, deptId: d.deptId, dept: names.get(d.deptId) ?? `#${d.deptId}`, kind: 'channels', before: prev ? chText(prev) : null, after: chText(d.channels), undoable: prev !== null });
+    } else {
+      const d = JSON.parse(r.detail_json) as WsDetail;
+      const prev = d.before ?? lastWs.get(d.deptId) ?? null;
+      lastWs.set(d.deptId, { workspace: d.workspace, sort: d.sort ?? prev?.sort ?? null });
+      if (prev && prev.workspace === d.workspace && (d.sort === null || prev.sort === d.sort)) continue;
+      out.push({ ...base, deptId: d.deptId, dept: names.get(d.deptId) ?? `#${d.deptId}`, kind: 'workspace', before: prev ? wsText(prev.workspace, prev.sort) : null, after: wsText(d.workspace, d.sort), undoable: prev !== null });
+    }
+  }
+  return { changes: out.reverse().slice(0, 60) };
+}
+
+/** Puts back what a listed change replaced (it is itself recorded as a change). */
+export async function undoSetupChange(db: D1Database, actorId: number, auditId: number): Promise<void> {
+  const rows = await all<{ id: number; action: string; detail_json: string }>(db,
+    `SELECT id, action, detail_json FROM audit WHERE action IN ('dept.channels', 'dept.workspace') AND id <= ? ORDER BY id`, auditId);
+  const target = rows.find((r) => r.id === auditId);
+  if (!target) throw new ApiError(404, { error: 'not_found' });
+  const d = JSON.parse(target.detail_json) as ChDetail & WsDetail;
+  const earlier = rows.filter((r) => r.id < auditId && r.action === target.action && (JSON.parse(r.detail_json) as { deptId: number }).deptId === d.deptId);
+  const prevRow = earlier.length ? JSON.parse(earlier[earlier.length - 1]!.detail_json) as ChDetail & WsDetail : null;
+  if (target.action === 'dept.channels') {
+    const before = d.before ?? prevRow?.channels;
+    if (!before) throw bad('what this Head had before this change was not recorded: type the channels again');
+    await setChannels(db, actorId, d.deptId, { channels: before.map((c) => ({ channel: c.channel, grp: c.grp })) });
+  } else {
+    const before = d.before ?? (prevRow ? { workspace: prevRow.workspace, sort: prevRow.sort } : null);
+    if (!before) throw bad('what this Head had before this change was not recorded: pick the workspace again');
+    await setDeptWorkspace(db, actorId, d.deptId, { workspace: before.workspace, ...(before.sort === null || before.sort === undefined ? {} : { sort: before.sort }) });
+  }
 }
 
 /** Commercial Director role per workspace (Admin > Users). */
