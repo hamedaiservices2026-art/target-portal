@@ -82,6 +82,15 @@ describe('Hierarchy: Operation and Key Account kept apart', () => {
     // Without picking, the Operation department is not offered for a Key Account file.
     const p2 = await json(await api('POST', '/admin/hierarchy/sync/preview', admin, { rows, workspace: 'ka' }));
     expect(p2.heads[0].deptId).not.toBe(mt);
+
+    // The clean-up can also use the Key Account hierarchy already uploaded (no file).
+    const kam2 = (await run(env.DB, `INSERT INTO nodes(dept_id, parent_id, name) VALUES (?, ?, 'Kam One')`, mt, root)).lastRowId;
+    await run(env.DB, `INSERT INTO leaves(dept_id, delivery_system, route_code, node_id, label) VALUES (?, 'MT', '41461', ?, '41461')`, mt, kam2);
+    const pre2 = await json(await api('POST', '/admin/hierarchy/remove-ka-from-ops', admin, { fromKa: true, apply: false }));
+    expect(pre2.nodes.map((n: Json) => n.name)).toEqual(['Kam One']);
+    expect((await api('POST', '/admin/hierarchy/remove-ka-from-ops', admin, { fromKa: true, apply: true })).status).toBe(200);
+    expect(await one(env.DB, `SELECT COUNT(*) AS n FROM nodes WHERE dept_id = ?`, mt)).toEqual({ n: 3 });
+    expect(await one(env.DB, `SELECT COUNT(*) AS n FROM leaves WHERE dept_id = ?`, mt)).toEqual({ n: 1 });
   });
 });
 

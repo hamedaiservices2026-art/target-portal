@@ -348,10 +348,23 @@ export type KaCleanup = {
  * still has Operation routes or people under it.
  */
 export async function removeKaFromOps(db: D1Database, actorId: number, body: Obj): Promise<KaCleanup & { applied: boolean }> {
-  const { rows } = parseRows(body.rows);
-  if (!rows.length) throw bad('rows must list the Key Account hierarchy');
-  const names = new Set(rows.flatMap((r) => [r.manager, r.supervisor]).filter(Boolean).map(norm));
-  const routes = new Set(rows.map((r) => r.route).filter(Boolean));
+  let names: Set<string>;
+  let routes: Set<string>;
+  if (body.fromKa === true) {
+    // The Key Account hierarchy already on the Key Account tab: its people (below the Head) and its routes.
+    const [kn, kl] = await Promise.all([
+      all<{ name: string }>(db, `SELECT n.name FROM nodes n JOIN departments d ON d.id = n.dept_id WHERE d.workspace = 'ka' AND n.parent_id IS NOT NULL`),
+      all<{ route_code: string }>(db, `SELECT l.route_code FROM leaves l JOIN departments d ON d.id = l.dept_id WHERE d.workspace = 'ka'`),
+    ]);
+    if (!kn.length && !kl.length) throw bad('the Key Account hierarchy is empty: upload it on the Key Account tab first');
+    names = new Set(kn.map((n) => norm(n.name)));
+    routes = new Set(kl.map((l) => l.route_code));
+  } else {
+    const { rows } = parseRows(body.rows);
+    if (!rows.length) throw bad('rows must list the Key Account hierarchy');
+    names = new Set(rows.flatMap((r) => [r.manager, r.supervisor]).filter(Boolean).map(norm));
+    routes = new Set(rows.map((r) => r.route).filter(Boolean));
+  }
   const [depts, nodes, leaves] = await Promise.all([
     all<DeptRow>(db, `SELECT id, code, name FROM departments WHERE workspace = 'ops'`),
     all<NodeRow>(db, `SELECT n.id, n.dept_id, n.parent_id, n.name FROM nodes n JOIN departments d ON d.id = n.dept_id WHERE d.workspace = 'ops'`),

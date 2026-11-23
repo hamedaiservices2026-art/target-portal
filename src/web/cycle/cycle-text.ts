@@ -596,6 +596,10 @@ export const CY = {
   kaSentWith: ["Key Account sent with it: {names}.", "أُرسل معه كبار العملاء: {names}."],
   kaNotSent: ["Key Account not sent: {names}.", "لم يُرسل كبار العملاء: {names}."],
   sendKaLate: ["Send only Key Account (late)", "إرسال كبار العملاء فقط (متأخر)"],
+  kcFromKa: ["Check with the Key Account hierarchy already uploaded", "الفحص بهيكل كبار العملاء المرفوع مسبقاً"],
+  kaResetRow: ["Reset", "إعادة"],
+  kaResetRowHelp: ["Undo your edits on this row (and the people under it): back to the calculated uplift.", "إلغاء تعديلاتك على هذا الصف (ومن تحته): الرجوع للزيادة المحسوبة."],
+  resetAllEdits: ["Reset all edits", "إلغاء كل التعديلات"],
   // Admin › Hierarchy (v16)
   hzIntro: ['Add, move, rename or delete here, or upload the whole hierarchy in one file. Every Channel Head is the top of one department.', 'أضف أو انقل أو أعد التسمية أو احذف هنا، أو ارفع الهيكل كاملًا في ملف واحد. كل رئيس قناة هو أعلى قسم واحد.'],
   hzAdd: ['Add', 'إضافة'],

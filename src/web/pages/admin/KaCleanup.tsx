@@ -11,7 +11,7 @@ import { parseHierarchySheet, type HierarchyRow } from '../../cycle/hierarchyFil
 
 export function KaCleanup({ onDone }: { onDone: () => void }) {
   useLang();
-  const [rows, setRows] = useState<HierarchyRow[] | null>(null);
+  const [rows, setRows] = useState<HierarchyRow[] | 'ka' | null>(null);
   const [plan, setPlan] = useState<Plan | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -35,11 +35,23 @@ export function KaCleanup({ onDone }: { onDone: () => void }) {
       setBusy(false);
     }
   }
+  async function fromKa() {
+    setErr(null); setMsg(null); setPlan(null);
+    setBusy(true);
+    try {
+      setPlan(await api<Plan>('POST', '/api/admin/hierarchy/remove-ka-from-ops', { fromKa: true, apply: false }));
+      setRows('ka');
+    } catch (x) {
+      setErr(errText(x));
+    } finally {
+      setBusy(false);
+    }
+  }
   async function remove() {
     if (!rows) return;
     setBusy(true); setErr(null);
     try {
-      const r = await api<Plan>('POST', '/api/admin/hierarchy/remove-ka-from-ops', { rows, apply: true });
+      const r = await api<Plan>('POST', '/api/admin/hierarchy/remove-ka-from-ops', rows === 'ka' ? { fromKa: true, apply: true } : { rows, apply: true });
       setMsg(tc('kcDone', { nodes: fmtNum(r.nodes.length), routes: fmtNum(r.leaves.length) }));
       setPlan(null); setRows(null);
       onDone();
@@ -58,6 +70,7 @@ export function KaCleanup({ onDone }: { onDone: () => void }) {
         <input id="kc-file" type="file" class="visually-hidden" data-testid="kc-file" accept=".xlsx" disabled={busy} onChange={onFile} />
         <label for="kc-file" class="btn">{tc('kcChoose')}</label>
       </span>
+      {' '}<button type="button" class="btn" data-testid="kc-from-ka" disabled={busy} onClick={() => void fromKa()}>{tc('kcFromKa')}</button>
       {plan && (
         <>
           <p data-testid="kc-found">{found ? tc('kcFound', { nodes: fmtNum(plan.nodes.length), routes: fmtNum(plan.leaves.length) }) : tc('kcNone')}</p>

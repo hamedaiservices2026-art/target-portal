@@ -216,7 +216,7 @@ export function KaCalcTab({ period, l, reload, onNext }: { period: string; l: Lo
         <div class="toolbar">
           <label class="small">{tc('kaUpliftMin')} <input type="number" step="0.5" min={0} max={100} value={min} data-testid="uplift-min" style={{ width: '5em' }} onInput={(e) => setMin(Math.max(0, Number(e.currentTarget.value) || 0))} /> %</label>
           <label class="small">{tc('kaUpliftMax')} <input type="number" step="0.5" min={0} max={100} value={max} data-testid="uplift-max" style={{ width: '5em' }} onInput={(e) => setMax(Math.max(0, Number(e.currentTarget.value) || 0))} /> %</label>
-          {Object.keys(override).length > 0 && <button type="button" class="btn" onClick={() => setOverride({})}>{tc('resetEdits')}</button>}
+          {Object.keys(override).length > 0 && <button type="button" class="btn" onClick={() => setOverride({})}>{tc('resetAllEdits')}</button>}
         </div>
         <p class="muted small">{tc('kaUpliftHelp', { months: monthsLabel(months) })}</p>
         {min > max && <div class="alert">{tc('kaMinMax')}</div>}
@@ -243,7 +243,7 @@ export function KaCalcTab({ period, l, reload, onNext }: { period: string; l: Lo
             <div class="tablewrap cy-tall"><table class="ad-table cy-table" data-testid="ka-people">
               <thead><tr>
                 <th>{tc('name')}</th><th>{tc('level')}</th><th class="num">{tc('kaAvgSales')}</th>
-                <th class="num">{tc('kaUpliftPct')}</th><th class="num">{tc('kaAdded')}</th><th class="num">{tc('kaKaTarget')}</th>
+                <th class="num">{tc('kaUpliftPct')}</th><th class="num">{tc('kaAdded')}</th><th class="num">{tc('kaKaTarget')}</th><th><span class="visually-hidden">{tc('kaResetRow')}</span></th>
               </tr></thead>
               <tbody>{lines.map((x) => (
                 <tr key={x.key} class={x.level === 'dept' ? 'sub l1' : x.level === 'kam' ? 'sub l2' : ''} data-testid={x.level === 'kae' ? 'ka-kae' : undefined}>
@@ -259,6 +259,11 @@ export function KaCalcTab({ period, l, reload, onNext }: { period: string; l: Lo
                   </td>
                   <td class="num">{fmtNum(added(x))}</td>
                   <td class="num tot"><NumCell value={total(x.target)} label={`${tc('kaKaTarget')} ${x.level === 'dept' ? x.dept : x.level === 'kam' ? x.kam : x.kae}`} onChange={(n) => setTarget(x, n)} /></td>
+                  <td>{kaesOf(x).some((y) => y.route && override[y.route] !== undefined) && (
+                    <button type="button" class="btn small" data-testid="ka-reset-row" title={tc('kaResetRowHelp')}
+                      aria-label={`${tc('kaResetRow')} ${x.level === 'dept' ? x.dept : x.level === 'kam' ? x.kam : x.kae}`}
+                      onClick={() => setUplift(x, '')}>↺ {tc('kaResetRow')}</button>
+                  )}</td>
                 </tr>
               ))}</tbody>
             </table></div>
