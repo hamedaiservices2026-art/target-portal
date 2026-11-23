@@ -137,7 +137,7 @@ const USER_COLS = 'id, username, name, email, role, lang, active';
 const toUser = (r: UserRow): UserDto => ({ ...r, active: r.active === 1 });
 
 export async function listUsers(db: D1Database): Promise<UserDto[]> {
-  return (await all<UserRow>(db, `SELECT ${USER_COLS} FROM users ORDER BY username`)).map(toUser);
+  return (await all<UserRow>(db, `SELECT ${USER_COLS} FROM users WHERE deleted_at IS NULL ORDER BY username`)).map(toUser);
 }
 
 export async function createUser(db: D1Database, actorId: number, body: Obj): Promise<UserDto> {
@@ -148,14 +148,15 @@ export async function createUser(db: D1Database, actorId: number, body: Obj): Pr
     role: oneOf(body.role, 'role', ROLES),
     lang: body.lang === undefined ? ('en' as Lang) : oneOf(body.lang, 'lang', LANGS),
     active: body.active === undefined ? true : bool(body.active, 'active'),
+    position: body.position === undefined || body.position === null || body.position === '' ? null : text(body.position, 'position').slice(0, 60),
   };
   const pw = password(body.password);
   const { hash, salt } = await hashPassword(pw); // the only PBKDF2 of this request
   const [ins] = await writeBatch(db, [
     db.prepare(
-      `INSERT INTO users(username, name, email, pw_hash, pw_salt, role, lang, active, must_change_pw, first_pw)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?) RETURNING ${USER_COLS}`,
-    ).bind(v.username, v.name, v.email, hash, salt, v.role, v.lang, v.active ? 1 : 0, pw),
+      `INSERT INTO users(username, name, email, pw_hash, pw_salt, role, lang, active, must_change_pw, first_pw, position)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?) RETURNING ${USER_COLS}`,
+    ).bind(v.username, v.name, v.email, hash, salt, v.role, v.lang, v.active ? 1 : 0, pw, v.position),
     auditStatement(db, actorId, 'user.create', {}, v, { lastInsertIdAs: 'id' }),
   ], 'username already exists');
   return toUser(ins!.results[0] as UserRow);

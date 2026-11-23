@@ -4,7 +4,7 @@ import { requireAdmin, requireUser, type AppEnv } from '../auth';
 import { h, p } from './handler';
 import { backupIndex, backupPage, listAudit } from '../services/export';
 import importRoutes from './imports';
-import { listAccounts, syncNextAccount, unlockUser } from '../services/accounts';
+import { deleteUser, getPositions, listAccounts, listKaLinks, setKaLink, setPositions, syncNextAccount, unlockUser } from '../services/accounts';
 import { applyHierarchySync, listPeople, previewHierarchySync } from '../services/hierarchySync';
 import monthRoutes from './months';
 import {
@@ -31,6 +31,11 @@ admin.post('/api/admin/users/:id/password', h(async (c, db, me, body) => {
 admin.get('/api/admin/accounts', h(async (c, db) => c.json(await listAccounts(db))));
 admin.post('/api/admin/users/:id/unlock', h(async (c, db, me) => c.json(await unlockUser(db, me, parseId(p(c, 'id'))))));
 admin.post('/api/admin/accounts/sync', h(async (c, db, me) => c.json(await syncNextAccount(db, me))));
+admin.delete('/api/admin/users/:id', h(async (c, db, me) => c.json(await deleteUser(db, me, parseId(p(c, 'id'))))));
+admin.get('/api/admin/positions', h(async (c, db) => c.json({ positions: await getPositions(db) })));
+admin.put('/api/admin/positions', h(async (c, db, me, body) => c.json(await setPositions(db, me, await body()))));
+admin.get('/api/admin/ka-links', h(async (c, db) => c.json({ links: await listKaLinks(db) })));
+admin.put('/api/admin/ka-links/:id', h(async (c, db, me, body) => c.json(await setKaLink(db, me, parseId(p(c, 'id')), await body()))));
 
 admin.get('/api/admin/departments', h(async (c, db) => c.json({ departments: await listDepartments(db) })));
 admin.post('/api/admin/departments', h(async (c, db, me, body) =>

@@ -40,7 +40,7 @@ function flatten(root: CascadeNode, names: Map<string, string>): TreeRow[] {
 
 const sumPacks = (g: Grid | undefined, packs: string[]) => packs.reduce((s, p) => s + (g?.[p] ?? 0), 0);
 
-export function CalcTab({ ws, period, l, reload }: { ws: Workspace; period: string; l: Loaded; reload: () => void }) {
+export function CalcTab({ ws, period, l, reload, onNext }: { ws: Workspace; period: string; l: Loaded; reload: () => void; onNext?: () => void }) {
   const [lang] = useLang();
   const { cycle, org } = l;
   const cats = catMap(org);
@@ -395,7 +395,7 @@ export function CalcTab({ ws, period, l, reload }: { ws: Workspace; period: stri
         depts: live!.depts.map((d) => ({ deptId: d.deptId, basis: d.result.basisCount, fallback: d.result.fallbackPacks })),
       };
       const out = await api<{ applied: string[]; kept: string[] }>('PUT', `/api/admin/cycle/${ws}/${period}/calc`, { calc, notes });
-      setMsg(tc('calcApplied', { n: out.applied.length, kept: out.kept.length }));
+      setMsg(`${tc('calcApplied', { n: out.applied.length, kept: out.kept.length })} ${tc('calcAppliedNext')}`);
       reload();
     } catch (x) {
       setErr(errText(x));
@@ -423,7 +423,7 @@ export function CalcTab({ ws, period, l, reload }: { ws: Workspace; period: stri
         <p class="small muted">{tc('contribHelp', { months: monthsLabel(months) })}</p>
       </Section>
       {check}
-      {msg && <div class="banner ok" role="status">{msg}</div>}
+      {msg && <div class="banner ok" role="status" data-testid="calc-applied">{msg} {onNext && <button type="button" class="btn primary" onClick={onNext}>{tc('goSend')}</button>}</div>}
       {err && <div class="alert" role="alert">{err}</div>}
       <div class="actions cy-end">
         <button type="button" class="btn" onClick={exportCalc}>{tc('exportCalc')}</button>

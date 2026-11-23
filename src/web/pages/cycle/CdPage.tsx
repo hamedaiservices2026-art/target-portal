@@ -18,9 +18,10 @@ import { errText, PageHead } from '../../components/AdminBits';
 import { fmtNum, useLang } from '../../i18n';
 import { useSession } from '../../session';
 import {
-  catMap, cdRows, companyMonth, defaultDeptSplit, deptPack, groupSales, NO_CHANNEL, rescalePack, routeIndex, sumCat,
+  catMap, cdRows, companyMonth, defaultDeptSplit, deptPack, groupSales, NO_CHANNEL, prevTargetMonths, rescalePack, routeIndex, sumCat,
   type ChannelHist, type Grid,
 } from '../../cycle/compute';
+import { channelRank, deptColumns, sortChannels } from '../../cycle/deptOrder';
 import { tc } from '../../cycle/i18n';
 import { getCycle, getOrg, loadMonthData, loadRouteData, useAsync } from '../../cycle/load';
 import type { RouteMonthData } from '../../cycle/parsers';
@@ -86,12 +87,19 @@ export function overCap(work: CdWork, uploaded: Grid, capPct: number | null): st
 }
 
 /** The default split by department & channel for the packs given, with the CD's months. */
-function splitFor(work: CdWork, l: Loaded, nt: Grid, how: 'sales' | 'uploaded') {
+type How = 'sales' | 'uploaded' | 'prev';
+
+function splitFor(work: CdWork, l: Loaded, nt: Grid, how: How) {
   return defaultDeptSplit({
     period: l.cycle.period, nt, org: l.org, sales: l.bench.sales, avgMonths: cdMonths(work, l), deptChannel: l.bench.deptChannel,
     uploadedByChannel: how === 'uploaded' && l.bench.upload?.mode === 'dept' ? l.bench.upload.byChannel ?? null : null,
+    byPrevTarget: how === 'prev',
   });
 }
+
+/** Previous department targets uploaded for the months of the split: they lead the default split. */
+const hasPrev = (work: CdWork, l: Loaded) => prevTargetMonths(l.bench.deptChannel, cdMonths(work, l)).length > 0;
+const defaultHow = (work: CdWork, l: Loaded): How => (l.bench.upload?.mode === 'dept' ? 'uploaded' : hasPrev(work, l) ? 'prev' : 'sales');
 
 function GmTab({ work, edit, l, setWork, onApproved }: { work: CdWork; edit: boolean; l: Loaded; setWork: (w: CdWork) => void; onApproved: () => void }) {
   useLang();
@@ -111,7 +119,7 @@ function GmTab({ work, edit, l, setWork, onApproved }: { work: CdWork; edit: boo
     if (!stale) { setWork({ ...work, ntOk: true }); onApproved(); return; }
     const dm = structuredClone(work.dm);
     if (Object.keys(dm).length === 0) {
-      const r = splitFor(work, l, work.nt, bench.upload?.mode === 'dept' ? 'uploaded' : 'sales');
+      const r = splitFor(work, l, work.nt, defaultHow(work, l));
       setWork({ ...work, ntOk: true, dm: r.dm, basis: r.basis, splitNt: { ...work.nt } });
       onApproved();
       return;
@@ -121,7 +129,7 @@ function GmTab({ work, edit, l, setWork, onApproved }: { work: CdWork; edit: boo
     for (const p of packs) if (p in work.splitNt && work.splitNt[p] !== work.nt[p]) rescalePack(dm, p, work.nt[p]!);
     const basis = { ...work.basis };
     if (fresh.length) {
-      const r = splitFor(work, l, Object.fromEntries(fresh.map((p) => [p, work.nt[p]!])), 'sales');
+      const r = splitFor(work, l, Object.fromEntries(fresh.map((p) => [p, work.nt[p]!])), hasPrev(work, l) ? 'prev' : 'sales');
       for (const [d, ch] of Object.entries(r.dm)) for (const [c, g] of Object.entries(ch)) Object.assign((dm[d] ??= {})[c] ??= {}, g);
       Object.assign(basis, r.basis);
     }
@@ -214,6 +222,8 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
   const cols = [...org.depts]
     .map((d, i) => ({ id: String(d.id), name: d.name, i, chans: d.channels.length ? sortChannels(d.channels.map((c) => c.channel)) : [NO_CHANNEL] }))
     .sort((a, b) => channelRank(a.chans[0]!) - channelRank(b.chans[0]!) || a.i - b.i);
+  // Columns as in the department target file: TT DMM, TT Outer, Total TT, MT, MT SSV, MT Bulk, Total MT, HoReCa, WS.
+  const { flat, heads } = deptColumns(cols, (name) => tc('totalOf', { name }));
   const packs = Object.keys(work.nt);
   const hasSplit = Object.keys(work.dm).length > 0;
   const rows = cdRows(packs, cats).filter((r) => !hideZero || r.kind === 'sub' || (work.nt[r.pack] ?? 0) !== 0);
@@ -232,13 +242,14 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
     ((dm[d] ??= {})[c] ??= {})[p] = n;
     setWork({ ...work, dm });
   }
-  function split(how: 'sales' | 'uploaded') {
+  function split(how: How) {
     const r = splitFor(work, l, work.nt, how);
     setWork({ ...work, dm: r.dm, basis: r.basis, splitNt: { ...work.nt } });
   }
   /** Back to the starting split for one pack (by the average sales, or the uploaded split it came from). */
   function resetPack(p: string) {
-    const how = (work.basis[p] ?? '').startsWith('uploaded') ? 'uploaded' : 'sales';
+    const b = work.basis[p] ?? '';
+    const how: How = b.startsWith('uploaded') ? 'uploaded' : b === 'prev_target' ? 'prev' : 'sales';
     const r = splitFor(work, l, { [p]: work.nt[p] ?? 0 }, how);
     const dm = structuredClone(work.dm);
     for (const d of Object.keys(dm)) for (const c of Object.keys(dm[d]!)) delete dm[d]![c]![p];
@@ -249,20 +260,23 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
     // New months: the split by sales is made again with them.
     const next = { ...work, avgMonths: m };
     if (!m.length) return setWork(next);
-    const r = splitFor(next, l, work.nt, 'sales');
+    const r = splitFor(next, l, work.nt, hasPrev(next, l) ? 'prev' : 'sales');
     setWork({ ...next, dm: r.dm, basis: r.basis, splitNt: { ...work.nt } });
   }
   const badPacks = packs.filter((p) => org.depts.reduce((s, d) => s + deptPack(work.dm, String(d.id), p), 0) !== work.nt[p]);
   const uploadedSplit = bench.upload?.mode === 'dept';
   const fromUpload = Object.values(work.basis).some((b) => b.startsWith('uploaded'));
+  const fromPrev = Object.values(work.basis).some((b) => b === 'prev_target');
+  const prevOk = hasPrev(work, l);
 
   return (
     <>
       <MonthPicker period={cycle.period} months={months} available={bench.available} disabled={!edit} onChange={setMonths} title={tc('avgBasedOn')} />
-      <div class="banner info small">{fromUpload ? tc('splitHowUploaded') : tc('splitHowSales', { months: monthsLabel(months), pago: pm })}</div>
+      <div class="banner info small" data-testid="split-how">{fromUpload ? tc('splitHowUploaded') : fromPrev ? tc('splitHowPrev', { months: monthsLabel(prevTargetMonths(bench.deptChannel, months)) }) : tc('splitHowSales', { months: monthsLabel(months), pago: pm })}</div>
       <Section title={tc('deptTitle', { period: cycle.period })} right={
         <div class="toolbar">
-          {edit && <button type="button" class="btn primary" data-testid="split-all" onClick={() => split('sales')}>{tc('splitAll')}</button>}
+          {edit && prevOk && <button type="button" class="btn primary" data-testid="split-prev" onClick={() => split('prev')}>{tc('splitByPrev')}</button>}
+          {edit && <button type="button" class={`btn${prevOk ? '' : ' primary'}`} data-testid="split-all" onClick={() => split('sales')}>{tc('splitAll')}</button>}
           {edit && uploadedSplit && <button type="button" class="btn" onClick={() => split('uploaded')}>{tc('useUploadedSplit')}</button>}
           <label class="small"><input type="checkbox" checked={hideZero} onChange={(e) => setHideZero(e.currentTarget.checked)} /> {tc('hideZero')}</label>
           <Tabs<View> value={view} onChange={setView} items={[{ id: 'cases', label: tc('viewSplit') }, { id: 'pago', label: tc('vsPagoSales') }, { id: 'yago', label: tc('vsYagoSales') }]} />
@@ -274,14 +288,13 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
           <div class="tablewrap cy-tall"><table class="ad-table cy-table cy-grid-table" data-testid="dept-table">
             <thead>
               <tr><th rowSpan={2}>{tc('pack')}</th>
-                {cols.map((d) => <th key={d.id} colSpan={d.chans.length + (d.chans.length > 1 ? 1 : 0)} class="grp">{d.name}</th>)}
+                {heads.map((h) => (h.kind === 'dept'
+                  ? <th key={`h${h.d.id}`} colSpan={h.span} class="grp">{h.d.name}</th>
+                  : <th key={`t${h.label}`} rowSpan={2} class="num tot">{h.label}</th>))}
                 <th rowSpan={2} class="num">ABC</th><th rowSpan={2} class="num">{tc('newTarget')}</th>
                 {edit && <th rowSpan={2}><span class="visually-hidden">{tc('resetRow')}</span></th>}
               </tr>
-              <tr>{cols.flatMap((d) => [
-                ...d.chans.map((c) => <th key={`${d.id}${c}`} class="num">{c === NO_CHANNEL ? d.name : c}</th>),
-                ...(d.chans.length > 1 ? [<th key={`${d.id}t`} class="num">{tc('totalOf', { name: d.name })}</th>] : []),
-              ])}</tr>
+              <tr>{flat.filter((x) => x.kind === 'cell').map((x) => x.kind === 'cell' && <th key={`${x.d.id}${x.c}`} class="num">{x.c === NO_CHANNEL ? x.d.name : x.c}</th>)}</tr>
             </thead>
             <tbody>{rows.map((r) => {
               const list = r.kind === 'sub' ? r.packs : [r.pack];
@@ -292,19 +305,18 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
               return (
                 <tr key={r.kind === 'sub' ? r.label : r.pack} class={r.kind === 'sub' ? `sub l${r.level}` : off ? 'bad' : ''}>
                   <td><bdi>{r.kind === 'sub' ? r.label : r.pack}</bdi></td>
-                  {cols.flatMap((d) => [
-                    ...d.chans.map((c) => (
-                      <td key={`${d.id}${c}`} class="num">
-                        {r.kind === 'pack' && edit && view === 'cases'
-                          ? <NumCell value={cell(d.id, c, list)} label={`${r.pack} ${c}`} onChange={(n) => setCell(d.id, c, r.pack, n)} />
-                          : show(cell(d.id, c, list), d.id, c, list)}
-                      </td>
-                    )),
-                    ...(d.chans.length > 1 ? [<td key={`${d.id}t`} class="num tot">{(() => {
-                      const v = d.chans.reduce((s, c) => s + cell(d.id, c, list), 0);
-                      return view === 'cases' ? fmtNum(v) : <Gap v={gap(v, deptBench(d, list))} />;
-                    })()}</td>] : []),
-                  ])}
+                  {flat.map((x) => (x.kind === 'cell' ? (
+                    <td key={`${x.d.id}${x.c}`} class="num">
+                      {r.kind === 'pack' && edit && view === 'cases'
+                        ? <NumCell value={cell(x.d.id, x.c, list)} label={`${r.pack} ${x.c}`} onChange={(n) => setCell(x.d.id, x.c, r.pack, n)} />
+                        : show(cell(x.d.id, x.c, list), x.d.id, x.c, list)}
+                    </td>
+                  ) : (
+                    <td key={`t${x.label}`} class="num tot">{(() => {
+                      const v = x.cells.reduce((s2, k) => s2 + cell(k.d, k.c, list), 0);
+                      return view === 'cases' ? fmtNum(v) : <Gap v={gap(v, x.cells.reduce((s2, k) => s2 + bench2(k.d, k.c, list), 0))} />;
+                    })()}</td>
+                  )))}
                   <td class="num tot">{view === 'cases' ? fmtNum(abc) : <Gap v={gap(abc, abcBench)} />}</td>
                   <td class="num">{fmtNum(nt)}{off && <div class="small bad-text">{fmtNum(abc - nt)}</div>}</td>
                   {edit && <td>{r.kind === 'pack' && <button type="button" class="btn link" data-testid={`reset-${r.pack}`} title={tc('resetRowHelp')} onClick={() => resetPack(r.pack)}>{tc('resetRow')}</button>}</td>}
@@ -318,22 +330,6 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
     </>
   );
 }
-
-// ---------- order of the department target file ----------
-
-const CHANNEL_ORDER = ['tt dmm', 'tt outer', 'tt', 'mt', 'mt ssv', 'mt bulk', 'horeca', 'ws', 'kam', 'kae'];
-const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-/** Rank of a channel in the department file (TT DMM, TT Outer, MT, MT SSV, MT Bulk, HoReCa, WS); unknown last. */
-export function channelRank(c: string): number {
-  const n = norm(c);
-  const exact = CHANNEL_ORDER.indexOf(n);
-  if (exact >= 0) return exact;
-  // "Presell – TT" or "TT - DMM": the longest known name the channel ends with or contains.
-  let best = -1;
-  for (const [i, k] of CHANNEL_ORDER.entries()) if (new RegExp(`(^| )${k}( |$)`).test(n) && (best < 0 || k.length > CHANNEL_ORDER[best]!.length)) best = i;
-  return best >= 0 ? best : CHANNEL_ORDER.length;
-}
-const sortChannels = (list: string[]) => list.map((c, i) => ({ c, i })).sort((a, b) => channelRank(a.c) - channelRank(b.c) || a.i - b.i).map((x) => x.c);
 
 // ---------- the summary cards (category vs YAGO / PAGO sales / AOP) ----------
 

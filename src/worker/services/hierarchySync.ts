@@ -202,7 +202,10 @@ export async function applyHierarchySync(
       let code = base;
       for (let i = 2; codes.has(code); i++) code = `${base}${i}`;
       codes.add(code);
-      depts[h.head] = (await createDepartment(db, actorId, { code, name: h.head })).id;
+      const made = await createDepartment(db, actorId, { code, name: h.head });
+      // A Key Account file (MDM, KAM, KAE) makes Key Account departments.
+      if (body.workspace === 'ka') await db.prepare(`UPDATE departments SET workspace = 'ka' WHERE id = ?`).bind(made.id).run();
+      depts[h.head] = made.id;
     }
     body = { ...body, depts };
     p = await plan(db, body);

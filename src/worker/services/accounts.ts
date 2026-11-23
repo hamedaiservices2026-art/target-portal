@@ -6,7 +6,7 @@ import { hashPassword, LOGIN_MAX_FAILURES, LOGIN_WINDOW_MS, type Role } from '..
 import { all, batch, one } from '../db';
 import { auditStatement } from './audit';
 import { listPeople, type Position } from './hierarchySync';
-import { firstPassword, notFound } from './masters';
+import { bad, firstPassword, notFound, type Obj } from './masters';
 
 export type AccountRole = { kind: 'admin' | Position; dept?: string | null; ws?: 'ops' | 'ka' };
 export type AccountStatus = 'disabled' | 'locked' | 'norole' | 'pending' | 'active';
@@ -16,14 +16,16 @@ export type AccountDto = {
   /** The first password while the person has not chosen their own. */
   firstPw: string | null;
   lastLogin: string | null;
+  /** A position the admin gave the account (Other user, or a position they added). */
+  position: string | null;
 };
 
-type Row = { id: number; username: string; name: string; role: Role; active: number; must_change_pw: number; first_pw: string | null; last_login: string | null };
+type Row = { id: number; username: string; name: string; role: Role; active: number; must_change_pw: number; first_pw: string | null; last_login: string | null; position: string | null };
 
 export async function listAccounts(db: D1Database): Promise<{ accounts: AccountDto[]; missing: number }> {
   const since = new Date(Date.now() - LOGIN_WINDOW_MS).toISOString();
   const [users, people, fails, wsRows] = await Promise.all([
-    all<Row>(db, `SELECT id, username, name, role, active, must_change_pw, first_pw, last_login FROM users ORDER BY name COLLATE NOCASE`),
+    all<Row>(db, `SELECT id, username, name, role, active, must_change_pw, first_pw, last_login, position FROM users WHERE deleted_at IS NULL ORDER BY name COLLATE NOCASE`),
     listPeople(db),
     all<{ username: string; n: number }>(db, `SELECT username, COUNT(*) AS n FROM login_failures WHERE at > ? GROUP BY username`, since),
     all<{ code: string; workspace: 'ops' | 'ka' }>(db, `SELECT code, workspace FROM departments`),
@@ -42,11 +44,13 @@ export async function listAccounts(db: D1Database): Promise<{ accounts: AccountD
     const r = [...(u.role === 'admin' ? [{ kind: 'admin' as const }] : []), ...(roles.get(u.id) ?? [])];
     const status: AccountStatus = u.active !== 1 ? 'disabled'
       : (failed.get(u.username) ?? 0) >= LOGIN_MAX_FAILURES ? 'locked'
-      : r.length === 0 ? 'norole'
+      : r.length === 0 && !u.position ? 'norole'
       : u.must_change_pw === 1 ? 'pending' : 'active';
-    return { id: u.id, username: u.username, name: u.name, role: u.role, active: u.active === 1, roles: r, status, firstPw: u.must_change_pw === 1 ? u.first_pw : null, lastLogin: u.last_login };
+    return { id: u.id, username: u.username, name: u.name, role: u.role, active: u.active === 1, roles: r, status, firstPw: u.must_change_pw === 1 ? u.first_pw : null, lastLogin: u.last_login, position: u.position };
   });
-  const missing = new Set(people.filter((p) => p.nodeId !== null && p.userId === null).map((p) => p.name.trim().toLowerCase())).size
+  // The top of a Key Account department (MDM) has no account of its own: it is the Operation Head of Department.
+  const isKaHead = (p: { position: string; dept: string | null }) => p.position === 'head' && !!p.dept && wsOf.get(p.dept) === 'ka';
+  const missing = new Set(people.filter((p) => p.nodeId !== null && p.userId === null && !isKaHead(p)).map((p) => p.name.trim().toLowerCase())).size
     + (people.some((p) => p.position === 'cd') ? 0 : 1);
   return { accounts, missing };
 }
@@ -84,8 +88,13 @@ export async function syncNextAccount(db: D1Database, actorId: number): Promise<
   const nodes = await all<{ id: number; name: string; depth: number }>(db,
     `WITH RECURSIVE t(id, name, depth) AS (
        SELECT id, name, 0 FROM nodes WHERE parent_id IS NULL
+         AND dept_id NOT IN (SELECT id FROM departments WHERE workspace = 'ka')
        UNION ALL SELECT n.id, n.name, t.depth + 1 FROM nodes n JOIN t ON n.parent_id = t.id)
-     SELECT t.id, t.name, t.depth FROM t JOIN nodes n ON n.id = t.id WHERE n.manager_user_id IS NULL ORDER BY t.depth, t.name`);
+     SELECT t.id, t.name, t.depth FROM t JOIN nodes n ON n.id = t.id WHERE n.manager_user_id IS NULL
+     UNION ALL
+     SELECT k.id, k.name, 1 FROM nodes k JOIN departments d ON d.id = k.dept_id
+     WHERE d.workspace = 'ka' AND k.parent_id IS NOT NULL AND k.manager_user_id IS NULL
+     ORDER BY 3, 2`);
   const link = nodes.filter((n) => byName.has(n.name.trim().toLowerCase()));
   if (link.length) {
     await batch(db, [
@@ -124,4 +133,92 @@ export async function syncNextAccount(db: D1Database, actorId: number): Promise<
     auditStatement(db, actorId, 'user.create', {}, { username, name, nodes: ids.length }),
   ]);
   return { created: { name, username, password: pw }, linked: link.length, remaining: names.length - 1 };
+}
+
+// ---------- delete, positions, Key Account links ----------
+
+/**
+ * Deletes an account from the list. The row is kept for the history (audit,
+ * uploads) but hidden, signed out, disabled and renamed so the username is
+ * free again; the hierarchy places it held become open.
+ */
+export async function deleteUser(db: D1Database, actorId: number, id: number): Promise<{ ok: true }> {
+  if (id === actorId) throw bad('you cannot delete yourself');
+  const u = await one<{ username: string; name: string }>(db, `SELECT username, name FROM users WHERE id = ? AND deleted_at IS NULL`, id);
+  if (!u) throw notFound();
+  await batch(db, [
+    db.prepare(`UPDATE users SET deleted_at = ?, active = 0, first_pw = NULL, username = ? WHERE id = ?`).bind(new Date().toISOString(), `deleted.${id}.${u.username}`, id),
+    db.prepare(`DELETE FROM sessions WHERE user_id = ?`).bind(id),
+    db.prepare(`DELETE FROM user_roles WHERE user_id = ?`).bind(id),
+    db.prepare(`UPDATE nodes SET manager_user_id = NULL WHERE manager_user_id = ?`).bind(id),
+    db.prepare(`UPDATE month_nodes SET manager_user_id = NULL WHERE manager_user_id = ?`).bind(id),
+    auditStatement(db, actorId, 'user.delete', {}, { id, username: u.username, name: u.name }),
+  ]);
+  return { ok: true };
+}
+
+const POSITIONS_KEY = 'positions_json';
+
+/** Positions the admin added (besides Supervisor, Manager, Head of Department, KAM, KAE, CD, Admin). */
+export async function getPositions(db: D1Database): Promise<string[]> {
+  const r = await one<{ value: string }>(db, `SELECT value FROM settings WHERE key = ?`, POSITIONS_KEY);
+  try {
+    const v = r ? JSON.parse(r.value) : [];
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function setPositions(db: D1Database, actorId: number, body: Obj): Promise<{ positions: string[] }> {
+  if (!Array.isArray(body.positions) || body.positions.length > 50) throw bad('positions must be a list of at most 50');
+  const seen = new Set<string>();
+  const positions: string[] = [];
+  for (const p of body.positions) {
+    if (typeof p !== 'string' || !p.trim() || p.trim().length > 60) throw bad('each position must be a text of 1 to 60 characters');
+    const k = p.trim().toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    positions.push(p.trim());
+  }
+  await batch(db, [
+    db.prepare(`INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).bind(POSITIONS_KEY, JSON.stringify(positions)),
+    auditStatement(db, actorId, 'positions.set', {}, { positions }),
+  ]);
+  return { positions };
+}
+
+export type KaLink = { kaDeptId: number; opsDeptId: number | null };
+
+export async function listKaLinks(db: D1Database): Promise<KaLink[]> {
+  return all<KaLink>(db, `SELECT id AS kaDeptId, ops_dept_id AS opsDeptId FROM departments WHERE workspace = 'ka' ORDER BY sort, code`);
+}
+
+/**
+ * Links a Key Account department to the Operation department its target is
+ * built on. The Key Account Head (MDM) is the Operation Head: the top node of
+ * the Key Account department gets the Operation Head's account.
+ */
+export async function setKaLink(db: D1Database, actorId: number, kaDeptId: number, body: Obj): Promise<KaLink> {
+  const ka = await one<{ id: number }>(db, `SELECT id FROM departments WHERE id = ? AND workspace = 'ka'`, kaDeptId);
+  if (!ka) throw notFound();
+  const raw = body.opsDeptId;
+  let opsDeptId: number | null = null;
+  if (raw !== null && raw !== undefined && raw !== '') {
+    if (typeof raw !== 'number' || !Number.isInteger(raw)) throw bad('opsDeptId must be a department id');
+    const ops = await one<{ id: number }>(db, `SELECT id FROM departments WHERE id = ? AND workspace = 'ops'`, raw);
+    if (!ops) throw bad('opsDeptId must be an Operation department');
+    opsDeptId = raw;
+  }
+  const head = opsDeptId === null ? null
+    : (await one<{ u: number | null }>(db, `SELECT manager_user_id AS u FROM nodes WHERE dept_id = ? AND parent_id IS NULL`, opsDeptId))?.u ?? null;
+  await batch(db, [
+    db.prepare(`UPDATE departments SET ops_dept_id = ? WHERE id = ?`).bind(opsDeptId, kaDeptId),
+    ...(head !== null ? [
+      db.prepare(`UPDATE nodes SET manager_user_id = ? WHERE dept_id = ? AND parent_id IS NULL`).bind(head, kaDeptId),
+      db.prepare(`UPDATE month_nodes SET manager_user_id = ? WHERE dept_id = ? AND node_id = (SELECT id FROM nodes WHERE dept_id = ? AND parent_id IS NULL)`).bind(head, kaDeptId, kaDeptId),
+    ] : []),
+    auditStatement(db, actorId, 'dept.ka_link', {}, { kaDeptId, opsDeptId, headUserId: head }),
+  ]);
+  return { kaDeptId, opsDeptId };
 }

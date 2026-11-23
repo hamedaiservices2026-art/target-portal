@@ -19,7 +19,9 @@ const ws = (w?: string) => (w === 'ka' ? tc('wsKa') : tc('wsOps'));
 export function roleText(r: AccountRole): string {
   if (r.kind === 'admin') return tc('urAdmin');
   if (r.kind === 'cd') return `${tc('ppCd')} · ${ws(r.ws)}`;
-  const pos = r.kind === 'head' ? tc('ppHead') : r.kind === 'manager' ? tc('ppManager') : tc('ppSupervisor');
+  // Key Accounts: the manager level is the KAM, the level under it the KAE.
+  const ka = r.ws === 'ka';
+  const pos = r.kind === 'head' ? (ka ? tc('urKaHead') : tc('ppHead')) : r.kind === 'manager' ? (ka ? 'KAM' : tc('ppManager')) : (ka ? 'KAE' : tc('ppSupervisor'));
   return `${pos} · ${r.dept ?? '—'}`;
 }
 const STATUS: Record<AccountDto['status'], [string, string]> = {
@@ -34,28 +36,50 @@ function newPassword(): string {
   return Array.from(a, (x, i) => (i < 4 ? L[x % L.length] : D[x % D.length])).join('');
 }
 
-type Kind = 'cd' | 'admin' | 'head' | 'manager' | 'supervisor' | 'other';
-type NodeLite = { id: number; name: string; parent_id: number | null; manager_user_id: number | null };
-const DEPTH: Partial<Record<Kind, number>> = { head: 0, manager: 1, supervisor: 2 };
+type Kind = 'cd' | 'admin' | 'head' | 'manager' | 'supervisor' | 'kam' | 'kae' | 'other' | `custom:${string}`;
+type NodeLite = { id: number; name: string; parent_id: number | null; manager_user_id: number | null; dept_id?: number };
+type DeptLite = { id: number; workspace?: 'ops' | 'ka' };
+/** The hierarchy level each position links to, and in which workspace. */
+const LEVEL: Partial<Record<Kind, { depth: number; ws: 'ops' | 'ka' }>> = {
+  head: { depth: 0, ws: 'ops' }, manager: { depth: 1, ws: 'ops' }, supervisor: { depth: 2, ws: 'ops' },
+  kam: { depth: 1, ws: 'ka' }, kae: { depth: 2, ws: 'ka' },
+};
 
-/** Hierarchy people of one level (Head 0, Manager 1, Supervisor 2+) without an account yet. */
-function openNodes(nodes: NodeLite[], depth: number): NodeLite[] {
+/** Hierarchy people of one level and workspace (Head 0, Manager/KAM 1, Supervisor/KAE 2+) without an account yet. */
+function openNodes(nodes: NodeLite[], depts: DeptLite[], depth: number, wsWanted: 'ops' | 'ka'): NodeLite[] {
   const byId = new Map(nodes.map((n) => [n.id, n]));
+  const wsOf = new Map(depts.map((d) => [d.id, d.workspace ?? 'ops']));
   const depthOf = (n: NodeLite) => { let d = 0; for (let p = n.parent_id; p !== null && d < 20; p = byId.get(p)?.parent_id ?? null) d++; return d; };
-  return nodes.filter((n) => n.manager_user_id === null && (depth === 2 ? depthOf(n) >= 2 : depthOf(n) === depth)).sort((a, b) => a.name.localeCompare(b.name));
+  return nodes.filter((n) => n.manager_user_id === null && (wsOf.get(n.dept_id ?? 0) ?? 'ops') === wsWanted && (depth === 2 ? depthOf(n) >= 2 : depthOf(n) === depth))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function AddAccount({ taken, onDone }: { taken: Set<string>; onDone: (msg: string) => void }) {
+function AddAccount({ taken, positions, onPositions, onDone }: { taken: Set<string>; positions: string[]; onPositions: (p: string[]) => void; onDone: (msg: string) => void }) {
   useLang();
   const nodesRes = useResource<{ nodes: NodeLite[] }>('/api/admin/nodes');
+  const deptRes = useResource<{ departments: DeptLite[] }>('/api/admin/departments');
+  const [newPos, setNewPos] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [username, setUsername] = useState('');
   const [kind, setKind] = useState<Kind>('supervisor');
   const [nodeId, setNodeId] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const depth = DEPTH[kind];
-  const choices = depth === undefined ? [] : openNodes(nodesRes.data?.nodes ?? [], depth);
+  const level = LEVEL[kind];
+  const depth = level?.depth;
+  const choices = level === undefined ? [] : openNodes(nodesRes.data?.nodes ?? [], deptRes.data?.departments ?? [], level.depth, level.ws);
+  async function addPosition() {
+    const v = (newPos ?? '').trim();
+    if (!v) return;
+    try {
+      const r = await api<{ positions: string[] }>('PUT', '/api/admin/positions', { positions: [...positions, v] });
+      onPositions(r.positions);
+      setKind(`custom:${v}`);
+      setNewPos(null);
+    } catch (x) {
+      setErr(errText(x));
+    }
+  }
   function pickNode(v: string) {
     setNodeId(v);
     const n = choices.find((x) => String(x.id) === v);
@@ -70,7 +94,8 @@ function AddAccount({ taken, onDone }: { taken: Set<string>; onDone: (msg: strin
     setBusy(true);
     try {
       const pw = newPassword();
-      const { user } = await api<{ user: { id: number } }>('POST', '/api/admin/users', { username: u, name: name.trim(), role: kind === 'admin' ? 'admin' : 'manager', password: pw });
+      const position = kind.startsWith('custom:') ? kind.slice(7) : kind === 'other' ? tc('urOther') : null;
+      const { user } = await api<{ user: { id: number } }>('POST', '/api/admin/users', { username: u, name: name.trim(), role: kind === 'admin' ? 'admin' : 'manager', password: pw, ...(position ? { position } : {}) });
       if (kind === 'cd') await api('PUT', `/api/admin/users/${user.id}/cd`, { cd: ['ops', 'ka'] });
       if (nodeId && depth !== undefined) await api('PATCH', `/api/admin/nodes/${nodeId}`, { managerUserId: user.id });
       onDone(tc('urCreated', { u, pw }));
@@ -88,10 +113,22 @@ function AddAccount({ taken, onDone }: { taken: Set<string>; onDone: (msg: strin
           <option value="supervisor">{tc('ppSupervisor')}</option>
           <option value="manager">{tc('ppManager')}</option>
           <option value="head">{tc('ppHead')}</option>
+          <option value="kam">{tc('urKam')}</option>
+          <option value="kae">{tc('urKae')}</option>
           <option value="other">{tc('urOther')}</option>
+          {positions.map((p) => <option key={p} value={`custom:${p}`}>{p}</option>)}
           <option value="cd">{tc('ppCd')}</option>
           <option value="admin">{tc('urAdmin')}</option>
         </select></label>
+        {newPos === null
+          ? <button type="button" class="btn link" data-testid="add-position" onClick={() => setNewPos('')}>{tc('urAddPosition')}</button>
+          : (
+            <span class="toolbar">
+              <input aria-label={tc('urNewPosition')} placeholder={tc('urNewPosition')} value={newPos} onInput={(e) => setNewPos(e.currentTarget.value)} />
+              <button type="button" class="btn" onClick={() => void addPosition()}>{tc('urAddIt')}</button>
+              <button type="button" class="btn link" onClick={() => setNewPos(null)}>{tc('cancel')}</button>
+            </span>
+          )}
         {depth !== undefined && (
           <label>{tc('urLinkTo')} <select value={nodeId} data-testid="add-node" onChange={(e) => pickNode(e.currentTarget.value)}>
             <option value="">{tc('urNoLink')}</option>
@@ -175,6 +212,10 @@ export function Users() {
   const [arm, setArm] = useState<number | null>(null);
   const [setting, setSetting] = useState<number | null>(null);
   const [editing, setEditing] = useState<number | null>(null);
+  const [armDel, setArmDel] = useState<number | null>(null);
+  const posRes = useResource<{ positions: string[] }>('/api/admin/positions');
+  const [positions, setPositions] = useState<string[] | null>(null);
+  const posList = positions ?? posRes.data?.positions ?? [];
   const [adding, setAdding] = useState(false);
   const [sync, setSync] = useState<{ done: number; left: number } | null>(null);
   const [made, setMade] = useState<string[][]>([]);
@@ -200,6 +241,7 @@ export function Users() {
     const r = await api<{ password: string }>('POST', `/api/admin/users/${a.id}/password`, {});
     return tc('urResetDone', { u: a.username, pw: r.password });
   });
+  const remove = (a: AccountDto) => act(async () => { await api('DELETE', `/api/admin/users/${a.id}`); setArmDel(null); return tc('urDeleted', { u: a.username }); });
   const unlock = (a: AccountDto) => act(async () => { await api('POST', `/api/admin/users/${a.id}/unlock`, {}); return tc('urUnlocked', { u: a.username }); });
   const toggle = (a: AccountDto) => act(async () => {
     await api('PATCH', `/api/admin/users/${a.id}`, { active: !a.active });
@@ -264,7 +306,7 @@ export function Users() {
             <button type="button" class="btn" onClick={() => setAdding(!adding)}>{tc('urAddTitle')}</button>
             <button type="button" class="btn" data-testid="dl-logins" onClick={downloadLogins}>{tc('urDownload')}</button>
           </div>
-          {adding && <AddAccount taken={new Set(accounts.map((a) => a.username))} onDone={(m) => { setAdding(false); setFlash({ ok: true, text: m }); res.reload(); }} />}
+          {adding && <AddAccount taken={new Set(accounts.map((a) => a.username))} positions={posList} onPositions={setPositions} onDone={(m) => { setAdding(false); setFlash({ ok: true, text: m }); res.reload(); }} />}
           <div class="tablewrap" style={{ maxHeight: '620px' }}>
             <table class="ad-table">
               <thead><tr>
@@ -279,7 +321,8 @@ export function Users() {
                       <tr key={a.id} data-testid="user-row">
                         <td><b>{a.name}</b></td>
                         <td><code>{a.username}</code></td>
-                        <td>{a.roles.length ? a.roles.map((r, i) => <span key={i} class={`status ${r.kind === 'admin' ? 'ok' : 'muted'}`} style={{ margin: '1px' }}>{roleText(r)}</span>) : '—'}</td>
+                        <td>{a.roles.length ? a.roles.map((r, i) => <span key={i} class={`status ${r.kind === 'admin' ? 'ok' : 'muted'}`} style={{ margin: '1px' }}>{roleText(r)}</span>) : a.position ? null : '—'}
+                          {a.position && <span class="status muted" style={{ margin: '1px' }}>{a.position}</span>}</td>
                         <td><span class={`status ${STATUS[a.status][1]}`} data-testid="user-status">{statusText(a.status)}</span></td>
                         <td>{a.firstPw ? <code data-testid="first-pw">{a.firstPw}</code> : <span class="muted">{tc('urChangedByUser')}</span>}</td>
                         <td class="muted">{a.lastLogin ? fmtDateTime(a.lastLogin, lang) : '—'}</td>
@@ -291,6 +334,9 @@ export function Users() {
                           <button type="button" class="btn link" onClick={() => { setEditing(editing === a.id ? null : a.id); setSetting(null); }}>{tc('urEdit')}</button>
                           <button type="button" class="btn link" onClick={() => { setSetting(setting === a.id ? null : a.id); setEditing(null); }}>{tc('urChangePw')}</button>
                           {!self && <button type="button" class={`btn link${a.active ? ' danger' : ''}`} onClick={() => void toggle(a)}>{a.active ? t('adDisable') : t('adEnable')}</button>}
+                          {!self && (armDel === a.id
+                            ? <button type="button" class="btn link danger" data-testid="confirm-delete" onClick={() => void remove(a)}>{tc('urConfirmDelete')}</button>
+                            : <button type="button" class="btn link danger" onClick={() => setArmDel(a.id)}>{tc('urDelete')}</button>)}
                         </td>
                       </tr>
                       {editing === a.id && (

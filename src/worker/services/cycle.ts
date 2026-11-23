@@ -23,6 +23,9 @@ const MAX_VALUE = 1_000_000_000;
 /** calc_json is limited well below D1's 2 MB per value. */
 const MAX_CALC_JSON = 1_800_000;
 
+export const NT_MODES = ['aop', 'pack', 'dept', 'leaf', 'ops'] as const;
+export type NtMode = (typeof NT_MODES)[number];
+
 export type CdStatus = 'draft' | 'with_cd' | 'submitted' | 'returned';
 export type HeadStatus = 'draft' | 'pending' | 'approved' | 'returned';
 
@@ -33,8 +36,16 @@ export type CycleSettings = {
   deadlines: { head: string | null; manager: string | null; supervisor: string | null };
   /** Months averaged for the splits (default: the 3 before the target month). */
   avgMonths: string[];
-  /** Step 2 option: New Target by pack, by pack & department, or (Key Accounts) by pack, KAM & KAE. */
-  ntMode: 'pack' | 'dept' | 'leaf';
+  /**
+   * Step 2 option: New Target from the AOP of the month, by pack, by pack &
+   * department, (Key Accounts) by pack, KAM & KAE, or (Key Accounts) from the
+   * Operation target of the linked departments (MT, Non Retail) plus an uplift.
+   */
+  ntMode: NtMode;
+  /** Key Accounts: the admin's note on the previous targets (for reference in the calculation). */
+  note?: string;
+  /** Key Accounts: the uplift over the Operation target, from and to (%). */
+  uplift?: { min: number; max: number };
   /**
    * The CAP % nobody may exceed when they change a target (the Commercial
    * Director's New Target per pack, and every level's distribution). Saving
@@ -193,6 +204,10 @@ export async function getCycle(db: D1Database, user: SessionUser, ws: Workspace,
     }));
   if (!full && headList.length === 0 && !m) throw forbidden();
   const settings = c ? { ...defaultSettings(period), ...parseJson<CycleSettings>(c.settings_json) } : defaultSettings(period);
+  if (ws === 'ka') {
+    settings.cdStep = false;
+    if (!c) settings.ntMode = 'ops';
+  }
   return {
     ws, period, settings,
     cdStatus: c?.cd_status ?? 'draft',
@@ -232,8 +247,23 @@ function parseSettings(body: Obj, period: string): CycleSettings {
     s.cdStep = body.cdStep;
   }
   if (body.ntMode !== undefined) {
-    if (body.ntMode !== 'pack' && body.ntMode !== 'dept' && body.ntMode !== 'leaf') throw bad('ntMode must be pack, dept or leaf');
-    s.ntMode = body.ntMode;
+    if (!(NT_MODES as readonly unknown[]).includes(body.ntMode)) throw bad(`ntMode must be one of ${NT_MODES.join(', ')}`);
+    s.ntMode = body.ntMode as NtMode;
+  }
+  if (body.note !== undefined && body.note !== null) {
+    if (typeof body.note !== 'string') throw bad('note must be a text');
+    s.note = body.note.slice(0, 2000);
+  }
+  if (body.uplift !== undefined && body.uplift !== null) {
+    const u = body.uplift as Obj;
+    const pct = (v: unknown, f: string) => {
+      if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > 100) throw bad(`uplift.${f} must be a number from 0 to 100`);
+      return v;
+    };
+    const min = pct(u?.min, 'min');
+    const max = pct(u?.max, 'max');
+    if (min > max) throw bad('uplift.min must not be above uplift.max');
+    s.uplift = { min, max };
   }
   if (body.capPct !== undefined) {
     if (body.capPct !== null && (typeof body.capPct !== 'number' || !Number.isFinite(body.capPct) || body.capPct < 0 || body.capPct > 100)) {
@@ -275,6 +305,11 @@ export async function saveSettings(db: D1Database, actorId: number, ws: Workspac
   const cur = await cycleRow(db, ws, period);
   const merged = { ...(cur ? parseJson<Obj>(cur.settings_json) ?? {} : {}), ...body };
   const settings = parseSettings(merged, period);
+  // Key Accounts do not go to the Commercial Director: the target is built from the Operation target.
+  if (ws === 'ka') {
+    settings.cdStep = false;
+    if (!cur && body.ntMode === undefined) settings.ntMode = 'ops';
+  }
   const now = new Date().toISOString();
   const caps = body.capPct !== undefined ? await capStatements(db, settings.capPct) : [];
   if (!cur) {
@@ -443,7 +478,7 @@ export async function setDeptTarget(db: D1Database, actorId: number, ws: Workspa
   const period = parseMonth(periodRaw, 'period');
   const c = await requireCycle(db, ws, period);
   const settings = parseJson<CycleSettings>(c.settings_json) ?? defaultSettings(period);
-  if (settings.cdStep) throw conflict('the Commercial Director step is on: the department target comes from the CD');
+  if (settings.cdStep && ws !== 'ka') throw conflict('the Commercial Director step is on: the department target comes from the CD');
   const raw = body.dept;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw bad('dept must be an object of department id to packs');
   const ids = new Set((await all<{ id: number }>(db, `SELECT id FROM departments WHERE workspace = ?`, ws)).map((d) => String(d.id)));
@@ -536,7 +571,7 @@ export async function sendToHead(db: D1Database, actorId: number, ws: Workspace,
   await deptOfWs(db, ws, deptId);
   const c = await requireCycle(db, ws, period);
   const settings = parseJson<CycleSettings>(c.settings_json) ?? defaultSettings(period);
-  if (settings.cdStep && c.cd_status !== 'submitted') throw conflict('the Commercial Director has not submitted the split yet');
+  if (settings.cdStep && ws !== 'ka' && c.cd_status !== 'submitted') throw conflict('the Commercial Director has not submitted the split yet');
   const head = await one<{ status: HeadStatus }>(db, `SELECT status FROM head_approvals WHERE period = ? AND dept_id = ?`, period, deptId);
   if (head && (head.status === 'pending' || head.status === 'approved')) throw conflict(`already ${head.status}: restart the channel first`);
   const calcRow = await one<{ j: string | null }>(db,

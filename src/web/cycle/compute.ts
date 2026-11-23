@@ -171,8 +171,12 @@ export type DeptSplitResult = { dm: Record<string, Record<string, Grid>>; basis:
  */
 export function defaultDeptSplit(args: {
   period: Month; nt: Grid; org: Org; sales: RouteMonthData; avgMonths: Month[]; deptChannel: ChannelHist; uploadedByChannel?: Record<string, Grid> | null;
+  /** Split by the average previous department & channel targets of the months (when uploaded), before the sales. */
+  byPrevTarget?: boolean;
 }): DeptSplitResult {
   const { period, nt, org, sales, avgMonths, deptChannel } = args;
+  const prevMonths = args.byPrevTarget ? prevTargetMonths(deptChannel, avgMonths) : [];
+  const prevChan = (c: string, p: string) => (prevMonths.length ? prevMonths.reduce((s2, m) => s2 + (deptChannel[m]?.[c]?.[p] ?? 0), 0) / prevMonths.length : 0);
   const cats = catMap(org);
   const idx = routeIndex(org);
   const depts = org.depts.map((d) => String(d.id));
@@ -203,6 +207,24 @@ export function defaultDeptSplit(args: {
   for (const [pack, target] of Object.entries(nt)) {
     const cat = cats.get(pack) ?? 'LRB-Others';
     const w = (f: (d: string) => number) => Object.fromEntries(depts.map((d) => [d, f(d)]));
+    // The previous targets by department & channel (average of the months picked) set the shares.
+    if (prevMonths.length) {
+      const chansOf = (d: string) => channelsOf(org, Number(d));
+      const dw = w((d) => chansOf(d).reduce((s2, c) => s2 + prevChan(c, pack), 0));
+      if (depts.some((d) => (dw[d] ?? 0) > 0)) {
+        const alloc = splitByWeights(target, depts, dw);
+        for (const d of depts) {
+          const chans = chansOf(d);
+          const amount = alloc[d] ?? 0;
+          const cw = Object.fromEntries(chans.map((c) => [c, prevChan(c, pack)]));
+          const byChan = chans[0] === NO_CHANNEL ? { [NO_CHANNEL]: amount }
+            : chans.some((c) => (cw[c] ?? 0) > 0) ? splitByWeights(amount, chans, cw) : { [chans[0]!]: amount };
+          for (const [c, n] of Object.entries(byChan)) (dm[d]![c] ??= {})[pack] = n;
+        }
+        basis[pack] = 'prev_target';
+        continue;
+      }
+    }
     const catAvg = (d: string) => {
       let s = 0;
       for (const p of Object.keys(nt)) if (cats.get(p) === cat) s += avgOf(byDept, d, p, avgMonths);
@@ -238,6 +260,11 @@ export function defaultDeptSplit(args: {
     }
   }
   return { dm, basis };
+}
+
+/** The months of the list that have previous department & channel targets uploaded. */
+export function prevTargetMonths(deptChannel: ChannelHist, months: Month[]): Month[] {
+  return months.filter((m) => deptChannel[m] && Object.keys(deptChannel[m]!).length > 0);
 }
 
 /** Department total of a pack across its channels. */

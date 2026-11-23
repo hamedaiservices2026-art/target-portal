@@ -170,11 +170,45 @@ export function newTargetByDept(org: Org, period: string): Promise<void> {
   return save(`new_target_by_pack_and_department_${period}.xlsx`, [channelGridSheet(org, 'New target', null)]);
 }
 
-/** Step 7: department & channel targets, one sheet per month (here: PAGO). */
+/** Previous targets by department: one sheet per month (named like "Oct-26"), the 3 months before the target month. */
 export function deptChannelTargets(org: Org, period: string): Promise<void> {
-  const pm = addMonths(period, -1);
-  const name = new Date(`${pm}-01T00:00:00Z`).toLocaleString('en-US', { month: 'short', timeZone: 'UTC' });
-  return save(`department_channel_targets.xlsx`, [channelGridSheet(org, `${name}-${pm.slice(2, 4)}`, null)]);
+  const sheets = [-3, -2, -1].map((k) => {
+    const m = addMonths(period, k);
+    const name = new Date(`${m}-01T00:00:00Z`).toLocaleString('en-US', { month: 'short', timeZone: 'UTC' });
+    return channelGridSheet(org, `${name}-${m.slice(2, 4)}`, null);
+  });
+  return save(`all_department_targets.xlsx`, sheets);
+}
+
+/** Key Accounts: the KAE lines (MDM, KAM, KAE with their IDs as far as the hierarchy knows them). */
+function kaLines(org: Org): { mdm: string; kam: string; kae: string; id: string }[] {
+  return routeLines(org).map((l) => ({ mdm: l.path[0] ?? l.dept, kam: l.path[1] ?? '', kae: l.path[2] ?? l.path[1] ?? '', id: l.route }));
+}
+
+/** Key Accounts sales by month (the layout of "Key Account Sales By month"): one row per month, KAE and pack. */
+export function kaSales(org: Org, period: string): Promise<void> {
+  const months = [-3, -2, -1].map((k) => addMonths(period, k));
+  const packs = templatePacks(org);
+  const lines = kaLines(org);
+  const rows: Cell[][] = [];
+  for (const m of months) for (const l of lines.length ? lines : [{ mdm: '', kam: '', kae: '', id: '' }]) {
+    for (const p of packs) rows.push([num(Number(m.slice(0, 4))), str(m), str(l.mdm), null, str(l.kam), null, str(l.kae), str(l.id), str(productCategory(p.grp)), str(p.code), num(0)]);
+  }
+  const head = ['Year', 'Year Month', 'MDM Name', 'MDM ID', 'KAM Name', 'KAM ID', 'KAE Name', 'KAE ID', 'Product Category', 'Sales Target Category', 'Total Invoiced Cases'];
+  return save('key_account_sales_by_month.xlsx', [{ sheet: 'Sheet1', data: [[null], head.map(bold), ...rows] }]);
+}
+
+/** Key Accounts previous targets (the layout of "Key Account Target By month"): one row per month, KAE and pack. */
+export function kaPrevTargets(org: Org, period: string): Promise<void> {
+  const months = [-3, -2, -1].map((k) => addMonths(period, k));
+  const packs = templatePacks(org);
+  const lines = kaLines(org);
+  const rows: Cell[][] = [];
+  for (const m of months) for (const l of lines.length ? lines : [{ mdm: '', kam: '', kae: '', id: '' }]) {
+    for (const p of packs) rows.push([str(m), str(l.mdm), null, str(l.kam), null, str(l.kae), str(l.id), str(productCategory(p.grp)), str(p.code), num(0)]);
+  }
+  const head = ['Year Month', 'MDM Name', 'MDM ID', 'KAM Name', 'KAM ID', 'KAE Name', 'KAE ID', 'Product Category', 'Target Category', 'MD Target Cases'];
+  return save('key_account_target_by_month.xlsx', [{ sheet: 'Sheet1', data: [[null], head.map(bold), ...rows] }]);
 }
 
 /** Step 2C (Key Accounts): Period, KAM, KAE ID, Sales Target Category, Cases: every KAE x every pack. */

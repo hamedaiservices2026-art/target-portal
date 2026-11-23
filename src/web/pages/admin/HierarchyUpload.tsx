@@ -12,13 +12,13 @@ import { errText, TreeChangeBanner, type TreeChange } from '../../components/Adm
 import { readSheet, writeXlsx } from '../../excel';
 import { fmtNum, useLang } from '../../i18n';
 import { tc } from '../../cycle/i18n';
-import { HIERARCHY_COLUMNS, parseHierarchySheet, type HierarchyRow as Row } from '../../cycle/hierarchyFile';
+import { HIERARCHY_COLUMNS, KA_HIERARCHY_COLUMNS, parseHierarchySheet, type HierarchyRow as Row } from '../../cycle/hierarchyFile';
 
 type State =
   | { kind: 'idle' }
   | { kind: 'busy' }
   | { kind: 'error'; message: string }
-  | { kind: 'preview'; file: string; rows: Row[]; plan: SyncPlan; depts: Record<string, number | 'new'> }
+  | { kind: 'preview'; file: string; rows: Row[]; plan: SyncPlan; depts: Record<string, number | 'new'>; ka: boolean }
   | { kind: 'done'; file: string; plan: SyncPlan; change: TreeChange | null };
 
 export function HierarchyUpload({ depts, onApplied }: { depts: DepartmentDto[]; onApplied: () => void }) {
@@ -42,13 +42,18 @@ export function HierarchyUpload({ depts, onApplied }: { depts: DepartmentDto[]; 
       ['string', 'string', 'string', 'string', 'string']);
   }
 
-  async function preview(rows: Row[], file: string, chosen: Record<string, number | 'new'>) {
+  async function preview(rows: Row[], file: string, chosen: Record<string, number | 'new'>, ka = false) {
     setSt({ kind: 'busy' });
     try {
-      const plan = await api<SyncPlan>('POST', '/api/admin/hierarchy/sync/preview', { rows, depts: chosen });
+      let plan = await api<SyncPlan>('POST', '/api/admin/hierarchy/sync/preview', { rows, depts: chosen });
       const picked = { ...chosen };
       for (const h of plan.heads) if (h.deptId !== null && picked[h.head] === undefined) picked[h.head] = h.deptId;
-      setSt({ kind: 'preview', file, rows, plan, depts: picked });
+      // Key Account file: an MDM with no department yet becomes a new Key Account department.
+      if (ka && plan.heads.some((h) => h.deptId === null && picked[h.head] === undefined)) {
+        for (const h of plan.heads) if (h.deptId === null && picked[h.head] === undefined) picked[h.head] = 'new';
+        plan = await api<SyncPlan>('POST', '/api/admin/hierarchy/sync/preview', { rows, depts: picked });
+      }
+      setSt({ kind: 'preview', file, rows, plan, depts: picked, ka });
     } catch (x) {
       setSt({ kind: 'error', message: errText(x) });
     }
@@ -68,14 +73,14 @@ export function HierarchyUpload({ depts, onApplied }: { depts: DepartmentDto[]; 
     }
     const parsed = parseHierarchySheet(sheet);
     if (parsed.error) return setSt({ kind: 'error', message: parsed.error === 'no_header' ? tc('hsNoHeader') : tc('hsEmpty') });
-    await preview(parsed.rows, f.name, {});
+    await preview(parsed.rows, f.name, {}, parsed.ka);
   }
 
   async function apply() {
     if (st.kind !== 'preview') return;
     setSt({ kind: 'busy' });
     try {
-      const out = await api<SyncPlan & { treeChange: TreeChange | null }>('POST', '/api/admin/hierarchy/sync/apply', { rows: st.rows, depts: st.depts });
+      const out = await api<SyncPlan & { treeChange: TreeChange | null }>('POST', '/api/admin/hierarchy/sync/apply', { rows: st.rows, depts: st.depts, ...(st.ka ? { workspace: 'ka' } : {}) });
       setSt({ kind: 'done', file: st.file, plan: out, change: out.treeChange });
       onApplied();
     } catch (x) {
@@ -93,6 +98,7 @@ export function HierarchyUpload({ depts, onApplied }: { depts: DepartmentDto[]; 
       <p class="small muted">{tc('hsColumns')} {HIERARCHY_COLUMNS.map((c, i) => <><b>{c}</b>{i < HIERARCHY_COLUMNS.length - 1 ? ', ' : '. '}</>)}{tc('hsColumnsHelp')}</p>
       <div class="actions">
         <button type="button" class="btn" onClick={() => void template().catch((x) => setSt({ kind: 'error', message: errText(x) }))}>{tc('hsTemplate')}</button>
+        <button type="button" class="btn" onClick={() => void writeXlsx('key_account_hierarchy.xlsx', [...KA_HIERARCHY_COLUMNS], [['MDM name', '41232', 'KAM name', '41455', 'KAE name', '41461']], ['string', 'string', 'string', 'string', 'string', 'string'])}>{tc('hsKaTemplate')}</button>
         <span class="filepick">
           <input id="hier-file" type="file" class="visually-hidden" data-testid="hier-file" onChange={onFile}
             accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" disabled={st.kind === 'busy'} />
@@ -112,6 +118,7 @@ export function HierarchyUpload({ depts, onApplied }: { depts: DepartmentDto[]; 
       {plan && (
         <>
           {st.kind === 'preview' && <p class="small"><b>{st.file}</b>: {tc('hsRead', { n: fmtNum(plan.rows), heads: plan.heads.length })}</p>}
+          {st.kind === 'preview' && st.ka && <p class="banner info small" data-testid="hier-ka">{tc('hsKaFile')}</p>}
           <div class="tablewrap"><table class="ad-table cy-table" data-testid="hier-plan">
             <thead><tr>
               <th>{tc('lvHead')}</th><th>{tc('hsDepartment')}</th>
@@ -125,7 +132,7 @@ export function HierarchyUpload({ depts, onApplied }: { depts: DepartmentDto[]; 
                 <td>
                   {st.kind === 'preview' ? (
                     <select aria-label={`${tc('hsDepartment')} ${h.head}`} value={st.depts[h.head] ?? ''}
-                      onChange={(e) => { const v = e.currentTarget.value; const next = { ...st.depts }; if (v === 'new') next[h.head] = 'new'; else if (v) next[h.head] = Number(v); else delete next[h.head]; void preview(st.rows, st.file, next); }}>
+                      onChange={(e) => { const v = e.currentTarget.value; const next = { ...st.depts }; if (v === 'new') next[h.head] = 'new'; else if (v) next[h.head] = Number(v); else delete next[h.head]; void preview(st.rows, st.file, next, st.ka); }}>
                       <option value="">{tc('hsPickDept')}</option>
                       <option value="new">{tc('hsNewDept', { name: h.head })}</option>
                       {depts.map((d) => <option key={d.id} value={d.id}>{`${d.code} — ${d.name}`}</option>)}

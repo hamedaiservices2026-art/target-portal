@@ -65,7 +65,7 @@ export function findHeader(rows: unknown[][], spec: Record<string, string[]>, re
   return null;
 }
 
-const PACK_NAMES = ['Sales Target Category', 'Pack', 'Pack Code', 'Category'];
+const PACK_NAMES = ['Sales Target Category', 'Target Category', 'Pack', 'Pack Code', 'Category'];
 const ROUTE_NAMES = ['Route Code', 'Route', 'KAE ID', 'KAE', 'KAM ID', 'KAM', 'KAE / KAM ID'];
 
 function unknownPacksCheck(unknown: Set<string>): Check[] {
@@ -182,6 +182,18 @@ export function parseChannelGrid(rows: unknown[][], channels: string[], idx: Pac
     else if (k === 'abc') abcCol = i;
     else if (k.startsWith('total') && groupChannels.has(k.slice(5))) totalCols.push([i, groupChannels.get(k.slice(5))!]);
   });
+  // Older months: "Total MT" with no MT channel columns, or "MT PS" for MT. They count for the channel named
+  // like them (MT) when that channel has no column of its own in the sheet.
+  const present = new Set(chCols.map(([, c]) => c));
+  header.forEach((k, i) => {
+    if (!k || want.has(k) || k === 'abc' || chCols.some(([j]) => j === i) || totalCols.some(([j]) => j === i) || PACK_NAMES.some((n) => squash(n) === k)) return;
+    const stem = k.startsWith('total') ? k.slice(5) : k;
+    const match = channels.filter((c) => stem.startsWith(squash(c))).sort((a, b) => squash(b).length - squash(a).length)[0];
+    if (!match || present.has(match)) return;
+    if (k.startsWith('total') && channels.some((c) => squash(c) !== squash(match) && squash(c).startsWith(squash(match)) && present.has(c))) return;
+    chCols.push([i, match]);
+    present.add(match);
+  });
   const missing = channels.filter((c) => !chCols.some(([, n]) => n === c));
   const unknown = new Map<string, number>();
   const byChannel: Record<string, Record<string, number>> = Object.fromEntries(chCols.map(([, c]) => [c, {}]));
@@ -213,8 +225,10 @@ export function parseChannelGrid(rows: unknown[][], channels: string[], idx: Pac
       if (n === null || Math.round(n) === 0) continue;
       const inGroup = chCols.filter(([j, c]) => list.includes(c) && (cellNumber(r[j]) ?? 0) !== 0);
       if (inGroup.length) continue;
-      const first = list.find((c) => c in byChannel);
+      // The group's first channel with a column; when none of them has one (older months), its first channel.
+      const first = list.find((c) => c in byChannel) ?? list[0];
       if (!first) continue;
+      byChannel[first] ??= {};
       byChannel[first]![code] = (byChannel[first]![code] ?? 0) + Math.round(n);
       rowSum += Math.round(n);
       fromTotals++;
@@ -403,7 +417,7 @@ export function parseSales(rows: unknown[][], idx: PackIndex, knownRoutes?: Set<
     g[pack] = (g[pack] ?? 0) + n;
   };
   const checks: Check[] = [];
-  const long = findHeader(rows, { route: ROUTE_NAMES, pack: PACK_NAMES, period: ['Period', 'Month'], cases: ['Cases', 'Sales', 'Sales Cases', 'Actual'] }, ['route', 'pack', 'period', 'cases']);
+  const long = findHeader(rows, { route: ROUTE_NAMES, pack: PACK_NAMES, period: ['Period', 'Year Month', 'Month'], cases: ['Cases', 'Total Invoiced Cases', 'Invoiced Cases', 'Sales', 'Sales Cases', 'Actual'] }, ['route', 'pack', 'period', 'cases']);
   let layout: 'wide' | 'long' = 'wide';
   if (long) {
     layout = 'long';
@@ -464,8 +478,8 @@ export type PrevTargets = {
 /** Period, Delivery System, Route Code (KA: KAE / KAM), Salesman ID, Sales Target Category, Cases. */
 export function parsePrevTargets(rows: unknown[][], idx: PackIndex): PrevTargets {
   const h = findHeader(rows, {
-    period: ['Period', 'Month'], ds: ['Delivery System', 'DS'], route: ROUTE_NAMES, salesman: ['Salesman ID', 'Salesman', 'Salesman Code'],
-    pack: PACK_NAMES, cases: ['Cases', 'Target', 'Target Cases'],
+    period: ['Period', 'Year Month', 'Month'], ds: ['Delivery System', 'DS'], route: ROUTE_NAMES, salesman: ['Salesman ID', 'Salesman', 'Salesman Code'],
+    pack: PACK_NAMES, cases: ['Cases', 'MD Target Cases', 'Target Cases', 'Target'],
   }, ['period', 'route', 'pack', 'cases']);
   const data: RouteMonthData = {};
   const extra: PrevTargets['extra'] = {};
