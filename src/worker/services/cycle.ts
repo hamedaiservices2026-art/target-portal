@@ -598,7 +598,21 @@ export async function sendToHead(db: D1Database, actorId: number, ws: Workspace,
   // A clean slate for this department (earlier send, returned target) with the live tree.
   await resetDept(db, actorId, m.id, deptId);
 
-  const codes = (JSON.parse(m.packs_json) as { code: string }[]).map((p) => p.code);
+  const snap = JSON.parse(m.packs_json) as { code: string; grp: string; sort: number }[];
+  // Packs turned on after the month was opened: added to the month's pack list now.
+  const wanted = new Set<string>();
+  for (const g of Object.values(calc)) for (const [p, n] of Object.entries(g)) if (n > 0) wanted.add(p);
+  const missing = [...wanted].filter((p) => !snap.some((x) => x.code === p));
+  if (missing.length) {
+    const found = await all<{ code: string; grp: string; sort: number }>(db,
+      `SELECT code, grp, sort FROM packs WHERE code IN (SELECT value FROM json_each(?))`, JSON.stringify(missing));
+    const unknown = missing.filter((p) => !found.some((f) => f.code === p));
+    if (unknown.length) throw conflict(`pack ${unknown.join(', ')} is not in the pack list (Settings › Packs): add it there, or recalculate without it`);
+    snap.push(...found);
+    snap.sort((a, b) => a.sort - b.sort || a.code.localeCompare(b.code));
+    await db.prepare(`UPDATE months SET packs_json = ? WHERE id = ?`).bind(JSON.stringify(snap), m.id).run();
+  }
+  const codes = snap.map((p) => p.code);
   const codeSet = new Set(codes);
   const leaves = await all<{ id: number; node_id: number; route_code: string; delivery_system: string }>(db,
     `SELECT l.id, l.node_id, l.route_code, l.delivery_system FROM leaves l

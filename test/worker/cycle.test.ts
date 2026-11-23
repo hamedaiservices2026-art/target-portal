@@ -148,6 +148,24 @@ describe('target cycle (handover flow)', () => {
     expect((await api('POST', `/admin/cycle/ops/${P}/heads/${tt}/send`, admin)).status).toBe(200);
   });
 
+  it('a pack turned on after the month was opened is added to the month when sending', async () => {
+    await api('PUT', `/admin/cycle/ops/${P}/settings`, admin, {});
+    await run(env.DB, `UPDATE cycles SET cd_status = 'submitted', dept_json = ? WHERE ws = 'ops' AND period = ?`, JSON.stringify({ [tt]: { CSD_CANS150: 10, LIT_CANS320: 4, NOPE: 1 } }), P);
+    expect((await api('PUT', `/admin/cycle/ops/${P}/calc`, admin, { calc: { [tt]: { R1: { CSD_CANS150: 10 } } } })).status).toBe(200);
+    expect((await api('POST', `/admin/cycle/ops/${P}/heads/${tt}/send`, admin)).status).toBe(200);
+    expect((await api('POST', `/admin/cycle/ops/${P}/heads/${tt}/restart`, admin)).status).toBe(200);
+    await run(env.DB, `INSERT INTO packs(code, grp, active) VALUES ('LIT_CANS320', 'LRB-Others', 1)`);
+    expect((await api('PUT', `/admin/cycle/ops/${P}/calc`, admin, { calc: { [tt]: { R1: { CSD_CANS150: 10, LIT_CANS320: 4 } } } })).status).toBe(200);
+    const r = await api('POST', `/admin/cycle/ops/${P}/heads/${tt}/send`, admin);
+    expect(r.status, await r.clone().text()).toBe(200);
+    const m = await one<{ packs_json: string }>(env.DB, `SELECT packs_json FROM months WHERE period = ?`, P);
+    expect(m!.packs_json).toContain('LIT_CANS320');
+    // A pack that is not in the pack list at all is named in the error.
+    expect((await api('POST', `/admin/cycle/ops/${P}/heads/${tt}/restart`, admin)).status).toBe(200);
+    expect((await api('PUT', `/admin/cycle/ops/${P}/calc`, admin, { calc: { [tt]: { R1: { NOPE: 1 } } } })).status).toBe(200);
+    expect((await json(await api('POST', `/admin/cycle/ops/${P}/heads/${tt}/send`, admin))).detail).toMatch(/NOPE is not in the pack list/);
+  });
+
   it('rules settings are admin only and validated', async () => {
     expect((await api('GET', '/admin/rules', other)).status).toBe(403);
     const r = await api('PUT', '/admin/rules', admin, { caps: { head: 3, manager: 4, supervisor: 5 }, rule2: true, rule3: false, exceptions: [{ name: 'R1', pct: 10 }] });
