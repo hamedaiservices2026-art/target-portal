@@ -229,9 +229,13 @@ function SendStep({ ws, period, l, onDone, missing }: { ws: Workspace; period: s
       const [sales, prev] = await Promise.all([loadRouteData(ws, 'sales', cycle.settings.avgMonths), loadRouteData(ws, 'prev_target', months)]);
       const up = nt[period] ?? null;
       const r = startNewTarget(period, { newTarget: up ? { mode: up.mode === 'dept' ? 'dept' : 'pack', byPack: up.byPack, byChannel: up.byChannel } : null, fyTarget: fy, aop, deptChannel: dc, prevTargets: prev.data, sales: sales.data }, cats);
+      if (total(r.nt) === 0) {
+        setErr(tc('sendNoNt', { list: missing.length ? missing.join(' · ') : tc('step2', { period }) }));
+        return;
+      }
       setPreview({ ...r, upload: up });
     } catch (x) {
-      setErr(errText(x));
+      setErr(tc('sendPrepareFailed', { e: errText(x) }));
     } finally {
       setBusy(false);
     }
@@ -246,7 +250,7 @@ function SendStep({ ws, period, l, onDone, missing }: { ws: Workspace; period: s
       setPreview(null);
       onDone();
     } catch (x) {
-      setErr(errText(x));
+      setErr(tc('sendFailed', { e: errText(x) }) + (missing.length ? ` ${tc('sendFailedMissing', { list: missing.join(' · ') })}` : ''));
     } finally {
       setBusy(false);
     }

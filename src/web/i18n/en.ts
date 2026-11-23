@@ -21,6 +21,8 @@ export const en = {
   errNoRoutes: '{node} has no routes, so cases cannot be moved into it. Ask the administrator to add routes, or keep its cases at 0.',
   errNetwork: 'Could not reach the server. Check your connection and try again.',
   errGeneric: 'Something went wrong. Please try again.',
+  errStale: 'Someone changed this in the meantime. Refresh the page and try again.',
+  errForbidden: 'Your account is not allowed to do this.',
 
   langToggle: 'العربية',
   langToggleLabel: 'Switch language to Arabic',

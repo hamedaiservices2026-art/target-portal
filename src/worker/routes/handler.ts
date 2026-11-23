@@ -14,6 +14,9 @@ export const h = (fn: (c: Ctx, db: D1Database, actor: number, body: () => Promis
       return await fn(c, c.env.DB, c.var.user.id, body);
     } catch (e) {
       if (e instanceof ApiError) return c.json(e.body, e.status);
-      throw e;
+      // Anything else: a 500 that still says what failed, so the screen can show it.
+      console.error(e);
+      const detail = e instanceof Error ? e.message.slice(0, 300) : String(e).slice(0, 300);
+      return c.json({ error: 'server_error', detail }, 500);
     }
   };

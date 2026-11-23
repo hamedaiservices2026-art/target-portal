@@ -149,7 +149,7 @@ async function cycleRow(db: D1Database, ws: Workspace, period: string): Promise<
 
 async function requireCycle(db: D1Database, ws: Workspace, period: string): Promise<CycleRow> {
   const c = await cycleRow(db, ws, period);
-  if (!c) throw notFound();
+  if (!c) throw new ApiError(404, { error: 'not_found', detail: `the ${ws === 'ka' ? 'Key Account' : 'Operation'} cycle of ${period} is not open yet: open it in step 1` });
   return c;
 }
 
@@ -340,8 +340,9 @@ export async function sendToCd(db: D1Database, actorId: number, ws: Workspace, p
   const period = parseMonth(periodRaw, 'period');
   const c = await requireCycle(db, ws, period);
   const settings = parseJson<CycleSettings>(c.settings_json) ?? defaultSettings(period);
-  if (!settings.cdStep) throw conflict('the Commercial Director step is off for this cycle');
-  if (c.cd_status !== 'draft' && c.cd_status !== 'returned') throw conflict(`the target is ${c.cd_status}`);
+  if (!settings.cdStep) throw conflict('the Commercial Director step is off in step 1 of this cycle: turn it on, or set the department target without the CD');
+  if (c.cd_status === 'with_cd') throw conflict('the target is already with the Commercial Director: recall it first to send it again');
+  if (c.cd_status === 'submitted') throw conflict('the Commercial Director already submitted the split: recall it first to send it again');
   // The starting New Target per pack (worked out by the browser from the uploads, first source found wins).
   const cd = parseJson<CdWork>(c.cd_json);
   let work: CdWork | null = cd;
@@ -350,7 +351,7 @@ export async function sendToCd(db: D1Database, actorId: number, ws: Workspace, p
     work = { nt, ntOk: false, dm: {}, splitNt: {}, basis: {}, gm: {}, colJ: {}, ...(cd ? { gm: cd.gm, colJ: cd.colJ, avgMonths: cd.avgMonths } : {}) };
     if (cd && JSON.stringify(cd.nt) === JSON.stringify(nt)) work = { ...cd, ntOk: cd.ntOk };
   }
-  if (!work || Object.keys(work.nt).length === 0) throw bad('nt (the New Target per pack) is required the first time');
+  if (!work || Object.keys(work.nt).length === 0) throw bad('there is no New Target per pack yet: complete step 2 (New Target) first');
   const res = await writeBatch(db, [
     updateCycle(db, ws, period, c.version, `cd_status = 'with_cd', cd_comment = NULL, cd_json = ?`, [JSON.stringify(work)]),
     auditStatement(db, actorId, 'cycle.cd_send', {}, { ws, period }),

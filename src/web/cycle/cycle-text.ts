@@ -556,6 +556,10 @@ export const CY = {
   revertBtn: ["Revert the target", "إرجاع الهدف"],
   revertQ: ["Revert {period} to the beginning? The new target, the CD's work, the calculation and the Heads' distribution of this month are cleared. Sales, AOP and previous targets are kept.", "إرجاع {period} إلى البداية؟ سيتم مسح الهدف الجديد وعمل المدير التجاري والحساب وتوزيع رؤساء الأقسام لهذا الشهر. يتم الاحتفاظ بالمبيعات والخطة والأهداف السابقة."],
   revertDone: ["{period} is back at the beginning. Start again with step 1.", "عاد {period} إلى البداية. ابدأ من جديد بالخطوة 1."],
+  sendNoNt: ["There is no New Target to send yet: no step gave a target for this month. Not done yet: {list}.", "لا يوجد هدف جديد للإرسال بعد: لم تعطِ أي خطوة هدفًا لهذا الشهر. لم يكتمل بعد: {list}."],
+  sendPrepareFailed: ["Could not work out the New Target: {e}", "تعذّر حساب الهدف الجديد: {e}"],
+  sendFailed: ["Could not send to the Commercial Director: {e}", "تعذّر الإرسال إلى المدير التجاري: {e}"],
+  sendFailedMissing: ["Steps not done yet: {list}.", "خطوات لم تكتمل بعد: {list}."],
   // Admin › Hierarchy (v16)
   hzIntro: ['Add, move, rename or delete here, or upload the whole hierarchy in one file. Every Channel Head is the top of one department.', 'أضف أو انقل أو أعد التسمية أو احذف هنا، أو ارفع الهيكل كاملًا في ملف واحد. كل رئيس قناة هو أعلى قسم واحد.'],
   hzAdd: ['Add', 'إضافة'],
