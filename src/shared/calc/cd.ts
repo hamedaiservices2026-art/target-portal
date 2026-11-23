@@ -29,6 +29,18 @@ function usesColJ(work: CdWork): boolean {
 }
 
 /**
+ * The CD may change the split freely: once the New Target is approved and a
+ * split exists, each pack's New Target is the sum of its department cells.
+ */
+export function cdReconcile(work: CdWork): CdWork {
+  if (!work.ntOk || usesColJ(work) || Object.keys(work.dm).length === 0) return work;
+  const nt: Record<string, number> = {};
+  for (const p of Object.keys(work.nt)) nt[p] = 0;
+  for (const ch of Object.values(work.dm)) for (const g of Object.values(ch)) for (const [p, n] of Object.entries(g)) nt[p] = (nt[p] ?? 0) + n;
+  return { ...work, nt, splitNt: { ...nt } };
+}
+
+/**
  * Submit check (section 5): New Target approved; split exists and is not
  * stale; every pack of Tab 2 adds up to its New Target; column J per category
  * = the category's New Target (only when column J is used). Returns the reasons it fails (empty = ok).

@@ -89,6 +89,13 @@ test('the whole cycle: CD splits and submits, Admin calculates and sends, the He
   await cd.getByTestId('approve-nt').click();
   await expect(cd.getByTestId('dept-table')).toContainText('CSD_CANS150');
   await expect(cd.getByTestId('month-picker')).toBeVisible();
+  // No Key Account button on the CD screen.
+  await expect(cd.getByRole('button', { name: 'Key Accounts' })).toHaveCount(0);
+  // The CD raises a cell freely: the pack's New Target follows, and the split can still be submitted.
+  const cell = cd.getByLabel('CSD_CANS150 Presell – TT');
+  await cell.fill('500');
+  await cell.press('Tab');
+  await expect(cd.getByTestId('submit-reason')).toHaveCount(0);
   await cd.getByRole('tab', { name: 'vs PAGO sales' }).click();
   await cd.getByRole('button', { name: 'Approve and return to Admin' }).click();
   await expect(cd.getByTestId('cd-status')).toHaveText('Submitted by the Commercial Director');
@@ -110,7 +117,7 @@ test('the whole cycle: CD splits and submits, Admin calculates and sends, the He
   // The Head reviews and distributes first (the turn is open), then approves: the split goes to the managers.
   await cd.goto('/approve');
   const item = cd.getByTestId('approval').filter({ hasText: P });
-  await expect(item).toContainText('40');
+  await expect(item).toContainText('510');
   await expect(item.getByTestId('head-summary')).toBeVisible();
   await expect(item.getByTestId('review-distribute')).toBeVisible();
   await item.getByRole('button', { name: 'Approve and send to managers' }).click();
@@ -118,4 +125,17 @@ test('the whole cycle: CD splits and submits, Admin calculates and sends, the He
   await cd.getByTestId('bell').click();
   await expect(cd.getByRole('dialog', { name: 'Notifications' })).toContainText(P);
   await cdCtx.close();
+});
+
+test('admin sets the department columns of the CD screen', async ({ page }) => {
+  await signIn(page, 'admin', 'admin-pass-123', `/admin/cycle/ops/2031-08`);
+  await page.getByRole('button', { name: 'Open the cycle' }).click();
+  const step = page.getByTestId('dept-columns');
+  await expect(step).toBeVisible();
+  const boxes = step.locator('tbody tr').first().getByRole('checkbox');
+  await boxes.nth(1).check(); // TT Outer
+  await boxes.nth(0).check(); // TT DMM
+  await step.getByTestId('dc-save').click();
+  await expect(step.getByRole('status')).toContainText('Saved');
+  await expect(step.getByTestId('dc-order')).toContainText(/TT DMM · TT Outer · .*Total TT/);
 });

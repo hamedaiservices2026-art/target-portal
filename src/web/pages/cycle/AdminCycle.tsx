@@ -5,6 +5,7 @@ import type { ComponentChildren } from 'preact';
 import { useLocation } from 'preact-iso';
 import { useMemo, useState } from 'preact/hooks';
 import { CATEGORIES } from '../../../shared/calc/packs';
+import { PACK_GROUPS } from '../../../shared/imports';
 import { pago as pagoOf } from '../../../shared/calc/periods';
 import { CalcTab } from './AdminCalc';
 import { WorkflowTab } from './AdminWorkflow';
@@ -14,6 +15,8 @@ import type { CycleDto, CycleSettings } from '../../../worker/services/cycle';
 import type { DataStatus, OrgDto } from '../../../worker/services/cycleData';
 import type { KaLink } from '../../../worker/services/accounts';
 import { KaCalcTab } from './KaCalc';
+import { DeptColumnsStep } from './DeptColumns';
+import { deptColumns, orderedDeptCols } from '../../cycle/deptOrder';
 import { NextStep, type TabId } from './NextStep';
 import type { ExportResult } from '../../../worker/services/export';
 import { api } from '../../api';
@@ -325,9 +328,12 @@ function SendStep({ ws, period, l, onDone }: { ws: Workspace; period: string; l:
     uploaded: tc('srcUploaded'), fy_target: tc('srcFy'), aop_ratio: tc('srcAop'), pago_target: tc('srcPago'), avg_sales: tc('srcAvg'), none: tc('srcNone'),
   };
   // The table shown before sending: every pack with the CD workbook subtotals (and the department split when uploaded by department).
-  const deptCols = preview?.upload?.mode === 'dept' && preview.upload.byChannel
-    ? org.depts.map((d) => ({ id: d.id, name: d.name, g: d.channels.reduce<Grid>((acc, c) => { for (const [p, n] of Object.entries(preview.upload!.byChannel![c.channel] ?? {})) acc[p] = (acc[p] ?? 0) + n; return acc; }, {}) }))
-    : [];
+  // Same columns as the CD screen: TT DMM, TT Outer, Total TT, MT, MT SSV, MT Bulk, Total MT, HoReCa, WS.
+  const byCh = preview?.upload?.mode === 'dept' ? preview.upload.byChannel ?? null : null;
+  const grid = byCh ? deptColumns(orderedDeptCols(org.depts.filter((d) => d.channels.length), '_'), (name) => tc('totalOf', { name })) : null;
+  const deptCols = grid ? grid.flat.map((x) => (x.kind === 'cell'
+    ? { id: `${x.d.id}${x.c}`, name: x.c, head: x.d.name, tot: false, g: byCh![x.c] ?? {} }
+    : { id: `t${x.label}`, name: x.label, head: '', tot: true, g: x.cells.reduce<Grid>((acc, k) => { for (const [p, n] of Object.entries(byCh![k.c] ?? {})) acc[p] = (acc[p] ?? 0) + n; return acc; }, {}) })) : [];
   return (
     <div class={`cy-step${done ? ' done' : ''}`} data-testid="step-6">
       <div class="cy-step-head">
@@ -346,14 +352,17 @@ function SendStep({ ws, period, l, onDone }: { ws: Workspace; period: string; l:
               <p>{tc('ntSource')}: <b>{srcLabel[preview.source]}</b> · {tc('ntTotal')}: <b>{fmtNum(total(preview.nt))}</b>
                 {' · '}{CATEGORIES.map((c) => `${c} ${fmtNum(sumCat(preview.nt, cats, c))}`).join(' · ')}</p>
               <div class="tablewrap cy-tall"><table class="ad-table cy-table" data-testid="nt-preview">
-                <thead><tr><th>{tc('pack')}</th><th>{tc('subCategory')}</th>{deptCols.map((d) => <th key={d.id} class="num">{d.name}</th>)}<th class="num">{tc('newTarget')}</th></tr></thead>
+                <thead>
+                  {grid && <tr><th /><th />{grid.heads.map((h) => (h.kind === 'dept' ? <th key={`h${h.d.id}`} colSpan={h.span} class="grp">{h.d.name}</th> : <th key={`t${h.label}`} />))}<th /></tr>}
+                  <tr><th>{tc('pack')}</th><th>{tc('subCategory')}</th>{deptCols.map((d) => <th key={d.id} class={`num${d.tot ? ' tot' : ''}`}>{d.name}</th>)}<th class="num">{grid ? 'ABC' : tc('newTarget')}</th></tr>
+                </thead>
                 <tbody>{cdRows(Object.keys(preview.nt), cats).map((r) => {
                   const list = r.kind === 'sub' ? r.packs : [r.pack];
                   const sum = (g: Grid) => list.reduce((s, p) => s + (g[p] ?? 0), 0);
                   return (
                     <tr key={r.kind === 'sub' ? r.label : r.pack} class={r.kind === 'sub' ? `sub l${r.level}` : ''}>
                       <td><bdi>{r.kind === 'sub' ? r.label : r.pack}</bdi></td><td class="small muted">{r.kind === 'pack' ? subOf(r.pack) : ''}</td>
-                      {deptCols.map((d) => <td key={d.id} class="num">{fmtNum(sum(d.g))}</td>)}
+                      {deptCols.map((d) => <td key={d.id} class={`num${d.tot ? ' tot' : ''}`}>{fmtNum(sum(d.g))}</td>)}
                       <td class="num"><b>{fmtNum(sum(preview.nt))}</b></td>
                     </tr>
                   );
@@ -388,8 +397,8 @@ function SendStep({ ws, period, l, onDone }: { ws: Workspace; period: string; l:
 // ---------- step 2 with the AOP option: the AOP of the target month, editable ----------
 
 /** The AOP of the target month as the new target by pack: change, delete or add packs, then save. */
-function AopTargetStep({ ws, period, org, saved, locked, modePicker, onSaved }: {
-  ws: Workspace; period: string; org: OrgDto; saved: NtUpload | null; locked: boolean; modePicker: ComponentChildren; onSaved: (msg: string) => void;
+function AopTargetStep({ ws, period, org, saved, locked, modePicker, onSaved, onPacksChanged }: {
+  ws: Workspace; period: string; org: OrgDto; saved: NtUpload | null; locked: boolean; modePicker: ComponentChildren; onSaved: (msg: string) => void; onPacksChanged: () => void;
 }) {
   useLang();
   // Key Accounts use the AOP uploaded in Operation (no second upload).
@@ -403,9 +412,43 @@ function AopTargetStep({ ws, period, org, saved, locked, modePicker, onSaved }: 
   const start = saved?.mode === 'aop' ? saved.byPack : fromAop;
   const g = grid ?? start;
   const packs = cdRows(Object.keys(g), cats);
-  const free = org.packs.filter((p) => p.active && !(p.code in g));
+  // Every pack of the pack master (inactive ones too, e.g. CSD_SSPET500 or PMIX), plus a new code typed by the admin.
+  const free = org.packs.filter((p) => !(p.code in g));
+  const [newCode, setNewCode] = useState('');
+  const [newGrp, setNewGrp] = useState('CSD');
   const edited = grid !== null;
   const done = saved?.mode === 'aop';
+
+  /** Adds a pack of the master (turned on again when it is inactive, so the calculation uses it). */
+  async function addPack(code: string) {
+    setErr(null);
+    try {
+      const p = org.packs.find((x) => x.code === code);
+      if (p && !p.active) await api('PATCH', `/api/admin/packs/${encodeURIComponent(code)}`, { active: true });
+      setGrid({ ...g, [code]: 0 });
+      setAdd('');
+    } catch (x) {
+      setErr(errText(x));
+    }
+  }
+  /** A pack code that is not in the pack master yet: added to the master with its category, then to the target. */
+  async function addNewPack() {
+    const code = newCode.trim();
+    const known = org.packs.find((x) => x.code.toLowerCase() === code.toLowerCase());
+    if (known) { setNewCode(''); return addPack(known.code); }
+    setBusy(true);
+    setErr(null);
+    try {
+      await api('POST', '/api/admin/packs', { code, grp: newGrp, active: true });
+      setGrid({ ...g, [code]: 0 });
+      setNewCode('');
+      onPacksChanged();
+    } catch (x) {
+      setErr(errText(x));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function save() {
     setBusy(true);
@@ -457,7 +500,12 @@ function AopTargetStep({ ws, period, org, saved, locked, modePicker, onSaved }: 
                 <option value="">{tc('addPack')}</option>
                 {free.map((p) => <option key={p.code} value={p.code}>{p.code}</option>)}
               </select>
-              <button type="button" class="btn" disabled={!add} onClick={() => { setGrid({ ...g, [add]: 0 }); setAdd(''); }}>{tc('urAddIt')}</button>
+              <button type="button" class="btn" disabled={!add} data-testid="aop-add" onClick={() => void addPack(add)}>{tc('urAddIt')}</button>
+              <input value={newCode} placeholder={tc('aopNewPack')} aria-label={tc('aopNewPack')} style={{ width: '11em' }} onInput={(e) => setNewCode(e.currentTarget.value)} />
+              <select aria-label={tc('category')} value={newGrp} onChange={(e) => setNewGrp(e.currentTarget.value)}>
+                {PACK_GROUPS.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <button type="button" class="btn" disabled={!newCode.trim() || busy} data-testid="aop-add-new" onClick={() => void addNewPack()}>{tc('aopAddNew')}</button>
               <span class="spacer" />
               {edited && <button type="button" class="btn" onClick={() => setGrid(null)}>{tc('undoAll')}</button>}
               <button type="button" class="btn primary" data-testid="aop-save" disabled={busy || total(g) === 0} onClick={() => void save()}>{tc('aopUse')}</button>
@@ -614,8 +662,9 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
       <SettingsStep ws={ws} period={period} cycle={cycle} exists={exists} onSaved={reload} />
       {exists && (
         <>
+          {!ka && <DeptColumnsStep org={org} onSaved={reload} />}
           {mode === 'ops' && ka && <KaFromOpsStep period={period} l={l} modePicker={modePicker} onChanged={reload} />}
-          {mode === 'aop' && <AopTargetStep ws={ws} period={period} org={org} saved={nt} locked={locked} modePicker={modePicker} onSaved={(m) => after(m)} />}
+          {mode === 'aop' && <AopTargetStep ws={ws} period={period} org={org} saved={nt} locked={locked} modePicker={modePicker} onSaved={(m) => after(m)} onPacksChanged={reload} />}
           {mode === 'pack' && (
             <UploadStep n={2} title={tc('step2', { period })} help={tc('step2aHelp')} template={() => T.newTargetByPack(org, period)} done={done[1]!} locked={locked} loaded={loadedText}
               parse={({ rows }) => {

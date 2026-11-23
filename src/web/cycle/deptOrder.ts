@@ -53,3 +53,76 @@ export function channelRank(c: string): number {
 }
 export const sortChannels = (list: string[]) => list.map((c, i) => ({ c, i })).sort((a, b) => channelRank(a.c) - channelRank(b.c) || a.i - b.i).map((x) => x.c);
 
+
+/** The channels of the department target file, in its order (Total TT, Total MT and ABC are worked out). */
+export const STANDARD_CHANNELS = ['TT DMM', 'TT Outer', 'MT', 'MT SSV', 'MT Bulk', 'HoReCa', 'WS'];
+
+type OrgDept = { id: number; name: string; code: string; channels: { channel: string }[] };
+
+/** Departments and their channels in the order of the department target file (one column per department without channels). */
+export function orderedDeptCols(depts: OrgDept[], none: string): DeptCol[] {
+  return depts
+    .map((d, i) => ({ id: String(d.id), name: d.name, i, chans: d.channels.length ? sortChannels(d.channels.map((c) => c.channel)) : [none] }))
+    .sort((a, b) => channelRank(a.chans[0]!) - channelRank(b.chans[0]!) || a.i - b.i)
+    .map(({ id, name, chans }) => ({ id, name, chans }));
+}
+
+const isTotal = (s: string) => /^(total\b|abc$|grand total)/i.test(s.trim());
+
+/**
+ * The two header rows of the department target file: Head names on the row
+ * above "Pack" (a name covers the columns up to the next name), channels on
+ * the "Pack" row. Returns each Head with the channels under the name.
+ */
+export function fileHeads(rows: unknown[][]): { head: string; channels: string[] }[] {
+  const at = rows.findIndex((r) => Array.isArray(r) && /^(pack|sales target category)$/i.test(String(r[0] ?? '').trim()));
+  if (at < 1) return [];
+  const top = rows[at - 1] ?? [];
+  const chan = rows[at] ?? [];
+  const out: { head: string; channels: string[] }[] = [];
+  let cur: { head: string; channels: string[] } | null = null;
+  for (let c = 1; c < chan.length; c++) {
+    const h = String(top[c] ?? '').trim();
+    if (h) { cur = { head: h, channels: [] }; out.push(cur); }
+    const ch = String(chan[c] ?? '').trim();
+    if (!ch || isTotal(ch)) continue;
+    if (cur) cur.channels.push(ch);
+  }
+  return out.filter((x) => x.channels.length > 0);
+}
+
+const nameKey = (s: string) => s.toLowerCase().replace(/mohammad|mohammed|muhammad/g, 'mohamed').replace(/[^a-z؀-ۿ]+/g, ' ').trim();
+function bigrams(s: string): string[] {
+  const t = s.replace(/ /g, '');
+  return Array.from({ length: Math.max(0, t.length - 1) }, (_x, i) => t.slice(i, i + 2));
+}
+/** How alike two person names are, 0 to 1 (first names count double). */
+export function nameScore(a: string, b: string): number {
+  const x = nameKey(a);
+  const y = nameKey(b);
+  if (!x || !y) return 0;
+  if (x === y) return 1;
+  const bx = bigrams(x);
+  const by = bigrams(y);
+  const pool = [...by];
+  let hit = 0;
+  for (const g of bx) { const i = pool.indexOf(g); if (i >= 0) { hit++; pool.splice(i, 1); } }
+  const dice = bx.length + by.length ? (2 * hit) / (bx.length + by.length) : 0;
+  const first = x.split(' ')[0] === y.split(' ')[0] ? 1 : 0;
+  return (2 * dice + first) / 3;
+}
+
+/** Each Head of the file matched to one department (by name or code), best matches first. */
+export function matchHeads(heads: { head: string; channels: string[] }[], depts: OrgDept[]): { head: string; channels: string[]; deptId: number | null }[] {
+  const pairs: { h: number; d: number; s: number }[] = [];
+  heads.forEach((h, hi) => depts.forEach((d, di) => pairs.push({ h: hi, d: di, s: Math.max(nameScore(h.head, d.name), nameKey(h.head) === nameKey(d.code) ? 1 : 0) })));
+  pairs.sort((a, b) => b.s - a.s);
+  const usedH = new Set<number>();
+  const usedD = new Set<number>();
+  const deptOf = new Map<number, number>();
+  for (const p of pairs) {
+    if (p.s < 0.45 || usedH.has(p.h) || usedD.has(p.d)) continue;
+    usedH.add(p.h); usedD.add(p.d); deptOf.set(p.h, depts[p.d]!.id);
+  }
+  return heads.map((h, i) => ({ ...h, deptId: deptOf.get(i) ?? null }));
+}

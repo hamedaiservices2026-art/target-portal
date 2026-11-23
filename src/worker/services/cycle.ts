@@ -7,7 +7,7 @@
 // in the browser with src/shared/calc; the Worker re-checks every total before
 // it stores anything, and computes the CD final fit itself (it is small:
 // packs x departments per category).
-import { cdFinal, cdSubmitProblems, type CdWork, type PackCat } from '../../shared/calc/cd';
+import { cdFinal, cdReconcile, cdSubmitProblems, type CdWork, type PackCat } from '../../shared/calc/cd';
 import type { SessionUser, Workspace } from '../auth';
 import { all, one } from '../db';
 import type { Env } from '../index';
@@ -454,8 +454,10 @@ export async function submitCd(db: D1Database, user: SessionUser, ws: Workspace,
   const period = parseMonth(periodRaw, 'period');
   const c = await requireCycle(db, ws, period);
   if (c.cd_status !== 'with_cd') throw conflict('the target is not with the Commercial Director');
-  const work = parseJson<CdWork>(c.cd_json);
-  if (!work) throw conflict('there is nothing to submit');
+  const saved = parseJson<CdWork>(c.cd_json);
+  if (!saved) throw conflict('there is nothing to submit');
+  // The CD changes the target freely: the New Target follows the split.
+  const work = cdReconcile(saved);
   const depts = (await all<{ id: number }>(db, `SELECT id FROM departments WHERE workspace = ? ORDER BY id`, ws)).map((d) => String(d.id));
   const cats = await packCategories(db);
   const problems = cdSubmitProblems(work, cats, depts);
@@ -463,7 +465,7 @@ export async function submitCd(db: D1Database, user: SessionUser, ws: Workspace,
   if (problems.length) throw new ApiError(400, { error: 'invalid_request', detail: problems.join('; ') });
   const dept = cdFinal(work, cats, depts);
   const res = await writeBatch(db, [
-    updateCycle(db, ws, period, c.version, `cd_status = 'submitted', cd_comment = NULL, dept_json = ?`, [JSON.stringify(dept)]),
+    updateCycle(db, ws, period, c.version, `cd_status = 'submitted', cd_comment = NULL, dept_json = ?, cd_json = ?`, [JSON.stringify(dept), JSON.stringify(work)]),
     auditStatement(db, user.id, 'cycle.cd_submit', {}, { ws, period }),
     notifySql(db, ADMINS, [], 'cd_submitted',
       txt(`The Commercial Director submitted the ${period} split. You can calculate the route targets.`,

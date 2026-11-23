@@ -7,7 +7,7 @@
 import { useLocation } from 'preact-iso';
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import { capFor } from '../../../shared/rules';
-import { cdSubmitProblems, type CdWork } from '../../../shared/calc/cd';
+import { cdReconcile, cdSubmitProblems, type CdWork } from '../../../shared/calc/cd';
 import { CATEGORIES, type Category } from '../../../shared/calc/packs';
 import { addMonths, pago as pagoOf, yago as yagoOf } from '../../../shared/calc/periods';
 import type { Workspace } from '../../../worker/auth';
@@ -21,7 +21,7 @@ import {
   catMap, cdRows, companyMonth, defaultDeptSplit, deptPack, groupSales, NO_CHANNEL, prevTargetMonths, rescalePack, routeIndex, sumCat,
   type ChannelHist, type Grid,
 } from '../../cycle/compute';
-import { channelRank, deptColumns, sortChannels } from '../../cycle/deptOrder';
+import { deptColumns, orderedDeptCols } from '../../cycle/deptOrder';
 import { tc } from '../../cycle/i18n';
 import { getCycle, getOrg, loadMonthData, loadRouteData, useAsync } from '../../cycle/load';
 import type { RouteMonthData } from '../../cycle/parsers';
@@ -219,9 +219,7 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
   if (!work.ntOk) return <p class="card muted">{tc('splitNeedsNt')}</p>;
   const months = cdMonths(work, l);
   // Departments and channels in the order of the department target file (TT, MT, HoReCa, WS…).
-  const cols = [...org.depts]
-    .map((d, i) => ({ id: String(d.id), name: d.name, i, chans: d.channels.length ? sortChannels(d.channels.map((c) => c.channel)) : [NO_CHANNEL] }))
-    .sort((a, b) => channelRank(a.chans[0]!) - channelRank(b.chans[0]!) || a.i - b.i);
+  const cols = orderedDeptCols(org.depts, NO_CHANNEL);
   // Columns as in the department target file: TT DMM, TT Outer, Total TT, MT, MT SSV, MT Bulk, Total MT, HoReCa, WS.
   const { flat, heads } = deptColumns(cols, (name) => tc('totalOf', { name }));
   const packs = Object.keys(work.nt);
@@ -237,10 +235,13 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
   };
   const deptBench = (d: { id: string; chans: string[] }, list: string[]) => d.chans.reduce((s, c) => s + bench2(d.id, c, list), 0);
 
+  /** The CD changes any cell freely: the pack's New Target becomes the sum of its cells (no limit, no check). */
   function setCell(d: string, c: string, p: string, n: number) {
     const dm = structuredClone(work.dm);
     ((dm[d] ??= {})[c] ??= {})[p] = n;
-    setWork({ ...work, dm });
+    let sum = 0;
+    for (const ch of Object.values(dm)) for (const g of Object.values(ch)) sum += g[p] ?? 0;
+    setWork({ ...work, dm, nt: { ...work.nt, [p]: sum }, splitNt: { ...work.splitNt, [p]: sum } });
   }
   function split(how: How) {
     const r = splitFor(work, l, work.nt, how);
@@ -355,7 +356,7 @@ function downloadWorkbook(work: CdWork, l: Loaded) {
   const { org, bench, cycle } = l;
   const cats = catMap(org);
   const packs = Object.keys(work.nt).sort();
-  const chans = org.depts.flatMap((d) => (d.channels.length ? d.channels.map((c) => ({ d: String(d.id), c: c.channel, label: c.channel })) : [{ d: String(d.id), c: NO_CHANNEL, label: d.name }]));
+  const chans = orderedDeptCols(org.depts, NO_CHANNEL).flatMap((d) => d.chans.map((c) => ({ d: d.id, c, label: c === NO_CHANNEL ? d.name : c })));
   const r = (n: number) => Math.round(n);
   void writeWorkbook(`cd_${cycle.ws}_${cycle.period}.xlsx`, [
     {
@@ -395,7 +396,10 @@ export function CdPage({ ws: wsParam, period: periodParam }: { ws?: string; peri
   const { route } = useLocation();
   const { user } = useSession();
   const allowed = useMyWorkspaces();
-  const ws: Workspace = wsParam === 'ka' ? 'ka' : wsParam === 'ops' ? 'ops' : allowed[0] ?? 'ops';
+  // Key Accounts have no Commercial Director step: the CD screen is for Operation only.
+  void wsParam;
+  void allowed;
+  const ws: Workspace = 'ops';
   const period = periodParam && /^\d{4}-\d{2}$/.test(periodParam) ? periodParam : defaultPeriod();
   const [tab, setTab] = useState<TabId>('gm');
   const loaded = useAsync(() => loadAll(ws, period), [ws, period]);
@@ -419,7 +423,7 @@ export function CdPage({ ws: wsParam, period: periodParam }: { ws?: string; peri
   const edit = isCd && l?.cycle.cdStatus === 'with_cd';
   const cats = l ? new Map([...catMap(l.org)].map(([k, v]) => [k, v as string])) : new Map<string, string>();
   const problems = work && l ? [
-    ...cdSubmitProblems({ ...work, colJ: {}, gm: {} }, cats, l.org.depts.map((d) => String(d.id))),
+    ...cdSubmitProblems(cdReconcile({ ...work, colJ: {}, gm: {} }), cats, l.org.depts.map((d) => String(d.id))),
   ] : [];
 
   async function save(): Promise<boolean> {
@@ -494,7 +498,7 @@ export function CdPage({ ws: wsParam, period: periodParam }: { ws?: string; peri
   return (
     <section class="cycle" data-testid="cd-page">
       <PageHead title={tc('cdTitle')} intro={tc('cdIntro')} />
-      <WsPeriod ws={ws} period={period} allowed={allowed} onChange={(w, p) => { setDirty(false); route(`/cd/${w}/${p}`); }} />
+      <WsPeriod ws={ws} period={period} allowed={[]} onChange={(w, p) => { setDirty(false); route(`/cd/${w}/${p}`); }} />
       {loaded.error && <div class="alert" role="alert">{loaded.error}</div>}
       {!l && !loaded.error && <p class="muted">{tc('loading')}</p>}
       {l && !work && <p class="card muted">{tc('cdNothingYet')}</p>}
