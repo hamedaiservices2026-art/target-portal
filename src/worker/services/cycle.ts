@@ -207,6 +207,9 @@ export async function getCycle(db: D1Database, user: SessionUser, ws: Workspace,
   if (ws === 'ka') {
     settings.cdStep = false;
     if (!c) settings.ntMode = 'ops';
+  } else {
+    // Operation always goes to the Commercial Director.
+    settings.cdStep = true;
   }
   return {
     ws, period, settings,
@@ -309,6 +312,8 @@ export async function saveSettings(db: D1Database, actorId: number, ws: Workspac
   if (ws === 'ka') {
     settings.cdStep = false;
     if (!cur && body.ntMode === undefined) settings.ntMode = 'ops';
+  } else {
+    settings.cdStep = true;
   }
   const now = new Date().toISOString();
   const caps = body.capPct !== undefined ? await capStatements(db, settings.capPct) : [];

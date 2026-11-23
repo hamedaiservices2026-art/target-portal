@@ -24,7 +24,7 @@ import { ConfirmButton, errText, PageHead } from '../../components/AdminBits';
 import { readSheet, readSheets } from '../../excel';
 import { fmtDateTime } from '../../format';
 import { fmtNum, useLang } from '../../i18n';
-import { catMap, cdRows, startNewTarget, subMap, sumCat, total, type Grid, type NtSource } from '../../cycle/compute';
+import { catMap, cdRows, defaultDeptSplit, NO_CHANNEL, prevTargetMonths, startNewTarget, subMap, sumCat, total, type Grid, type NtSource } from '../../cycle/compute';
 import { tc } from '../../cycle/i18n';
 import { clearRouteCache, getCycle, getOrg, loadMonthData, loadRouteData, useAsync } from '../../cycle/load';
 import {
@@ -150,7 +150,7 @@ function SettingsStep({ ws, period, cycle, exists, onSaved }: { ws: Workspace; p
     setBusy(true);
     setErr(null);
     try {
-      await api('PUT', `/api/admin/cycle/${ws}/${period}/settings`, { ...(ws === 'ops' ? { cdStep: s.cdStep } : {}), deadlines: s.deadlines, capPct: s.capPct });
+      await api('PUT', `/api/admin/cycle/${ws}/${period}/settings`, { deadlines: s.deadlines, capPct: s.capPct });
       // One step for both: the deadlines and the CAP % apply to Operation and Key Account.
       const other: Workspace = ws === 'ops' ? 'ka' : 'ops';
       await api('PUT', `/api/admin/cycle/${other}/${period}/settings`, { deadlines: s.deadlines, capPct: s.capPct });
@@ -179,15 +179,6 @@ function SettingsStep({ ws, period, cycle, exists, onSaved }: { ws: Workspace; p
         {dl('head', tc('dlHead'))}
         {dl('manager', tc('dlManager'))}
         {dl('supervisor', tc('dlSupervisor'))}
-        {ws === 'ops' && (
-          <label class="field">
-            <span>{tc('cdStep')}</span>
-            <select value={s.cdStep ? 'on' : 'off'} onChange={(e) => setS({ ...s, cdStep: e.currentTarget.value === 'on' })}>
-              <option value="on">{tc('on')}</option>
-              <option value="off">{tc('off')}</option>
-            </select>
-          </label>
-        )}
         <label class="field">
           <span>{tc('capPct')}</span>
           <input type="number" min={0} max={100} step="0.5" value={s.capPct ?? ''} placeholder={tc('capPlaceholder')} data-testid="cap-pct"
@@ -208,7 +199,7 @@ function SettingsStep({ ws, period, cycle, exists, onSaved }: { ws: Workspace; p
 function SendStep({ ws, period, l, onDone, missing }: { ws: Workspace; period: string; l: Loaded; onDone: () => void; missing: string[] }) {
   useLang();
   const { cycle, org } = l;
-  const [preview, setPreview] = useState<{ nt: Grid; source: NtSource; upload: NtUpload | null } | null>(null);
+  const [preview, setPreview] = useState<{ nt: Grid; source: NtSource; upload: NtUpload | null; split?: Record<string, Grid> | null; splitBasis?: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [deptChecks, setDeptChecks] = useState<Check[]>([]);
@@ -233,7 +224,16 @@ function SendStep({ ws, period, l, onDone, missing }: { ws: Workspace; period: s
         setErr(tc('sendNoNt', { list: missing.length ? missing.join(' · ') : tc('step2', { period }) }));
         return;
       }
-      setPreview({ ...r, upload: up });
+      // By pack or from the AOP: split by department the way the CD's screen does (previous targets, else average sales).
+      let split: Record<string, Grid> | null = null;
+      let splitBasis = '';
+      if (up?.mode !== 'dept') {
+        const d = defaultDeptSplit({ period, nt: r.nt, org, sales: sales.data, avgMonths: cycle.settings.avgMonths, deptChannel: dc, byPrevTarget: true });
+        split = {};
+        for (const ch of Object.values(d.dm)) for (const [c, g] of Object.entries(ch)) if (c !== NO_CHANNEL) split[c] = g;
+        splitBasis = prevTargetMonths(dc, cycle.settings.avgMonths).length ? tc('previewSplitPrev') : tc('previewSplitSales');
+      }
+      setPreview({ ...r, upload: up, split, splitBasis });
     } catch (x) {
       setErr(tc('sendPrepareFailed', { e: errText(x) }));
     } finally {
@@ -333,7 +333,7 @@ function SendStep({ ws, period, l, onDone, missing }: { ws: Workspace; period: s
   };
   // The table shown before sending: every pack with the CD workbook subtotals (and the department split when uploaded by department).
   // Same columns as the CD screen: TT DMM, TT Outer, Total TT, MT, MT SSV, MT Bulk, Total MT, HoReCa, WS.
-  const byCh = preview?.upload?.mode === 'dept' ? preview.upload.byChannel ?? null : null;
+  const byCh = preview?.upload?.mode === 'dept' ? preview.upload.byChannel ?? null : preview?.split ?? null;
   const grid = byCh ? deptColumns(orderedDeptCols(org.depts.filter((d) => d.channels.length), '_'), (name) => tc('totalOf', { name })) : null;
   const deptCols = grid ? grid.flat.map((x) => (x.kind === 'cell'
     ? { id: `${x.d.id}${x.c}`, name: x.c, head: x.d.name, tot: false, g: byCh![x.c] ?? {} }
@@ -362,6 +362,7 @@ function SendStep({ ws, period, l, onDone, missing }: { ws: Workspace; period: s
             <>
               <p>{tc('ntSource')}: <b>{srcLabel[preview.source]}</b> · {tc('ntTotal')}: <b>{fmtNum(total(preview.nt))}</b>
                 {' · '}{CATEGORIES.map((c) => `${c} ${fmtNum(sumCat(preview.nt, cats, c))}`).join(' · ')}</p>
+              <div class="banner info small" data-testid="preview-split">{preview.upload?.mode === 'dept' ? tc('previewSplitUploaded') : `${preview.splitBasis ?? ''} ${tc('previewSplitCd')}`}</div>
               <div class="tablewrap cy-tall"><table class="ad-table cy-table" data-testid="nt-preview">
                 <thead>
                   {grid && <tr><th /><th />{grid.heads.map((h) => (h.kind === 'dept' ? <th key={`h${h.d.id}`} colSpan={h.span} class="grp">{h.d.name}</th> : <th key={`t${h.label}`} />))}<th /></tr>}

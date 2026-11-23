@@ -560,6 +560,10 @@ export const CY = {
   sendPrepareFailed: ["Could not work out the New Target: {e}", "تعذّر حساب الهدف الجديد: {e}"],
   sendFailed: ["Could not send to the Commercial Director: {e}", "تعذّر الإرسال إلى المدير التجاري: {e}"],
   sendFailedMissing: ["Steps not done yet: {list}.", "خطوات لم تكتمل بعد: {list}."],
+  previewSplitUploaded: ["Split by department as you uploaded it (target by pack and department): no new split is made.", "التوزيع حسب القسم كما رفعته (الهدف حسب العبوة والقسم): لا يتم إنشاء توزيع جديد."],
+  previewSplitPrev: ["Split by department by the previous targets by department (step 5).", "التوزيع حسب القسم وفق الأهداف السابقة حسب القسم (الخطوة 5)."],
+  previewSplitSales: ["Split by department by the average sales of the selected months (step 4).", "التوزيع حسب القسم وفق متوسط مبيعات الأشهر المختارة (الخطوة 4)."],
+  previewSplitCd: ["The Commercial Director starts from this split and can change it.", "يبدأ المدير التجاري من هذا التوزيع ويمكنه تغييره."],
   // Admin › Hierarchy (v16)
   hzIntro: ['Add, move, rename or delete here, or upload the whole hierarchy in one file. Every Channel Head is the top of one department.', 'أضف أو انقل أو أعد التسمية أو احذف هنا، أو ارفع الهيكل كاملًا في ملف واحد. كل رئيس قناة هو أعلى قسم واحد.'],
   hzAdd: ['Add', 'إضافة'],

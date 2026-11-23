@@ -135,7 +135,9 @@ describe('target cycle (handover flow)', () => {
 
   it('a Head can return the target with a comment', async () => {
     await api('PUT', `/admin/cycle/ops/${P}/settings`, admin, { cdStep: false });
-    expect((await api('PUT', `/admin/cycle/ops/${P}/dept-target`, admin, { dept: { [tt]: { CSD_CANS150: 10 } } })).status).toBe(200);
+    // Operation always goes to the CD: the CD step stays on.
+    expect((await json(await api('GET', `/cycle/ops/${P}`, admin))).settings.cdStep).toBe(true);
+    await run(env.DB, `UPDATE cycles SET cd_status = 'submitted', dept_json = ? WHERE ws = 'ops' AND period = ?`, JSON.stringify({ [tt]: { CSD_CANS150: 10 } }), P);
     expect((await api('PUT', `/admin/cycle/ops/${P}/calc`, admin, { calc: { [tt]: { R1: { CSD_CANS150: 10 } } } })).status).toBe(200);
     expect((await api('POST', `/admin/cycle/ops/${P}/heads/${tt}/send`, admin)).status).toBe(200);
     expect((await api('POST', `/cycle/ops/${P}/heads/${tt}/return`, head, {})).status).toBe(400);
