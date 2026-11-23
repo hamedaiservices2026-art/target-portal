@@ -135,3 +135,40 @@ describe('Heads setup history', () => {
     expect(await one(env.DB, `SELECT workspace FROM departments WHERE id = ?`, d)).toEqual({ workspace: 'ops' });
   });
 });
+
+describe('Hierarchy replace and delete', () => {
+  it('replace takes out old names, keeps the Head and its accounts, deletes Heads not in the file; a Head and all can be deleted', async () => {
+    for (const t of ['notifications', 'head_approvals', 'cycles', 'audit', 'dept_channels', 'month_leaves', 'month_files', 'month_nodes', 'month_depts', 'months',
+      'leaves', 'nodes', 'departments', 'sessions', 'login_failures', 'user_roles', 'users']) await run(env.DB, `DELETE FROM ${t}`);
+    const adminId = await addUser('admin', 'admin');
+    const admin = await login('admin');
+    const mt = (await run(env.DB, `INSERT INTO departments(code, name, workspace) VALUES ('MT', 'MT', 'ops')`)).lastRowId;
+    await run(env.DB, `INSERT INTO dept_channels(dept_id, channel, grp, sort) VALUES (?, 'MT', '', 0)`, mt);
+    const root = (await run(env.DB, `INSERT INTO nodes(dept_id, parent_id, name, manager_user_id) VALUES (?, NULL, 'MT', ?)`, mt, adminId)).lastRowId;
+    const old = (await run(env.DB, `INSERT INTO nodes(dept_id, parent_id, name) VALUES (?, ?, 'Old Manager')`, mt, root)).lastRowId;
+    await run(env.DB, `INSERT INTO leaves(dept_id, delivery_system, route_code, node_id, label) VALUES (?, 'MT', 'R9', ?, 'R9')`, mt, old);
+    const dup = (await run(env.DB, `INSERT INTO departments(code, name, workspace) VALUES ('MT2', 'MT-LF', 'ops')`)).lastRowId;
+    await run(env.DB, `INSERT INTO nodes(dept_id, parent_id, name) VALUES (?, NULL, 'MT-LF')`, dup);
+
+    const rows = [{ head: 'MT', manager: 'New Manager', supervisor: 'Sup', route: 'R1', ds: 'MT' }];
+    const pre = await json(await api('POST', '/admin/hierarchy/sync/preview', admin, { rows, workspace: 'ops', replace: true }));
+    expect(pre.problems).toEqual([]);
+    expect(pre.removed).toEqual([{ deptId: dup, name: 'MT-LF' }]);
+    expect(pre.replacing).toEqual({ nodes: 3, routes: 1 });
+    const r = await api('POST', '/admin/hierarchy/sync/apply', admin, { rows, workspace: 'ops', replace: true });
+    expect(r.status, await r.clone().text()).toBe(200);
+    expect(await all(env.DB, `SELECT n.name, n.manager_user_id AS u FROM nodes n ORDER BY n.id`)).toEqual([
+      { name: 'MT', u: adminId }, { name: 'New Manager', u: null }, { name: 'Sup', u: null },
+    ]);
+    expect(await all(env.DB, `SELECT route_code FROM leaves`)).toEqual([{ route_code: 'R1' }]);
+    expect(await all(env.DB, `SELECT id FROM departments`)).toEqual([{ id: mt }]);
+    expect(await one(env.DB, `SELECT COUNT(*) AS n FROM dept_channels WHERE dept_id = ?`, mt)).toEqual({ n: 1 });
+
+    // Delete one Head, then delete all.
+    const ka = (await run(env.DB, `INSERT INTO departments(code, name, workspace, ops_dept_id) VALUES ('K', 'K', 'ka', ?)`, mt)).lastRowId;
+    expect((await api('DELETE', `/admin/departments/${mt}`, admin)).status).toBe(200);
+    expect(await one(env.DB, `SELECT ops_dept_id AS o FROM departments WHERE id = ?`, ka)).toEqual({ o: null });
+    expect(await json(await api('POST', '/admin/hierarchy/delete-all', admin, { workspace: 'ka' }))).toEqual({ heads: 1 });
+    expect(await one(env.DB, `SELECT COUNT(*) AS n FROM departments`)).toEqual({ n: 0 });
+  });
+});

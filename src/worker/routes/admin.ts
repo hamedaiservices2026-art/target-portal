@@ -5,7 +5,7 @@ import { h, p } from './handler';
 import { backupIndex, backupPage, listAudit } from '../services/export';
 import importRoutes from './imports';
 import { deleteUser, getPositions, listAccounts, listKaLinks, setKaLink, setPositions, syncNextAccount, unlockUser } from '../services/accounts';
-import { applyHierarchySync, listPeople, previewHierarchySync, removeKaFromOps } from '../services/hierarchySync';
+import { applyHierarchySync, deleteHead, deleteHierarchy, listPeople, previewHierarchySync, removeKaFromOps } from '../services/hierarchySync';
 import monthRoutes from './months';
 import {
   bulkMapLeaves, createLeaf, createNode, deleteLeaf, deleteNode, listLeaves, listNodes, optionalDept,
@@ -59,6 +59,8 @@ admin.put('/api/admin/settings', h(async (c, db, me, body) =>
 admin.get('/api/admin/people', h(async (c, db) => c.json({ people: await listPeople(db) })));
 admin.post('/api/admin/hierarchy/sync/preview', h(async (c, db, _me, body) => c.json(await previewHierarchySync(db, await body()))));
 admin.post('/api/admin/hierarchy/remove-ka-from-ops', h(async (c, db, me, body) => c.json(await removeKaFromOps(db, me, await body()))));
+admin.post('/api/admin/hierarchy/delete-all', h(async (c, db, me, body) => c.json(await deleteHierarchy(db, me, await body()))));
+admin.delete('/api/admin/departments/:id', h(async (c, db, me) => { await deleteHead(db, me, parseId(p(c, 'id'))); return c.json({ ok: true }); }));
 admin.post('/api/admin/hierarchy/sync/apply', h(async (c, db, me, body) => c.json(await applyHierarchySync(db, me, await body()))));
 admin.get('/api/admin/nodes', h(async (c, db) =>
   c.json({ nodes: await listNodes(db, optionalDept(c.req.query('dept'))) })));

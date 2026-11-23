@@ -7,7 +7,7 @@ import { useMemo, useState } from 'preact/hooks';
 import type { DepartmentDto } from '../../../worker/services/masters';
 import type { LeafDto, NodeDto } from '../../../worker/services/hierarchy';
 import { api } from '../../api';
-import { errText, LoadError, PageHead, TreeChangeBanner, useResource, type TreeChange } from '../../components/AdminBits';
+import { ConfirmButton, errText, LoadError, PageHead, TreeChangeBanner, useResource, type TreeChange } from '../../components/AdminBits';
 import { fmtNum, t, useLang } from '../../i18n';
 import { tc } from '../../cycle/i18n';
 import { HierarchyUpload } from './HierarchyUpload';
@@ -221,7 +221,8 @@ export function Hierarchy() {
                 <td class="num">{fmtNum(countUnder(h.id, 1))}</td>
                 <td class="num">{fmtNum(countUnder(h.id, 2))}</td>
                 <td class="num">{fmtNum(rolled.get(h.id) ?? 0)}</td>
-                <td>{delBtn(`n${h.id}`, c || own.get(h.id) ? tc('hzMoveFirst') : null, () => api('DELETE', `/api/admin/nodes/${h.id}`))}</td>
+                <td><ConfirmButton label={t('adDelete')} question={tc('hzDeleteHeadQ', { name: h.name, n: fmtNum(rolled.get(h.id) ?? 0) })} yesLabel={t('adDelete')} testId="hz-delete-head"
+                  onConfirm={async () => { await run(() => api('DELETE', `/api/admin/departments/${h.dept_id}`), tc('hzHeadDeleted', { name: h.name })); }} /></td>
               </tr>
             );
           })}</tbody>

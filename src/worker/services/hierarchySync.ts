@@ -9,7 +9,8 @@
 // re-checks and refuses while any problem remains; the writes then go through
 // the same services as the manual edits (createNode / updateNode /
 // bulkMapLeaves), so audits and open-month updates behave the same.
-import { all } from '../db';
+import type { Workspace } from '../auth';
+import { all, one } from '../db';
 import { bulkMapLeaves, createNode, updateNode } from './hierarchy';
 import { ApiError, bad, createDepartment, writeBatch, type Obj } from './masters';
 import { auditStatement } from './audit';
@@ -35,7 +36,13 @@ export type SyncHead = {
   newRoutes: number;
   movedRoutes: number;
 };
-export type SyncPlan = { heads: SyncHead[]; problems: SyncProblem[]; rows: number };
+export type SyncPlan = {
+  heads: SyncHead[]; problems: SyncProblem[]; rows: number;
+  /** Replace mode: the workspace's Heads that are not in the file (deleted on apply). */
+  removed?: { deptId: number; name: string }[];
+  /** Replace mode: people and routes in the portal now (all taken out first, then the file is loaded). */
+  replacing?: { nodes: number; routes: number };
+};
 
 const norm = (s: string) => s.trim().replace(/\s+/g, ' ').toLowerCase();
 const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : typeof v === 'number' && Number.isFinite(v) ? String(v) : '');
@@ -82,7 +89,7 @@ async function plan(db: D1Database, body: Obj): Promise<{ plan: SyncPlan; rows: 
   const given = (body.depts && typeof body.depts === 'object' && !Array.isArray(body.depts) ? body.depts : {}) as Obj;
   // One workspace at a time: an Operation file never matches Key Account departments, and the other way round.
   const ws = body.workspace === 'ka' ? 'ka' : 'ops';
-  const [depts, nodes, leaves, chans] = await Promise.all([
+  let [depts, nodes, leaves, chans] = await Promise.all([
     all<DeptRow>(db, `SELECT id, code, name FROM departments WHERE workspace = ? ORDER BY id`, ws),
     all<NodeRow>(db, `SELECT n.id, n.dept_id, n.parent_id, n.name FROM nodes n JOIN departments d ON d.id = n.dept_id WHERE d.workspace = ?`, ws),
     all<LeafRow>(db, `SELECT l.id, l.dept_id, l.delivery_system, l.route_code, l.node_id FROM leaves l JOIN departments d ON d.id = l.dept_id WHERE d.workspace = ?`, ws),
@@ -92,6 +99,11 @@ async function plan(db: D1Database, body: Obj): Promise<{ plan: SyncPlan; rows: 
   for (const c of chans) if (!channels.has(c.dept_id)) channels.set(c.dept_id, c.channel);
   const deptIds = new Set(depts.map((d) => d.id));
   const rootOf = new Map(nodes.filter((n) => n.parent_id === null).map((n) => [n.dept_id, n]));
+  // Replace: the file is the whole hierarchy. Heads still match their department, but the
+  // people and routes start empty (taken out on apply), so old names do not stay.
+  const replace = body.replace === true;
+  const replacing = replace ? { nodes: nodes.length, routes: leaves.length } : undefined;
+  if (replace) { nodes = []; leaves = []; }
 
   // Channel Head -> department.
   const heads = [...new Map(rows.map((r) => [norm(r.head), r.head])).values()];
@@ -181,7 +193,8 @@ async function plan(db: D1Database, body: Obj): Promise<{ plan: SyncPlan; rows: 
     h.routes = inFile.size;
     h.notInFile = leaves.filter((l) => l.dept_id === h.deptId && !inFile.has(l.route_code)).length;
   }
-  return { plan: { heads: out, problems, rows: rows.length }, rows, deptOf, nodes, leaves, channels };
+  const removed = replace ? depts.filter((d) => !out.some((h) => h.deptId === d.id)).map((d) => ({ deptId: d.id, name: d.name })) : undefined;
+  return { plan: { heads: out, problems, rows: rows.length, ...(replace ? { removed, replacing } : {}) }, rows, deptOf, nodes, leaves, channels };
 }
 
 export async function previewHierarchySync(db: D1Database, body: Obj): Promise<SyncPlan> {
@@ -194,6 +207,21 @@ export async function applyHierarchySync(
   let p = await plan(db, body);
   if (p.plan.problems.length) {
     throw new ApiError(400, { error: 'invalid_request', detail: `${p.plan.problems.length} problem(s); nothing was saved: ${p.plan.problems.slice(0, 5).map((x) => x.detail).join('; ')}` });
+  }
+  // Replace: keep who manages each name, take out the workspace's people and routes and the Heads not in the file.
+  const ws: Workspace = body.workspace === 'ka' ? 'ka' : 'ops';
+  let managers: Map<string, number> | null = null;
+  if (body.replace === true) {
+    const had = await all<{ dept_id: number; name: string; u: number }>(db,
+      `SELECT n.dept_id, n.name, n.manager_user_id AS u FROM nodes n JOIN departments d ON d.id = n.dept_id
+       WHERE d.workspace = ? AND n.manager_user_id IS NOT NULL`, ws);
+    managers = new Map(had.map((n) => [`${n.dept_id}|${norm(n.name)}`, n.u]));
+    // Pin every matched Head to its department: after the clear the top-node names are gone.
+    const pinned = { ...((body.depts ?? {}) as Obj) };
+    for (const h of p.plan.heads) if (h.deptId !== null) pinned[h.head] = h.deptId;
+    body = { ...body, depts: pinned };
+    for (const r of p.plan.removed ?? []) await deleteHead(db, actorId, r.deptId);
+    await clearTrees(db, actorId, ws);
   }
   // New departments first (named after the Channel Head, with a free code), then plan again with their ids.
   const news = p.plan.heads.filter((h) => h.match === 'new');
@@ -272,7 +300,17 @@ export async function applyHierarchySync(
     for (const row of rows) row.nodeName = exact.get(norm(row.nodeName)) ?? row.nodeName;
     keep((await bulkMapLeaves(db, actorId, { deptId, rows })).treeChange);
   }
-  const fresh = await previewHierarchySync(db, body);
+  if (managers && managers.size) {
+    // The same person keeps their account on the new tree (matched by Head and name).
+    const now = await all<{ id: number; dept_id: number; name: string }>(db,
+      `SELECT n.id, n.dept_id, n.name FROM nodes n JOIN departments d ON d.id = n.dept_id WHERE d.workspace = ? AND n.manager_user_id IS NULL`, ws);
+    const sets = now.flatMap((n) => { const u = managers!.get(`${n.dept_id}|${norm(n.name)}`); return u ? [{ id: n.id, u }] : []; });
+    if (sets.length) {
+      await db.prepare(`UPDATE nodes SET manager_user_id = (SELECT json_extract(value, '$.u') FROM json_each(?1) WHERE json_extract(value, '$.id') = nodes.id)
+        WHERE id IN (SELECT json_extract(value, '$.id') FROM json_each(?1))`).bind(JSON.stringify(sets)).run();
+    }
+  }
+  const fresh = await previewHierarchySync(db, { ...body, replace: false });
   const merged: TreeChangeResult | null = changes.length
     ? {
       appliedMonths: [...new Set(changes.flatMap((c) => c.appliedMonths))],
@@ -281,6 +319,53 @@ export async function applyHierarchySync(
     }
     : null;
   return { ...fresh, treeChange: merged };
+}
+
+// ---------- delete a Head, clear a workspace ----------
+
+/**
+ * Deletes one Head of Department with its people, routes, channels and its
+ * rows in the months and the target cycle. Key Account departments linked to
+ * it lose the link.
+ */
+export async function deleteHead(db: D1Database, actorId: number, deptId: number): Promise<void> {
+  const d = await one<{ id: number; name: string; workspace: Workspace }>(db, `SELECT id, name, workspace FROM departments WHERE id = ?`, deptId);
+  if (!d) throw new ApiError(404, { error: 'not_found' });
+  await writeBatch(db, [
+    db.prepare(`DELETE FROM month_leaves WHERE dept_id = ?`).bind(deptId),
+    db.prepare(`DELETE FROM month_nodes WHERE dept_id = ?`).bind(deptId),
+    db.prepare(`DELETE FROM month_files WHERE dept_id = ?`).bind(deptId),
+    db.prepare(`DELETE FROM month_depts WHERE dept_id = ?`).bind(deptId),
+    db.prepare(`DELETE FROM head_approvals WHERE dept_id = ?`).bind(deptId),
+    db.prepare(`DELETE FROM leaves WHERE dept_id = ?`).bind(deptId),
+    db.prepare(`DELETE FROM nodes WHERE dept_id = ?`).bind(deptId),
+    db.prepare(`DELETE FROM dept_channels WHERE dept_id = ?`).bind(deptId),
+    db.prepare(`UPDATE departments SET ops_dept_id = NULL WHERE ops_dept_id = ?`).bind(deptId),
+    db.prepare(`DELETE FROM departments WHERE id = ?`).bind(deptId),
+    auditStatement(db, actorId, 'dept.delete', {}, { deptId, name: d.name, workspace: d.workspace }),
+  ], 'conflict');
+}
+
+/** Takes out every person and route of a workspace; the Heads (departments) and their channels stay. */
+async function clearTrees(db: D1Database, actorId: number, ws: Workspace): Promise<{ nodes: number; routes: number }> {
+  const inWs = `SELECT id FROM departments WHERE workspace = ?`;
+  const res = await writeBatch(db, [
+    db.prepare(`DELETE FROM leaves WHERE dept_id IN (${inWs})`).bind(ws),
+    db.prepare(`DELETE FROM nodes WHERE dept_id IN (${inWs})`).bind(ws),
+  ], 'conflict');
+  const out = { routes: res[0]!.meta.changes ?? 0, nodes: res[1]!.meta.changes ?? 0 };
+  await db.prepare(`INSERT INTO audit(at, user_id, action, month_id, node_id, detail_json) VALUES (?, ?, 'hierarchy.clear', NULL, NULL, ?)`)
+    .bind(new Date().toISOString(), actorId, JSON.stringify({ ws, ...out })).run();
+  return out;
+}
+
+/** Deletes a whole workspace hierarchy: every Head with its people and routes. */
+export async function deleteHierarchy(db: D1Database, actorId: number, body: Obj): Promise<{ heads: number }> {
+  const ws = body.workspace;
+  if (ws !== 'ops' && ws !== 'ka') throw bad('workspace must be ops or ka');
+  const depts = await all<{ id: number }>(db, `SELECT id FROM departments WHERE workspace = ?`, ws);
+  for (const d of depts) await deleteHead(db, actorId, d.id);
+  return { heads: depts.length };
 }
 
 // ---------- people by position (Admin › Users) ----------

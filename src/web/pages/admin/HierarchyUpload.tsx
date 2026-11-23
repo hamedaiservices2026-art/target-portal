@@ -8,7 +8,7 @@ import type { DepartmentDto } from '../../../worker/services/masters';
 import type { LeafDto, NodeDto } from '../../../worker/services/hierarchy';
 import type { SyncPlan } from '../../../worker/services/hierarchySync';
 import { api } from '../../api';
-import { errText, TreeChangeBanner, type TreeChange } from '../../components/AdminBits';
+import { ConfirmButton, errText, TreeChangeBanner, type TreeChange } from '../../components/AdminBits';
 import { readSheet, writeXlsx } from '../../excel';
 import { fmtNum, useLang } from '../../i18n';
 import { tc } from '../../cycle/i18n';
@@ -24,6 +24,20 @@ type State =
 export function HierarchyUpload({ depts, ws, onApplied }: { depts: DepartmentDto[]; ws: 'ops' | 'ka'; onApplied: () => void }) {
   useLang();
   const [st, setSt] = useState<State>({ kind: 'idle' });
+  // Replace (default): the file is the whole hierarchy; old names not in it are taken out.
+  const [replace, setReplace] = useState(true);
+  const [delMsg, setDelMsg] = useState<string | null>(null);
+  async function deleteAll() {
+    setDelMsg(null);
+    try {
+      const r = await api<{ heads: number }>('POST', '/api/admin/hierarchy/delete-all', { workspace: ws });
+      setDelMsg(tc('hsDeletedAll', { n: r.heads }));
+      setSt({ kind: 'idle' });
+      onApplied();
+    } catch (x) {
+      setSt({ kind: 'error', message: errText(x) });
+    }
+  }
 
   async function template() {
     // The current hierarchy, so the file is a full copy to edit (or the columns only when empty).
@@ -49,16 +63,16 @@ export function HierarchyUpload({ depts, ws, onApplied }: { depts: DepartmentDto
       ['string', 'string', 'string', 'string', 'string']);
   }
 
-  async function preview(rows: Row[], file: string, chosen: Record<string, number | 'new'>, ka = false) {
+  async function preview(rows: Row[], file: string, chosen: Record<string, number | 'new'>, ka = false, rep = replace) {
     setSt({ kind: 'busy' });
     try {
-      let plan = await api<SyncPlan>('POST', '/api/admin/hierarchy/sync/preview', { rows, depts: chosen, workspace: ws });
+      let plan = await api<SyncPlan>('POST', '/api/admin/hierarchy/sync/preview', { rows, depts: chosen, workspace: ws, replace: rep });
       const picked = { ...chosen };
       for (const h of plan.heads) if (h.deptId !== null && picked[h.head] === undefined) picked[h.head] = h.deptId;
       // Key Account file: an MDM with no department yet becomes a new Key Account department.
       if (ka && plan.heads.some((h) => h.deptId === null && picked[h.head] === undefined)) {
         for (const h of plan.heads) if (h.deptId === null && picked[h.head] === undefined) picked[h.head] = 'new';
-        plan = await api<SyncPlan>('POST', '/api/admin/hierarchy/sync/preview', { rows, depts: picked, workspace: ws });
+        plan = await api<SyncPlan>('POST', '/api/admin/hierarchy/sync/preview', { rows, depts: picked, workspace: ws, replace: rep });
       }
       setSt({ kind: 'preview', file, rows, plan, depts: picked, ka });
     } catch (x) {
@@ -89,7 +103,7 @@ export function HierarchyUpload({ depts, ws, onApplied }: { depts: DepartmentDto
     if (st.kind !== 'preview') return;
     setSt({ kind: 'busy' });
     try {
-      const out = await api<SyncPlan & { treeChange: TreeChange | null }>('POST', '/api/admin/hierarchy/sync/apply', { rows: st.rows, depts: st.depts, workspace: ws });
+      const out = await api<SyncPlan & { treeChange: TreeChange | null }>('POST', '/api/admin/hierarchy/sync/apply', { rows: st.rows, depts: st.depts, workspace: ws, replace });
       setSt({ kind: 'done', file: st.file, plan: out, change: out.treeChange });
       onApplied();
     } catch (x) {
@@ -114,7 +128,14 @@ export function HierarchyUpload({ depts, ws, onApplied }: { depts: DepartmentDto
             accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" disabled={st.kind === 'busy'} />
           <label for={`hier-file-${ws}`} class={`btn primary${st.kind === 'busy' ? ' disabled' : ''}`}>{tc('hsChoose')}</label>
         </span>
+        <ConfirmButton label={tc('hsDeleteAll')} question={tc(ws === 'ka' ? 'hsDeleteAllQKa' : 'hsDeleteAllQ')} yesLabel={tc('hsDeleteAll')} testId="hier-delete-all" onConfirm={deleteAll} />
       </div>
+      <label class="small" style={{ display: 'block', marginTop: '6px' }}>
+        <input type="checkbox" data-testid="hier-replace" checked={replace}
+          onChange={(e) => { const v = e.currentTarget.checked; setReplace(v); if (st.kind === 'preview') void preview(st.rows, st.file, st.depts, st.ka, v); }} />
+        {' '}<b>{tc('hsReplace')}</b> <span class="muted">{tc('hsReplaceHelp')}</span>
+      </label>
+      {delMsg && <div class="banner ok" role="status">{delMsg}</div>}
       {st.kind === 'busy' && <p class="muted" role="status">{tc('loading')}</p>}
       {st.kind === 'error' && <div class="alert" role="alert" data-testid="hier-error">{st.message}</div>}
       {st.kind === 'done' && (
@@ -129,6 +150,12 @@ export function HierarchyUpload({ depts, ws, onApplied }: { depts: DepartmentDto
         <>
           {st.kind === 'preview' && <p class="small"><b>{st.file}</b>: {tc('hsRead', { n: fmtNum(plan.rows), heads: plan.heads.length })}</p>}
           {st.kind === 'preview' && st.ka && <p class="banner info small" data-testid="hier-ka">{tc('hsKaFile')}</p>}
+          {st.kind === 'preview' && plan.replacing && (
+            <p class="banner warn small" data-testid="hier-replacing">
+              {tc('hsReplacing', { nodes: fmtNum(plan.replacing.nodes), routes: fmtNum(plan.replacing.routes) })}
+              {(plan.removed?.length ?? 0) > 0 && <> {tc('hsRemovedHeads', { list: plan.removed!.map((r) => r.name).join(', ') })}</>}
+            </p>
+          )}
           <div class="tablewrap"><table class="ad-table cy-table" data-testid="hier-plan">
             <thead><tr>
               <th>{tc('lvHead')}</th><th>{tc('hsDepartment')}</th>

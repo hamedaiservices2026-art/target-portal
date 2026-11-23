@@ -63,8 +63,10 @@ test('admin sets up a manager, a department, a two-level tree, a route mapping, 
   await expect(page.getByTestId('hz-msg')).toHaveText('Route added.');
   const headRow = page.getByTestId('hz-head').filter({ has: page.getByLabel(`Name ${ROOT}`, { exact: true }) });
   await expect(headRow).toContainText('1');
-  // A Head with people under it cannot be deleted.
-  await expect(headRow.getByRole('button', { name: 'Delete' })).toBeDisabled();
+  // Deleting a Head (with everything under it) asks first.
+  await headRow.getByRole('button', { name: 'Delete' }).click();
+  await expect(page.getByText(/with all the people and 1 routes under it/)).toBeVisible();
+  await page.getByRole('button', { name: 'Cancel' }).click();
 
   // --- Settings: cap 4 (restored in finally so other specs keep the default).
   try {
