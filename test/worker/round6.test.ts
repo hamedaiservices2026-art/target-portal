@@ -172,3 +172,22 @@ describe('Hierarchy replace and delete', () => {
     expect(await one(env.DB, `SELECT COUNT(*) AS n FROM departments`)).toEqual({ n: 0 });
   });
 });
+
+describe('Key Account hierarchy ends at the KAM', () => {
+  it('puts the KAE ID routes under the KAM, named after the KAE', async () => {
+    for (const t of ['audit', 'dept_channels', 'month_leaves', 'month_files', 'month_nodes', 'month_depts', 'months', 'head_approvals',
+      'leaves', 'nodes', 'departments', 'sessions', 'login_failures', 'user_roles', 'users']) await run(env.DB, `DELETE FROM ${t}`);
+    await addUser('admin', 'admin');
+    const admin = await login('admin');
+    const rows = [
+      { head: 'MDM A', manager: 'Kam One', supervisor: 'Kae One', route: '41461', ds: '' },
+      { head: 'MDM A', manager: 'Kam One', supervisor: 'Kae Two', route: '41462', ds: '' },
+    ];
+    const r = await api('POST', '/admin/hierarchy/sync/apply', admin, { rows, depts: { 'MDM A': 'new' }, workspace: 'ka', replace: true });
+    expect(r.status, await r.clone().text()).toBe(200);
+    expect(await all(env.DB, `SELECT name FROM nodes ORDER BY id`)).toEqual([{ name: 'MDM A' }, { name: 'Kam One' }]);
+    expect(await all(env.DB, `SELECT l.route_code, l.label, n.name FROM leaves l JOIN nodes n ON n.id = l.node_id ORDER BY l.route_code`)).toEqual([
+      { route_code: '41461', label: 'Kae One', name: 'Kam One' }, { route_code: '41462', label: 'Kae Two', name: 'Kam One' },
+    ]);
+  });
+});

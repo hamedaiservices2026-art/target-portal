@@ -204,13 +204,8 @@ export async function getCycle(db: D1Database, user: SessionUser, ws: Workspace,
     }));
   if (!full && headList.length === 0 && !m) throw forbidden();
   const settings = c ? { ...defaultSettings(period), ...parseJson<CycleSettings>(c.settings_json) } : defaultSettings(period);
-  if (ws === 'ka') {
-    settings.cdStep = false;
-    if (!c) settings.ntMode = 'ops';
-  } else {
-    // Operation always goes to the Commercial Director.
-    settings.cdStep = true;
-  }
+  if (ws === 'ka' && !c) settings.ntMode = 'ops';
+  settings.cdStep = cdStepOf(ws, settings);
   return {
     ws, period, settings,
     cdStatus: c?.cd_status ?? 'draft',
@@ -303,18 +298,24 @@ async function capStatements(db: D1Database, cap: number | null): Promise<D1Prep
   ];
 }
 
+/**
+ * Whether the cycle goes to the Commercial Director: Operation with a target
+ * uploaded by pack or from the AOP does (the CD splits it by department); a
+ * target uploaded by department is already split, so it skips the CD. Key
+ * Accounts never go to the CD.
+ */
+export function cdStepOf(ws: Workspace, s: Pick<CycleSettings, 'ntMode'>): boolean {
+  return ws !== 'ka' && s.ntMode !== 'dept';
+}
+
 export async function saveSettings(db: D1Database, actorId: number, ws: Workspace, periodRaw: string, body: Obj): Promise<CycleSettings> {
   const period = parseMonth(periodRaw, 'period');
   const cur = await cycleRow(db, ws, period);
   const merged = { ...(cur ? parseJson<Obj>(cur.settings_json) ?? {} : {}), ...body };
   const settings = parseSettings(merged, period);
   // Key Accounts do not go to the Commercial Director: the target is built from the Operation target.
-  if (ws === 'ka') {
-    settings.cdStep = false;
-    if (!cur && body.ntMode === undefined) settings.ntMode = 'ops';
-  } else {
-    settings.cdStep = true;
-  }
+  if (ws === 'ka' && !cur && body.ntMode === undefined) settings.ntMode = 'ops';
+  settings.cdStep = cdStepOf(ws, settings);
   const now = new Date().toISOString();
   const caps = body.capPct !== undefined ? await capStatements(db, settings.capPct) : [];
   if (!cur) {
@@ -325,7 +326,7 @@ export async function saveSettings(db: D1Database, actorId: number, ws: Workspac
     ], 'this cycle already exists');
     return settings;
   }
-  if (cur.cd_status === 'with_cd' && body.cdStep === false) throw conflict('the target is with the Commercial Director: recall it first');
+  if (cur.cd_status === 'with_cd' && !settings.cdStep) throw conflict('the target is with the Commercial Director: recall it first');
   const res = await writeBatch(db, [
     updateCycle(db, ws, period, cur.version, 'settings_json = ?', [JSON.stringify(settings)]),
     auditStatement(db, actorId, 'cycle.settings', {}, { ws, period, settings }),
@@ -345,7 +346,7 @@ export async function sendToCd(db: D1Database, actorId: number, ws: Workspace, p
   const period = parseMonth(periodRaw, 'period');
   const c = await requireCycle(db, ws, period);
   const settings = parseJson<CycleSettings>(c.settings_json) ?? defaultSettings(period);
-  if (!settings.cdStep) throw conflict('the Commercial Director step is off in step 1 of this cycle: turn it on, or set the department target without the CD');
+  if (!cdStepOf(ws, settings)) throw conflict('the Commercial Director step is off in step 1 of this cycle: turn it on, or set the department target without the CD');
   if (c.cd_status === 'with_cd') throw conflict('the target is already with the Commercial Director: recall it first to send it again');
   if (c.cd_status === 'submitted') throw conflict('the Commercial Director already submitted the split: recall it first to send it again');
   // The starting New Target per pack (worked out by the browser from the uploads, first source found wins).
@@ -486,7 +487,7 @@ export async function setDeptTarget(db: D1Database, actorId: number, ws: Workspa
   const period = parseMonth(periodRaw, 'period');
   const c = await requireCycle(db, ws, period);
   const settings = parseJson<CycleSettings>(c.settings_json) ?? defaultSettings(period);
-  if (settings.cdStep && ws !== 'ka') throw conflict('the Commercial Director step is on: the department target comes from the CD');
+  if (cdStepOf(ws, settings)) throw conflict('the Commercial Director step is on: the department target comes from the CD');
   const raw = body.dept;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw bad('dept must be an object of department id to packs');
   const ids = new Set((await all<{ id: number }>(db, `SELECT id FROM departments WHERE workspace = ?`, ws)).map((d) => String(d.id)));
@@ -579,7 +580,7 @@ export async function sendToHead(db: D1Database, actorId: number, ws: Workspace,
   await deptOfWs(db, ws, deptId);
   const c = await requireCycle(db, ws, period);
   const settings = parseJson<CycleSettings>(c.settings_json) ?? defaultSettings(period);
-  if (settings.cdStep && ws !== 'ka' && c.cd_status !== 'submitted') throw conflict('the Commercial Director has not submitted the split yet');
+  if (cdStepOf(ws, settings) && c.cd_status !== 'submitted') throw conflict('the Commercial Director has not submitted the split yet');
   const head = await one<{ status: HeadStatus }>(db, `SELECT status FROM head_approvals WHERE period = ? AND dept_id = ?`, period, deptId);
   if (head && (head.status === 'pending' || head.status === 'approved')) throw conflict(`already ${head.status}: restart the channel first`);
   const calcRow = await one<{ j: string | null }>(db,
@@ -595,6 +596,7 @@ export async function sendToHead(db: D1Database, actorId: number, ws: Workspace,
   }
   const state = await one<{ state: string }>(db, `SELECT state FROM month_depts WHERE month_id = ? AND dept_id = ?`, m.id, deptId);
   if (state && state.state !== 'loading') throw conflict('this department is already running in the month: restart the channel first');
+  await linkPeople(db, ws, deptId);
   // A clean slate for this department (earlier send, returned target) with the live tree.
   await resetDept(db, actorId, m.id, deptId);
 
@@ -697,6 +699,45 @@ export async function sendToHeadAll(db: D1Database, actorId: number, ws: Workspa
   return { ...r, ka };
 }
 
+/**
+ * Before a send: the Key Account Head is the linked Operation Head, and every
+ * person without an account gets the active account of the same name. A Head
+ * nobody can sign in as is refused (nobody would receive the target).
+ */
+async function linkPeople(db: D1Database, ws: Workspace, deptId: number): Promise<void> {
+  if (ws === 'ka') {
+    await db.prepare(
+      `UPDATE nodes SET manager_user_id = (SELECT o.manager_user_id FROM nodes o JOIN departments k ON k.ops_dept_id = o.dept_id
+                                           WHERE k.id = nodes.dept_id AND o.parent_id IS NULL)
+       WHERE dept_id = ? AND parent_id IS NULL
+         AND (SELECT o.manager_user_id FROM nodes o JOIN departments k ON k.ops_dept_id = o.dept_id WHERE k.id = nodes.dept_id AND o.parent_id IS NULL) IS NOT NULL`,
+    ).bind(deptId).run();
+  }
+  await db.prepare(
+    `UPDATE nodes SET manager_user_id = (SELECT MIN(u.id) FROM users u WHERE u.active = 1 AND lower(trim(u.name)) = lower(trim(nodes.name)))
+     WHERE dept_id = ? AND manager_user_id IS NULL
+       AND (SELECT COUNT(*) FROM users u WHERE u.active = 1 AND lower(trim(u.name)) = lower(trim(nodes.name))) = 1`,
+  ).bind(deptId).run();
+  const root = await one<{ name: string; u: number | null }>(db, `SELECT name, manager_user_id AS u FROM nodes WHERE dept_id = ? AND parent_id IS NULL`, deptId);
+  if (root && root.u === null) {
+    throw conflict(ws === 'ka'
+      ? `${root.name} has no Head account: link this Key Account department to its Operation Head (Key Account cycle › Setup), or create the account in Users`
+      : `${root.name} has no account: create the accounts in Users first`);
+  }
+}
+
+/** People of a department who cannot sign in (no account): they would not receive their turn. */
+export async function peopleWithoutAccount(db: D1Database, ws: Workspace): Promise<Record<string, string[]>> {
+  const rows = await all<{ dept_id: number; name: string }>(db,
+    `SELECT n.dept_id, n.name FROM nodes n JOIN departments d ON d.id = n.dept_id
+     WHERE d.workspace = ? AND n.manager_user_id IS NULL
+       AND NOT EXISTS (SELECT 1 FROM users u WHERE u.active = 1 AND lower(trim(u.name)) = lower(trim(n.name)))
+     ORDER BY n.name`, ws);
+  const out: Record<string, string[]> = {};
+  for (const r of rows) (out[String(r.dept_id)] ??= []).push(r.name);
+  return out;
+}
+
 async function headContext(db: D1Database, user: SessionUser, ws: Workspace, period: string, deptId: number) {
   await deptOfWs(db, ws, deptId);
   const h = await one<{ status: HeadStatus; root_manager: number | null; month_id: number | null }>(db,
@@ -707,6 +748,31 @@ async function headContext(db: D1Database, user: SessionUser, ws: Workspace, per
   if (h.root_manager !== user.id) throw forbidden();
   if (h.status !== 'pending') throw conflict(`the target is ${h.status}`);
   return h;
+}
+
+/**
+ * One approval for both workspaces: approving the Operation target also
+ * approves the linked Key Account target waiting for the same Head, so the
+ * KAMs get their turn too. A Key Account target that cannot be approved is
+ * reported back (the Head can approve it on its own card).
+ */
+export async function approveHeadAll(db: D1Database, env: Env, user: SessionUser, ws: Workspace, periodRaw: string, deptId: number): Promise<{ ka: { deptId: number; name: string; approved: boolean; reason?: string }[] }> {
+  await approveHead(db, env, user, ws, periodRaw, deptId);
+  const ka: { deptId: number; name: string; approved: boolean; reason?: string }[] = [];
+  if (ws !== 'ops') return { ka };
+  const period = parseMonth(periodRaw, 'period');
+  const linked = await all<{ id: number; name: string }>(db,
+    `SELECT d.id, d.name FROM departments d JOIN head_approvals h ON h.dept_id = d.id AND h.period = ?
+     WHERE d.workspace = 'ka' AND d.ops_dept_id = ? AND h.status = 'pending' ORDER BY d.sort, d.code`, period, deptId);
+  for (const d of linked) {
+    try {
+      await approveHead(db, env, user, 'ka', period, d.id);
+      ka.push({ deptId: d.id, name: d.name, approved: true });
+    } catch (x) {
+      ka.push({ deptId: d.id, name: d.name, approved: false, reason: x instanceof Error ? x.message : String(x) });
+    }
+  }
+  return { ka };
 }
 
 /** Head approves: the department starts and the Head's own split opens. */

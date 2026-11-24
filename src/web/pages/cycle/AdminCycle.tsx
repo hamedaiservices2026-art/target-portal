@@ -3,7 +3,7 @@
 // send / restart control per Head of Department, route targets and variance.
 import type { ComponentChildren } from 'preact';
 import { useLocation } from 'preact-iso';
-import { useMemo, useState } from 'preact/hooks';
+import { useEffect, useMemo, useState } from 'preact/hooks';
 import { CATEGORIES } from '../../../shared/calc/packs';
 import { PACK_GROUPS } from '../../../shared/imports';
 import { pago as pagoOf } from '../../../shared/calc/periods';
@@ -28,12 +28,12 @@ import { catMap, cdRows, defaultDeptSplit, NO_CHANNEL, prevTargetMonths, startNe
 import { tc } from '../../cycle/i18n';
 import { clearRouteCache, getCycle, getOrg, loadMonthData, loadRouteData, useAsync } from '../../cycle/load';
 import {
-  packIndex, parseAop, parseChannelGrid, parseNewTargetByLeaf, parseNewTargetByPack, parsePackMapping, parsePrevTargets, parseSales, sheetMonth,
+  packIndex, parseAop, parseChannelGrid, parseNewTargetByLeaf, parseNewTargetByPack, parsePrevTargets, parseSales, sheetMonth,
   type Check, type RouteMonthData,
 } from '../../cycle/parsers';
 import { Checks, defaultPeriod, downloadCsv, fmtCases, NumCell, Section, Tabs, writeWorkbook, WsPeriod } from '../../cycle/ui';
 
-export type Loaded = { cycle: CycleDto; org: OrgDto; status: DataStatus; ops?: CycleDto; links?: KaLink[] };
+export type Loaded = { cycle: CycleDto; org: OrgDto; status: DataStatus; ops?: CycleDto; links?: KaLink[]; ka?: CycleDto };
 type NtUpload = { mode: 'pack' | 'dept' | 'leaf' | 'aop'; byPack: Grid; byChannel?: Record<string, Grid>; byLeaf?: Record<string, Grid>; byKam?: Record<string, Grid>; file?: string };
 
 const BATCH = 200;
@@ -296,12 +296,14 @@ function SendStep({ ws, period, l, onDone, missing }: { ws: Workspace; period: s
   }
 
   /** CD step off: the uploaded New Target becomes the department target (by channel, by KAE, or one Head). */
-  async function fromUpload() {
+  async function fromUpload(auto = false) {
     setErr(null);
     setBusy(true);
     try {
       const up = (await loadMonthData<NtUpload>(ws, 'new_target'))[period];
+      if (!up && auto) return;
       if (!up) throw new Error(tc('noUploadYet'));
+      if (auto && up.mode !== 'dept') return;
       const dept: Record<string, Grid> = {};
       const addTo = (d: string, g: Grid) => { const t = (dept[d] ??= {}); for (const [p, n] of Object.entries(g)) t[p] = (t[p] ?? 0) + n; };
       if (up.mode === 'dept' && up.byChannel) {
@@ -327,6 +329,10 @@ function SendStep({ ws, period, l, onDone, missing }: { ws: Workspace; period: s
     }
   }
 
+  // Uploaded by department: no CD; the upload is the department target straight away (next: calculate by route).
+  useEffect(() => {
+    if (!cycle.settings.cdStep && cycle.dept === null) void fromUpload(true);
+  }, [cycle.settings.cdStep, cycle.dept === null, cycle.version]);
   const done = cycle.settings.cdStep ? cycle.cdStatus === 'with_cd' || cycle.cdStatus === 'submitted' : cycle.dept !== null;
   const srcLabel: Record<NtSource, string> = {
     uploaded: tc('srcUploaded'), fy_target: tc('srcFy'), aop_ratio: tc('srcAop'), pago_target: tc('srcPago'), avg_sales: tc('srcAvg'), none: tc('srcNone'),
@@ -822,17 +828,6 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
               }}
               upload={async (p) => after(tc('savedMonths', { n: await uploadMonths(ws, 'dept_channel', p as Record<string, unknown>) }))} />
           )}
-          {!ka && (
-            <UploadStep n={null} title={tc('stepMapping')} help={tc('stepMappingHelp')} template={() => T.packMapping(org)} done={org.packs.some((p) => !!p.sub)} locked={false}
-              parse={({ rows }) => {
-                const r = parsePackMapping(rows!, idx);
-                return { checks: r.checks, summary: tc('sumPacks', { n: Object.keys(r.map).length, total: '—' }), payload: r.map };
-              }}
-              upload={async (map) => {
-                const r = await api<{ updated: number }>('PUT', '/api/admin/packs-sub', { map });
-                return after(tc('mappingSaved', { n: r.updated }));
-              }} />
-          )}
           {!ka && <SendStep ws={ws} period={period} l={l} onDone={reload} missing={missing} />}
         </>
       )}
@@ -1046,7 +1041,11 @@ export function AdminCycle({ ws: wsParam, period: periodParam }: { ws?: string; 
   const setTab = (t: TabId) => go(ws, period, t);
   const loaded = useAsync<Loaded>(async () => {
     const [cycle, org, st] = await Promise.all([getCycle(ws, period), getOrg(ws), api<{ status: DataStatus }>('GET', `/api/data/${ws}/status`)]);
-    if (ws !== 'ka') return { cycle, org, status: st.status };
+    if (ws !== 'ka') {
+      // Operation: the Key Account target of the linked Heads is calculated before the send to the Heads.
+      const [ka, links] = await Promise.all([getCycle('ka', period).catch(() => undefined), api<{ links: KaLink[] }>('GET', '/api/admin/ka-links').catch(() => ({ links: [] as KaLink[] }))]);
+      return { cycle, org, status: st.status, ka, links: links.links };
+    }
     // Key Accounts build on the Operation target of the linked departments.
     const [ops, links] = await Promise.all([getCycle('ops', period), api<{ links: KaLink[] }>('GET', '/api/admin/ka-links')]);
     return { cycle, org, status: st.status, ops, links: links.links };

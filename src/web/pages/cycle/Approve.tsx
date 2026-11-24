@@ -123,7 +123,7 @@ type Approval = {
   monthId: number | null; rootNodeId: number | null; rootStatus: string | null;
 };
 
-function Item({ a, onDone, meta }: { a: Approval; onDone: () => void; meta: PackMeta }) {
+function Item({ a, onDone, meta, withKa = false }: { a: Approval; onDone: () => void; meta: PackMeta; withKa?: boolean }) {
   const [lang] = useLang();
   const [comment, setComment] = useState('');
   const [busy, setBusy] = useState(false);
@@ -166,6 +166,7 @@ function Item({ a, onDone, meta }: { a: Approval; onDone: () => void; meta: Pack
               {a.rootStatus === 'in_progress' ? tc('approveSendMgrs') : tc('approveDistribute')}
             </button>
           </div>
+          {withKa && <p class="small muted" data-testid="approve-with-ka">{tc('approveAlsoKa')}</p>}
           <textarea rows={2} value={comment} placeholder={tc('returnHeadHelp')} aria-label={tc('comment')} onInput={(e) => setComment(e.currentTarget.value)} />
           <div class="actions">
             <button type="button" class="btn danger" disabled={busy || !comment.trim()} onClick={() => void act('return')}>{tc('returnToAdmin')}</button>
@@ -191,7 +192,8 @@ export function Approve() {
       <PageHead title={tc('approveTitle')} intro={tc('approveIntro')} />
       {list.error && <div class="alert" role="alert">{list.error}</div>}
       {list.data && items.length === 0 && <p class="card muted">{tc('noApprovals')}</p>}
-      {items.map((a) => <Item key={`${a.ws}${a.period}${a.deptId}`} a={a} meta={meta.data ?? {}} onDone={list.reload} />)}
+      {items.map((a) => <Item key={`${a.ws}${a.period}${a.deptId}`} a={a} meta={meta.data ?? {}} onDone={list.reload}
+        withKa={a.ws === 'ops' && items.some((k) => k.ws === 'ka' && k.period === a.period && k.status === 'pending')} />)}
     </section>
   );
 }

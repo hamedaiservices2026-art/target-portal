@@ -10,7 +10,7 @@ import type { Loaded } from './AdminCycle';
 
 export type TabId = 'start' | 'calc' | 'control' | 'workflow' | 'routes';
 
-type Next = { text: string; tab: TabId | null; wait?: boolean; done?: boolean };
+type Next = { text: string; tab: TabId | null; wait?: boolean; done?: boolean; href?: string; hrefLabel?: string };
 
 const has = (status: DataStatus, kind: string, month?: string) => status.some((s) => s.kind === kind && (month === undefined || s.month === month));
 
@@ -27,7 +27,7 @@ export function nextStep(ws: Workspace, period: string, l: Loaded): Next {
     const pre = startStep(ws, period, l);
     if (pre) return pre;
   }
-  return afterStart(ws, l);
+  return afterStart(ws, l, period);
 }
 
 /** The start steps: the new target, the sales, the previous targets, then the CD (Operation). */
@@ -57,7 +57,7 @@ function startStep(ws: Workspace, period: string, l: Loaded): Next | null {
   return null;
 }
 
-function afterStart(ws: Workspace, l: Loaded): Next {
+function afterStart(ws: Workspace, l: Loaded, period: string): Next {
   const { cycle } = l;
   const s = cycle.settings;
   const ka = ws === 'ka';
@@ -65,8 +65,19 @@ function afterStart(ws: Workspace, l: Loaded): Next {
   // 2. Calculate and apply, then send to the Heads.
   if (cycle.calcDepts.length === 0) return { text: ka ? tc('nsCalcKa') : tc('nsCalc'), tab: 'calc' };
   const toSend = cycle.heads.filter((h) => cycle.calcDepts.includes(String(h.deptId)) && (h.status === 'draft' || h.status === 'returned'));
+  // Operation: before the send, the Key Account target of the Heads with a Key Account department (Admin workflow step).
+  if (!ka && toSend.length && l.ka && l.links) {
+    const kaHeads = new Map(l.ka.heads.map((h) => [h.deptId, h]));
+    const waiting = l.links.filter((k) => k.opsDeptId !== null && toSend.some((h) => h.deptId === k.opsDeptId)
+      && !l.ka!.calcDepts.includes(String(k.kaDeptId)) && ['draft', 'returned', undefined].includes(kaHeads.get(k.kaDeptId)?.status));
+    if (waiting.length) {
+      return { text: tc('nsKaTarget', { names: waiting.map((k) => kaHeads.get(k.kaDeptId)?.name ?? String(k.kaDeptId)).join(', ') }),
+        tab: null, href: `/admin/cycle/ka/${period}?tab=calc`, hrefLabel: tc('nsKaTargetGo') };
+    }
+  }
   const returned = cycle.heads.filter((h) => h.status === 'returned');
   if (returned.length) return { text: tc('nsReturned', { names: returned.map((h) => h.name).join(', ') }), tab: 'control' };
+  if (toSend.length && ka) return { text: tc('nsKaSendFromOps'), tab: null, href: `/admin/cycle/ops/${period}?tab=control`, hrefLabel: tc('nsKaSendFromOpsGo') };
   if (toSend.length) return { text: tc('nsSend', { n: toSend.length }), tab: 'control' };
   const notCalc = cycle.heads.filter((h) => !cycle.calcDepts.includes(String(h.deptId)) && h.status === 'draft');
   if (notCalc.length && cycle.heads.every((h) => h.status === 'draft' || !cycle.calcDepts.includes(String(h.deptId)))) return { text: ka ? tc('nsCalcKa') : tc('nsCalc'), tab: 'calc' };
@@ -90,6 +101,7 @@ export function NextStep({ ws, period, l, tab, onGo }: { ws: Workspace; period: 
       {n.tab && n.tab !== tab && (
         <button type="button" class="btn primary" data-testid="next-go" onClick={() => onGo(n.tab!)}>{tc('nsGo', { tab: tc(TAB_LABEL[n.tab]) })}</button>
       )}
+      {n.href && <a class="btn primary" data-testid="next-go-ka" href={n.href}>{n.hrefLabel}</a>}
     </div>
   );
 }

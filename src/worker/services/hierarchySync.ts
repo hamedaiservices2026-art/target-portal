@@ -19,7 +19,7 @@ import type { TreeChangeResult } from './flow';
 export const SYNC_MAX_ROWS = 20000;
 const NAME_MAX = 200;
 
-export type SyncRow = { head: string; manager: string; supervisor: string; route: string; ds: string | null; line: number };
+export type SyncRow = { head: string; manager: string; supervisor: string; route: string; ds: string | null; line: number; label?: string | null };
 export type SyncProblem = { line: number | null; detail: string };
 export type SyncHead = {
   head: string;
@@ -85,7 +85,10 @@ function pathOf(r: SyncRow): string[] {
 }
 
 async function plan(db: D1Database, body: Obj): Promise<{ plan: SyncPlan; rows: SyncRow[]; deptOf: Map<string, number>; nodes: NodeRow[]; leaves: LeafRow[]; channels: Map<number, string> }> {
-  const { rows, problems } = parseRows(body.rows);
+  const parsed = parseRows(body.rows);
+  const problems = parsed.problems;
+  // Key Account ends at the KAM: the KAE is the name on the route (KAE ID), not a person with a team.
+  const rows = body.workspace === 'ka' ? parsed.rows.map((r) => ({ ...r, label: r.supervisor || null, supervisor: '' })) : parsed.rows;
   const given = (body.depts && typeof body.depts === 'object' && !Array.isArray(body.depts) ? body.depts : {}) as Obj;
   // One workspace at a time: an Operation file never matches Key Account departments, and the other way round.
   const ws = body.workspace === 'ka' ? 'ka' : 'ops';
@@ -292,6 +295,7 @@ export async function applyHierarchySync(
         deliverySystem: leafOf.get(r.route)?.delivery_system ?? r.ds ?? fallbackDs,
         routeCode: r.route,
         nodeName: original.get(nameOf.get(id)!) ?? target,
+        ...(r.label ? { label: r.label } : {}),
       };
     });
     // bulkMapLeaves matches nodes by their exact name: read them back once.

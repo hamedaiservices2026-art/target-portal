@@ -6,7 +6,7 @@ import { requireUser, type AppEnv } from '../auth';
 import { h, p, type Ctx } from './handler';
 import { benchmarks, salesMonths, setSalesman } from '../services/benchmarks';
 import {
-  applyCalc, approveHead, getCalc, getCycle, getProgress, headSummary, listCycles, myApprovals, recallFromCd, restartHead, returnFromCd, revertCycle, returnHead,
+  applyCalc, approveHeadAll, getCalc, getCycle, getProgress, headSummary, listCycles, myApprovals, recallFromCd, restartHead, returnFromCd, revertCycle, returnHead,
   saveCd, saveSettings, sendToCd, sendToHeadAll, setDeptTarget, submitCd,
 } from '../services/cycle';
 import {
@@ -111,10 +111,8 @@ cycle.post('/api/cycle/:ws/:period/cd/return', h(async (c, db, _me, body) => {
   await returnFromCd(db, c.var.user, ws(c), per(c), await body());
   return c.json({ ok: true });
 }));
-cycle.post('/api/cycle/:ws/:period/heads/:deptId/approve', h(async (c, db) => {
-  await approveHead(db, c.env, c.var.user, ws(c), per(c), parseId(p(c, 'deptId')));
-  return c.json({ ok: true });
-}));
+cycle.post('/api/cycle/:ws/:period/heads/:deptId/approve', h(async (c, db) =>
+  c.json({ ok: true, ...(await approveHeadAll(db, c.env, c.var.user, ws(c), per(c), parseId(p(c, 'deptId')))) })));
 cycle.post('/api/cycle/:ws/:period/heads/:deptId/return', h(async (c, db, _me, body) => {
   await returnHead(db, c.var.user, ws(c), per(c), parseId(p(c, 'deptId')), await body());
   return c.json({ ok: true });

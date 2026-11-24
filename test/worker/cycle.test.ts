@@ -168,6 +168,47 @@ describe('target cycle (handover flow)', () => {
     expect(ap.approvals.length).toBe(2);
   });
 
+  it('a Key Account department made after the month opened is sent; approving Operation also approves it and the KAM gets the turn', async () => {
+    await api('PUT', `/admin/cycle/ops/${P}/settings`, admin, {});
+    await run(env.DB, `UPDATE cycles SET cd_status = 'submitted', dept_json = ? WHERE ws = 'ops' AND period = ?`, JSON.stringify({ [tt]: { CSD_CANS150: 10 }, [mt]: { CSD_CANS150: 5 } }), P);
+    expect((await api('PUT', `/admin/cycle/ops/${P}/calc`, admin, { calc: { [tt]: { R1: { CSD_CANS150: 10 } } } })).status).toBe(200);
+    // The month opens with the first send (MT has no Head account: refused with the reason).
+    expect((await api('PUT', `/admin/cycle/ops/${P}/calc`, admin, { calc: { [mt]: { M1: { CSD_CANS150: 5 } } } })).status).toBe(200);
+    expect((await json(await api('POST', `/admin/cycle/ops/${P}/heads/${mt}/send`, admin))).detail).toMatch(/MT Head has no account/);
+    expect(await one(env.DB, `SELECT COUNT(*) AS n FROM months`)).toEqual({ n: 1 });
+    // A Key Account department uploaded after the month opened, ending at the KAM (routes under the KAM).
+    await addUser('kam1');
+    await run(env.DB, `UPDATE users SET name = 'Kam One' WHERE username = 'kam1'`);
+    const ka = (await run(env.DB, `INSERT INTO departments(code, name, workspace) VALUES ('KA_TT', 'KA TT', 'ka')`)).lastRowId;
+    const kroot = (await run(env.DB, `INSERT INTO nodes(dept_id, parent_id, name) VALUES (?, NULL, 'KA Head')`, ka)).lastRowId;
+    const kam = (await run(env.DB, `INSERT INTO nodes(dept_id, parent_id, name) VALUES (?, ?, 'Kam One')`, ka, kroot)).lastRowId;
+    await run(env.DB, `INSERT INTO leaves(dept_id, delivery_system, route_code, node_id, label) VALUES (?, 'KA', 'K1', ?, 'Kae One')`, ka, kam);
+    await run(env.DB, `UPDATE departments SET ops_dept_id = ? WHERE id = ?`, tt, ka);
+    await api('PUT', `/admin/cycle/ka/${P}/settings`, admin, {});
+    await run(env.DB, `UPDATE cycles SET dept_json = ? WHERE ws = 'ka' AND period = ?`, JSON.stringify({ [ka]: { CSD_CANS150: 7 } }), P);
+    expect((await api('PUT', `/admin/cycle/ka/${P}/calc`, admin, { calc: { [ka]: { K1: { CSD_CANS150: 7 } } } })).status).toBe(200);
+    const r = await json(await api('POST', `/admin/cycle/ops/${P}/heads/${tt}/send`, admin));
+    expect(r.ka).toEqual([{ deptId: ka, name: 'KA TT', sent: true }]);
+    // The KA Head is the Operation Head; the KAM got the account of the same name.
+    expect(await one(env.DB, `SELECT manager_user_id AS u FROM nodes WHERE id = ?`, kroot)).toEqual({ u: headId });
+    const ap = await json(await api('POST', `/cycle/ops/${P}/heads/${tt}/approve`, head));
+    expect(ap.ka).toEqual([{ deptId: ka, name: 'KA TT', approved: true }]);
+    const kamNode = await one<{ status: string; u: number | null }>(env.DB, `SELECT status, manager_user_id AS u FROM month_nodes WHERE node_id = ?`, kam);
+    expect(kamNode?.status).toBe('in_progress');
+    expect(kamNode?.u).not.toBeNull();
+  });
+
+  it('a target uploaded by department skips the Commercial Director', async () => {
+    await api('PUT', `/admin/cycle/ops/${P}/settings`, admin, { ntMode: 'dept' });
+    const cyc = await json(await api('GET', `/cycle/ops/${P}`, admin));
+    expect(cyc.settings.cdStep).toBe(false);
+    expect((await api('PUT', `/admin/cycle/ops/${P}/dept-target`, admin, { dept: { [tt]: { CSD_CANS150: 10 } } })).status).toBe(200);
+    expect((await api('PUT', `/admin/cycle/ops/${P}/calc`, admin, { calc: { [tt]: { R1: { CSD_CANS150: 10 } } } })).status).toBe(200);
+    expect((await api('POST', `/admin/cycle/ops/${P}/heads/${tt}/send`, admin)).status).toBe(200);
+    await api('PUT', `/admin/cycle/ops/${P}/settings`, admin, { ntMode: 'pack' });
+    expect((await json(await api('GET', `/cycle/ops/${P}`, admin))).settings.cdStep).toBe(true);
+  });
+
   it('a pack turned on after the month was opened is added to the month when sending', async () => {
     await api('PUT', `/admin/cycle/ops/${P}/settings`, admin, {});
     await run(env.DB, `UPDATE cycles SET cd_status = 'submitted', dept_json = ? WHERE ws = 'ops' AND period = ?`, JSON.stringify({ [tt]: { CSD_CANS150: 10, LIT_CANS320: 4, NOPE: 1 } }), P);

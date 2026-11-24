@@ -4,6 +4,7 @@ import type { PackDto } from '../../../worker/services/masters';
 import { api } from '../../api';
 import { errText, Field, LoadError, PageHead, useResource } from '../../components/AdminBits';
 import { ImportPanel } from '../../components/ImportPanel';
+import { PackMappingCard } from './PackMapping';
 import { t, useLang } from '../../i18n';
 
 export const PACK_GROUPS = ['CSD', 'Water', 'LRB-Others'] as const;
@@ -100,6 +101,7 @@ export function Packs() {
         </button>
       </PageHead>
       {importing && <ImportPanel kind="packs" onApplied={res.reload} />}
+      <PackMappingCard onSaved={res.reload} />
       <form class="card ad-form" onSubmit={add} noValidate>
         <h2>{t('adPackAdd')}</h2>
         <div class="grid">

@@ -119,7 +119,7 @@ export function KaCalcTab({ period, l, reload, onNext }: { period: string; l: Lo
         const kaeNode = byId.get(leaf.nodeId);
         const kamId = kamNode?.id ?? leaf.nodeId;
         const kam = kamNode?.name ?? '';
-        const line: Line = { key: `r:${r}`, dept: deptName, kam, kae: kaeNode && depthOf(kaeNode.id) >= 2 ? kaeNode.name : kam, route: r, level: 'kae', base: share, target, sales: a.s, prev: a.t, avg, pct: override[r] ?? null };
+        const line: Line = { key: `r:${r}`, dept: deptName, kam, kae: kaeNode && depthOf(kaeNode.id) >= 2 ? kaeNode.name : (leaf.label && leaf.label !== r ? leaf.label : kam), route: r, level: 'kae', base: share, target, sales: a.s, prev: a.t, avg, pct: override[r] ?? null };
         kaes.push(line);
         if (!kams.has(kamId)) kams.set(kamId, { key: `n:${kamId}`, dept: deptName, kam, kae: '', route: null, level: 'kam', base: {}, target: {}, sales: {}, prev: {}, avg: {}, pct: null });
         const kl = kams.get(kamId)!;

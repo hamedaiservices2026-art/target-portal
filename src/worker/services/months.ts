@@ -391,6 +391,9 @@ export async function refreshTree(
 // ---------- reset / start ----------
 
 export async function resetDept(db: D1Database, actorId: number, monthId: number, deptId: number): Promise<void> {
+  // A department made after the month was opened (a new or re-uploaded Head): it joins the month now.
+  await db.prepare(`INSERT OR IGNORE INTO month_depts(month_id, dept_id, state)
+    SELECT m.id, d.id, 'loading' FROM months m, departments d WHERE m.id = ? AND d.id = ?`).bind(monthId, deptId).run();
   const cur = await one<{ state: string; files: number; leaves: number }>(
     db,
     `SELECT md.state,
