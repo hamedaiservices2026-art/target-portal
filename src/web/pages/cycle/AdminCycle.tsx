@@ -412,6 +412,75 @@ function SendStep({ ws, period, l, onDone, missing }: { ws: Workspace; period: s
   );
 }
 
+// ---------- step 2 by department: the uploaded target, editable ----------
+
+/** The target uploaded by pack and department, as uploaded (CD columns), editable before the next steps. */
+function DeptUploadTable({ ws, period, org, nt, onSaved }: { ws: Workspace; period: string; org: OrgDto; nt: NtUpload; onSaved: (msg: string) => void }) {
+  useLang();
+  const [g, setG] = useState<Record<string, Grid>>(() => JSON.parse(JSON.stringify(nt.byChannel ?? {})) as Record<string, Grid>);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const cats = catMap(org);
+  const subOf = subMap(org.packs);
+  const grid = deptColumns(orderedDeptCols(org.depts.filter((d) => d.channels.length), '_'), (name) => tc('totalOf', { name }));
+  const packs = [...new Set([...Object.keys(nt.byPack), ...Object.values(g).flatMap((x) => Object.keys(x))])];
+  const changed = JSON.stringify(g) !== JSON.stringify(nt.byChannel ?? {});
+  const colSum = (cells: { c: string }[], list: string[]) => cells.reduce((s, k) => s + list.reduce((t, p) => t + (g[k.c]?.[p] ?? 0), 0), 0);
+  async function save() {
+    setBusy(true); setErr(null);
+    try {
+      const byPack: Grid = {};
+      for (const x of Object.values(g)) for (const [p, n] of Object.entries(x)) byPack[p] = (byPack[p] ?? 0) + n;
+      await uploadMonths(ws, 'new_target', { [period]: { ...nt, mode: 'dept', byPack, byChannel: g } });
+      // The department target follows the upload (no CD when uploaded by department).
+      const dept: Record<string, Grid> = {};
+      for (const d of org.depts) {
+        const t: Grid = {};
+        for (const c of d.channels) for (const [p, n] of Object.entries(g[c.channel] ?? {})) t[p] = (t[p] ?? 0) + n;
+        dept[String(d.id)] = t;
+      }
+      await api('PUT', `/api/admin/cycle/${ws}/${period}/dept-target`, { dept });
+      onSaved(tc('duSaved'));
+    } catch (x) {
+      setErr(errText(x));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div class="cy-step" data-testid="dept-upload-table">
+      <div class="cy-step-head"><span class="cy-step-n">✎</span><div><b>{tc('duTitle', { period })}</b><p class="muted small">{tc('duHelp')}</p></div></div>
+      <div class="cy-step-body">
+        <div class="tablewrap cy-tall"><table class="ad-table cy-table">
+          <thead>
+            <tr><th /><th />{grid.heads.map((h) => (h.kind === 'dept' ? <th key={`h${h.d.id}`} colSpan={h.span} class="grp">{h.d.name}</th> : <th key={`t${h.label}`} />))}<th /></tr>
+            <tr><th>{tc('pack')}</th><th>{tc('subCategory')}</th>{grid.flat.map((x) => (x.kind === 'cell' ? <th key={`${x.d.id}${x.c}`} class="num">{x.c}</th> : <th key={`t${x.label}`} class="num tot">{x.label}</th>))}<th class="num">{tc('total')}</th></tr>
+          </thead>
+          <tbody>{cdRows(packs, cats).map((r) => {
+            const list = r.kind === 'sub' ? r.packs : [r.pack];
+            return (
+              <tr key={r.kind === 'sub' ? r.label : r.pack} class={r.kind === 'sub' ? `sub l${r.level}` : ''}>
+                <td><bdi>{r.kind === 'sub' ? r.label : r.pack}</bdi></td><td class="small muted">{r.kind === 'pack' ? subOf(r.pack) : ''}</td>
+                {grid.flat.map((x) => (x.kind === 'cell'
+                  ? <td key={`${x.d.id}${x.c}`} class="num">{r.kind === 'pack'
+                    ? <NumCell value={g[x.c]?.[r.pack] ?? 0} label={`${r.pack} ${x.c}`} onChange={(n) => setG((o) => ({ ...o, [x.c]: { ...(o[x.c] ?? {}), [r.pack]: Math.max(0, Math.round(n)) } }))} />
+                    : fmtNum(colSum([{ c: x.c }], list))}</td>
+                  : <td key={`t${x.label}`} class="num tot">{fmtNum(colSum(x.cells, list))}</td>))}
+                <td class="num"><b>{fmtNum(Object.keys(g).reduce((s, c) => s + list.reduce((t, p) => t + (g[c]?.[p] ?? 0), 0), 0))}</b></td>
+              </tr>
+            );
+          })}</tbody>
+        </table></div>
+        <div class="actions">
+          <button type="button" class="btn primary" data-testid="du-save" disabled={busy || !changed} onClick={() => void save()}>{tc('duSave')}</button>
+          {changed && <button type="button" class="btn" onClick={() => setG(JSON.parse(JSON.stringify(nt.byChannel ?? {})) as Record<string, Grid>)}>{tc('resetAllEdits')}</button>}
+        </div>
+        {err && <div class="alert" role="alert">{err}</div>}
+      </div>
+    </div>
+  );
+}
+
 // ---------- step 2 with the AOP option: the AOP of the target month, editable ----------
 
 /** The AOP of the target month as the new target by pack: change, delete or add packs, then save. */
@@ -762,9 +831,24 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
                 for (const g of Object.values(r.byChannel)) for (const [p, v] of Object.entries(g)) byPack[p] = (byPack[p] ?? 0) + v;
                 return { checks: r.checks, summary: tc('sumPacks', { n: Object.keys(byPack).length, total: fmtNum(total(byPack)) }), payload: { mode: 'dept', byPack, byChannel: r.byChannel } };
               }}
-              upload={async (payload, file) => after(tc('savedMonths', { n: await uploadMonths(ws, 'new_target', { [period]: { ...(payload as object), file } }) }))}>
+              upload={async (payload, file) => {
+                const n = await uploadMonths(ws, 'new_target', { [period]: { ...(payload as object), file } });
+                // Uploaded by department: it is the department target right away (no CD).
+                const byChannel = (payload as { byChannel: Record<string, Grid> }).byChannel;
+                const dept: Record<string, Grid> = {};
+                for (const d of org.depts) {
+                  const t: Grid = {};
+                  for (const c of d.channels) for (const [p, v] of Object.entries(byChannel[c.channel] ?? {})) t[p] = (t[p] ?? 0) + v;
+                  dept[String(d.id)] = t;
+                }
+                await api('PUT', `/api/admin/cycle/${ws}/${period}/dept-target`, { dept }).catch(() => undefined);
+                return after(tc('savedMonths', { n }));
+              }}>
               {modePicker}
             </UploadStep>
+          )}
+          {mode === 'dept' && !ka && nt?.mode === 'dept' && nt.byChannel && (
+            <DeptUploadTable key={`${cycle.version}`} ws={ws} period={period} org={org} nt={nt} onSaved={(m) => { after(m); ntData.reload(); }} />
           )}
           {mode === 'leaf' && ka && (
             <UploadStep n={2} title={tc('step2', { period })} help={tc('step2cHelp')} template={() => T.newTargetByLeaf(org, period)} done={done[1]!} locked={locked} loaded={loadedText}

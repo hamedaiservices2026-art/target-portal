@@ -12,11 +12,11 @@ export const ADMIN_NAV: { path: string; label: TextKey }[] = [
   { path: '/admin/packs', label: 'navPacks' },
   { path: '/admin/users', label: 'navUsers' },
   { path: '/admin/hierarchy', label: 'navHierarchy' },
-  { path: '/admin/months', label: 'navMonths' },
   { path: '/admin/history', label: 'navHistory' },
   { path: '/admin/departments', label: 'navDepartments' },
 ];
-const inSettings = (path: string) => ADMIN_NAV.some((n) => path === n.path || path.startsWith(`${n.path}/`));
+// The month board (opened from the target cycle) stays under Settings without its own tab.
+const inSettings = (path: string) => path.startsWith('/admin/months') || ADMIN_NAV.some((n) => path === n.path || path.startsWith(`${n.path}/`));
 
 export function Layout({ children }: { children?: ComponentChildren }) {
   useLang();

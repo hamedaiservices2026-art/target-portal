@@ -20,7 +20,7 @@ import { tc } from '../../cycle/i18n';
 import { loadMonthData, loadRouteData, useAsync } from '../../cycle/load';
 import { Checks, fmtPct, MonthPicker, monthsLabel, NumCell, Section, Tabs, writeWorkbook } from '../../cycle/ui';
 
-type Loaded = { cycle: CycleDto; org: OrgDto };
+type Loaded = { cycle: CycleDto; org: OrgDto; links?: { kaDeptId: number; opsDeptId: number | null }[] };
 type Basis = 'sales' | 'uploaded';
 
 /** A row of the cascade: a node or a route, with its depth. */
@@ -423,7 +423,11 @@ export function CalcTab({ ws, period, l, reload, onNext }: { ws: Workspace; peri
         <p class="small muted">{tc('contribHelp', { months: monthsLabel(months) })}</p>
       </Section>
       {check}
-      {msg && <div class="banner ok" role="status" data-testid="calc-applied">{msg} {onNext && <button type="button" class="btn primary" onClick={onNext}>{tc('goSend')}</button>}</div>}
+      {msg && <div class="banner ok" role="status" data-testid="calc-applied">{msg}{' '}
+        {ws === 'ops' && (l.links ?? []).some((k) => k.opsDeptId !== null) && (
+          <a class="btn primary" data-testid="go-ka-target" href={`/admin/cycle/ka/${period}?tab=calc`}>{tc('goKaTarget')}</a>
+        )}
+        {onNext && <button type="button" class={ws === 'ops' && (l.links ?? []).some((k) => k.opsDeptId !== null) ? 'btn' : 'btn primary'} onClick={onNext}>{tc('goSend')}</button>}</div>}
       {err && <div class="alert" role="alert">{err}</div>}
       <div class="actions cy-end">
         <button type="button" class="btn" onClick={exportCalc}>{tc('exportCalc')}</button>

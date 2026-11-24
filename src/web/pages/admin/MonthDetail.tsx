@@ -14,6 +14,7 @@ import { fmtDateTime, fmtPeriod } from '../../format';
 import { fmtNum, t, tf, useLang, type TextKey } from '../../i18n';
 import { groupTotals, parseSheet1, toBatches, type Sheet1 } from '../../monthUpload';
 import { DeptStatePill, deptStateLabel } from './Months';
+import { tc } from '../../cycle/i18n';
 
 type Month = MonthListDto;
 type Dept = Month['depts'][number];
@@ -653,13 +654,13 @@ export function MonthDetail({ mid = '' }: { mid?: string }) {
       <section class="card">
         <h1>{t('notFound')}</h1>
         <p class="muted">{t('mcMonthGone')}</p>
-        <a href="/admin/months">{t('mcBackToMonths')}</a>
+        <a href="/admin/cycle">{tc('navCycle')}</a>
       </section>
     );
   }
   return (
     <section data-testid="admin-month">
-      <p class="crumbs"><a href="/admin/months">{t('navMonths')}</a></p>
+      <p class="crumbs"><a href={`/admin/cycle/ops/${month.period}?tab=workflow`}>{tc('navCycle')}</a></p>
       <PageHead title={`${fmtPeriod(month.period, lang)} (\u2068${month.period}\u2069)`} intro={t('mcMonthIntro')}>
         <ExportButton month={month} dept="all" label={t('mcExportAll')} />
       </PageHead>

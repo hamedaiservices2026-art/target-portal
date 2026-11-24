@@ -295,7 +295,7 @@ export function KaCalcTab({ period, l, reload, onNext }: { period: string; l: Lo
           <p class="small muted">{tc('kaPeopleHelp')}</p>
         </Section>
       )}
-      {msg && <div class="banner ok" role="status" data-testid="calc-applied">{msg} {onNext && <button type="button" class="btn primary" onClick={onNext}>{tc('goSend')}</button>}</div>}
+      {msg && <div class="banner ok" role="status" data-testid="calc-applied">{msg} <a class="btn primary" data-testid="go-ops-send" href={`/admin/cycle/ops/${period}?tab=control`}>{tc('nsKaSendFromOpsGo')}</a>{onNext ? null : null}</div>}
       {err && <div class="alert" role="alert">{err}</div>}
       {lines.length > 0 && (
         <div class="actions cy-end">

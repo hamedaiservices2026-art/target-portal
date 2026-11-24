@@ -39,7 +39,7 @@ function startStep(ws: Workspace, period: string, l: Loaded): Next | null {
   if (ka && s.ntMode === 'ops') {
     const linked = (l.links ?? []).filter((x) => x.opsDeptId !== null);
     if (!linked.length) return { text: tc('nsKaLink'), tab: 'start' };
-    if (!linked.some((x) => l.ops?.dept?.[String(x.opsDeptId)])) return { text: tc('nsKaWaitOps', { period }), tab: null, wait: true };
+    if (!linked.some((x) => l.ops?.dept?.[String(x.opsDeptId)])) return { text: tc('nsKaWaitOps', { period }), tab: null, wait: true, href: `/admin/cycle/ops/${period}`, hrefLabel: tc('nsOpenOps') };
   } else if (!has(status, 'new_target', period)) {
     return { text: s.ntMode === 'aop' ? tc('nsNtAop', { period }) : tc('nsNt', { period }), tab: 'start' };
   }
@@ -69,7 +69,9 @@ function afterStart(ws: Workspace, l: Loaded, period: string): Next {
   if (!ka && toSend.length && l.ka && l.links) {
     const kaHeads = new Map(l.ka.heads.map((h) => [h.deptId, h]));
     const waiting = l.links.filter((k) => k.opsDeptId !== null && toSend.some((h) => h.deptId === k.opsDeptId)
-      && !l.ka!.calcDepts.includes(String(k.kaDeptId)) && ['draft', 'returned', undefined].includes(kaHeads.get(k.kaDeptId)?.status));
+      && ['draft', 'returned', undefined].includes(kaHeads.get(k.kaDeptId)?.status)
+      // Not calculated yet, or calculated before the Operation target it builds on was last applied.
+      && (!l.ka!.calcDepts.includes(String(k.kaDeptId)) || (l.ka!.updatedAt || '') < (cycle.updatedAt || '')));
     if (waiting.length) {
       return { text: tc('nsKaTarget', { names: waiting.map((k) => kaHeads.get(k.kaDeptId)?.name ?? String(k.kaDeptId)).join(', ') }),
         tab: null, href: `/admin/cycle/ka/${period}?tab=calc`, hrefLabel: tc('nsKaTargetGo') };
