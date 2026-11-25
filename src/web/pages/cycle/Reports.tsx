@@ -9,6 +9,7 @@ import type { Workspace } from '../../../worker/auth';
 import type { CycleDto } from '../../../worker/services/cycle';
 import type { OrgDto } from '../../../worker/services/cycleData';
 import { PageHead } from '../../components/AdminBits';
+import { CdDashboard } from './CdDashboard';
 import { fmtNum, useLang } from '../../i18n';
 import { avgOf, catMap, groupSales, routeIndex, sumCat, total, type Grid } from '../../cycle/compute';
 import { tc } from '../../cycle/i18n';
@@ -16,7 +17,7 @@ import { getCycle, getOrg, loadRouteData, useAsync } from '../../cycle/load';
 import type { RouteMonthData } from '../../cycle/parsers';
 import { defaultPeriod, downloadCsv, fmtGap, gapClass, Section, Tabs, useMyWorkspaces, WsPeriod } from '../../cycle/ui';
 
-type TabId = 'flow' | 'avg' | 'summary' | 'dash';
+type TabId = 'flow' | 'avg' | 'summary' | 'dash' | 'cdd';
 type Loaded = { cycle: CycleDto; org: OrgDto };
 
 // ---------- workflow stepper ----------
@@ -244,12 +245,13 @@ export function Reports({ ws: wsParam, period: periodParam }: { ws?: string; per
       <PageHead title={tc('reportsTitle')} intro={tc('reportsIntro')} />
       <WsPeriod ws={ws} period={period} allowed={allowed} onChange={(w, p) => route(`/reports/${w}/${p}`)} />
       <Tabs<TabId> value={tab} onChange={setTab} items={[
-        { id: 'flow', label: tc('tabFlow') }, { id: 'avg', label: tc('tabAvg') }, { id: 'summary', label: tc('tabSummary') }, { id: 'dash', label: tc('tabDash') },
+        { id: 'flow', label: tc('tabFlow') }, { id: 'avg', label: tc('tabAvg') }, { id: 'summary', label: tc('tabSummary') }, { id: 'dash', label: tc('tabDash') }, { id: 'cdd', label: tc('cddTab') },
       ]} />
       {loaded.error && <div class="alert" role="alert">{loaded.error}</div>}
       {!l && !loaded.error && <p class="muted">{tc('loading')}</p>}
       {l && tab === 'flow' && <Flow l={l} />}
       {l && tab === 'summary' && <Summary l={l} />}
+      {l && tab === 'cdd' && <CdDashboard ws={ws} cycle={l.cycle} org={l.org} />}
       {l && (tab === 'avg' || tab === 'dash') && sales.error && <div class="alert">{sales.error}</div>}
       {l && (tab === 'avg' || tab === 'dash') && !sales.data && !sales.error && <p class="muted">{tc('loading')}</p>}
       {l && tab === 'avg' && sales.data && <Averages l={l} sales={sales.data} months={avgMonths} />}

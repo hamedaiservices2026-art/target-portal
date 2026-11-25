@@ -408,3 +408,26 @@ td.bench .gsub { display: block; font-size: 11px; }
 .cy-table tr.cd-file[style] td { background: var(--ft-bg); color: var(--ft-fg); font-weight: var(--ft-w); }
 .cy-table tr.cd-file[style] td .cy-num { background: #fff; color: #000; }
 .cd-dist-how { margin-block: 8px; gap: 14px; }
+/* CD dashboard: % bars around a centre line (blue = vs sales, orange = vs AOP) */
+:root { --cdd-sales: #257de0; --cdd-aop: #f47230; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --cdd-sales: #338ced; --cdd-aop: #e76624; } }
+:root[data-theme="dark"] { --cdd-sales: #338ced; --cdd-aop: #e76624; }
+.cdd-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-block: 10px; }
+.cdd-kpi { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; display: grid; gap: 2px; }
+.cdd-kpi span { color: var(--muted); font-size: 0.85rem; }
+.cdd-kpi b { font-size: 1.4rem; font-variant-numeric: tabular-nums; }
+.cdd-filters { align-items: center; gap: 12px; flex-wrap: wrap; margin-block: 8px; }
+.cdd-legend { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; color: var(--muted); }
+.cdd-legend .sw { inline-size: 12px; block-size: 12px; border-radius: 3px; display: inline-block; margin-inline-start: 8px; }
+.cdd-legend .sw.sales { background: var(--cdd-sales); }
+.cdd-legend .sw.aop { background: var(--cdd-aop); }
+.cdd-table td { vertical-align: middle; }
+.cdd-col { min-inline-size: 220px; }
+.cdd-bar { display: grid; grid-template-columns: 1fr 64px; align-items: center; gap: 8px; }
+.cdd-track { position: relative; block-size: 12px; background: linear-gradient(to right, transparent calc(50% - 1px), var(--line) calc(50% - 1px), var(--line) calc(50% + 1px), transparent calc(50% + 1px)); }
+.cdd-fill { position: absolute; inset-block: 1px; border-radius: 0 4px 4px 0; }
+.cdd-fill.neg { border-radius: 4px 0 0 4px; }
+.cdd-fill.sales { background: var(--cdd-sales); }
+.cdd-fill.aop { background: var(--cdd-aop); }
+.cdd-val { font-variant-numeric: tabular-nums; text-align: end; font-size: 0.85rem; }
+.cdd-na { color: var(--muted); }
