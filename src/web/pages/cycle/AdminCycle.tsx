@@ -29,12 +29,16 @@ import { tc } from '../../cycle/i18n';
 import { clearRouteCache, getCycle, getOrg, loadMonthData, loadRouteData, useAsync } from '../../cycle/load';
 import {
   packIndex, parseAop, parseChannelGrid, parseNewTargetByLeaf, parseNewTargetByPack, parsePrevTargets, parseAopByDept, parseSales, sheetMonth,
-  type Check, type RouteMonthData,
+  type Check, type FileRow, type RouteMonthData,
 } from '../../cycle/parsers';
 import { Checks, defaultPeriod, PacksAdded, PacksVersion, downloadCsv, fmtCases, NumCell, Section, Tabs, writeWorkbook, WsPeriod } from '../../cycle/ui';
 
 export type Loaded = { cycle: CycleDto; org: OrgDto; status: DataStatus; ops?: CycleDto; links?: KaLink[]; ka?: CycleDto };
-type NtUpload = { mode: 'pack' | 'dept' | 'leaf' | 'aop'; byPack: Grid; byChannel?: Record<string, Grid>; byLeaf?: Record<string, Grid>; byKam?: Record<string, Grid>; file?: string };
+type NtUpload = { mode: 'pack' | 'dept' | 'leaf' | 'aop'; byPack: Grid; byChannel?: Record<string, Grid>; byLeaf?: Record<string, Grid>; byKam?: Record<string, Grid>; file?: string; layout?: FileRow[] };
+/** One month of the AOP by department: channel grids, with the file's row order (older uploads: the grids only). */
+type AopDeptMonth = Record<string, Grid> | { byChannel: Record<string, Grid>; layout: FileRow[] };
+const aopDeptOf = (v: AopDeptMonth | undefined): { byChannel: Record<string, Grid>; layout: FileRow[] } | null =>
+  !v ? null : 'byChannel' in v && 'layout' in v ? (v as { byChannel: Record<string, Grid>; layout: FileRow[] }) : { byChannel: v as Record<string, Grid>, layout: [] };
 
 const BATCH = 200;
 
@@ -436,13 +440,14 @@ function AopDeptStep({ ws, period, org, saved, modePicker, onSaved }: {
   ws: Workspace; period: string; org: OrgDto; saved: NtUpload | null; modePicker: ComponentChildren; onSaved: (msg: string) => void;
 }) {
   useLang();
-  const data = useAsync(() => loadMonthData<Record<string, Grid>>('ops', 'aop_dept'), [period]);
+  const data = useAsync(() => loadMonthData<AopDeptMonth>('ops', 'aop_dept'), [period]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const idx = useMemo(() => packIndex(org.packs.map((p) => p.code)), [org]);
   const channels = org.depts.flatMap((d) => d.channels.map((c) => c.channel));
   const months = Object.keys(data.data ?? {}).sort();
-  const mine = data.data?.[period] ?? null;
+  const mineAll = aopDeptOf(data.data?.[period]);
+  const mine = mineAll?.byChannel ?? null;
   const used = saved?.mode === 'dept' && (saved.file ?? '').startsWith('AOP');
   async function use() {
     if (!mine) return;
@@ -451,7 +456,7 @@ function AopDeptStep({ ws, period, org, saved, modePicker, onSaved }: {
       const byPack: Grid = {};
       for (const g of Object.values(mine)) for (const [p, n] of Object.entries(g)) byPack[p] = (byPack[p] ?? 0) + n;
       // Goes to the CD like every AOP option; the CD sees the AOP split by department.
-      await uploadMonths(ws, 'new_target', { [period]: { mode: 'dept', byPack, byChannel: mine, file: `AOP by department ${period}` } });
+      await uploadMonths(ws, 'new_target', { [period]: { mode: 'dept', byPack, byChannel: mine, layout: mineAll?.layout ?? [], file: `AOP by department ${period}` } });
       onSaved(tc('aopDeptUsed', { period, total: fmtNum(total(byPack)) }));
     } catch (x) {
       setErr(errText(x));
@@ -466,7 +471,8 @@ function AopDeptStep({ ws, period, org, saved, modePicker, onSaved }: {
         loaded={months.length ? tc('loadedMonths', { from: months[0]!, to: months[months.length - 1]!, n: months.length }) : null}
         parse={({ sheets }) => {
           const r = parseAopByDept(sheets!, channels, idx);
-          return { checks: r.checks, summary: tc('sumMonths', { n: Object.keys(r.byMonth).length }), payload: r.byMonth };
+          const payload = Object.fromEntries(Object.entries(r.byMonth).map(([m, g]) => [m, { byChannel: g, layout: r.layout }]));
+          return { checks: r.checks, summary: tc('sumMonths', { n: Object.keys(r.byMonth).length }), payload };
         }}
         upload={async (p) => { const n = await uploadMonths(ws, 'aop_dept', p as Record<string, unknown>); data.reload(); return tc('savedMonths', { n }); }}>
         {modePicker}
@@ -475,6 +481,7 @@ function AopDeptStep({ ws, period, org, saved, modePicker, onSaved }: {
         <div class="cy-step-head"><span class="cy-step-n">{used ? '✓' : '•'}</span>
           <div><b>{tc('aopDeptUseTitle', { period })}</b><p class="muted small">{mine ? tc('aopDeptUseHelp', { total: fmtNum(Object.values(mine).reduce((s2, g) => s2 + total(g), 0)) }) : tc('aopDeptNone', { period })}</p></div></div>
         <div class="cy-step-body">
+          {mine && !used && <FileTargetTable org={org} g={mine} layout={mineAll?.layout ?? []} />}
           <button type="button" class="btn primary" data-testid="aop-dept-use-btn" disabled={busy || !mine} onClick={() => void use()}>{used ? tc('aopDeptUseAgain') : tc('aopDeptUse')}</button>
           {err && <div class="alert" role="alert">{err}</div>}
         </div>
@@ -485,24 +492,88 @@ function AopDeptStep({ ws, period, org, saved, modePicker, onSaved }: {
 
 // ---------- step 2 by department: the uploaded target, editable ----------
 
+/**
+ * The target by pack and department as in the file: packs in the file's order
+ * with the file's Total rows, heads and channels as columns, a grand total.
+ * Editable when onChange is given (changed cells are marked against `base`).
+ */
+function FileTargetTable({ org, g, layout, base, onChange }: {
+  org: OrgDto; g: Record<string, Grid>; layout: FileRow[]; base?: Record<string, Grid>; onChange?: (channel: string, pack: string, n: number) => void;
+}) {
+  useLang();
+  const cats = catMap(org);
+  const grid = deptColumns(orderedDeptCols(org.depts.filter((d) => d.channels.length), '_'), (name) => tc('totalOf', { name }));
+  const cells = grid.flat.filter((x) => x.kind === 'cell').map((x) => (x.kind === 'cell' ? x.c : ''));
+  const all = [...new Set(Object.values(g).flatMap((x) => Object.keys(x)))];
+  // The file's order; packs not in the file (added later) follow, by category.
+  const inFile = new Set(layout.flatMap((x) => ('p' in x ? [x.p] : [])));
+  const rest = cdRows(all.filter((p) => !inFile.has(p)), cats).flatMap((x) => (x.kind === 'pack' ? [x.pack] : []));
+  const rows: FileRow[] = layout.length ? [...layout.filter((x) => 'p' in x || x.of.length), ...rest.map((p) => ({ p }))]
+    : cdRows(all, cats).map((x) => (x.kind === 'pack' ? { p: x.pack } : { t: x.label, of: x.packs }));
+  const covered = rows.some((x) => 't' in x && all.every((p) => x.of.includes(p)));
+  const v = (c: string, list: string[]) => list.reduce((t, p) => t + (g[c]?.[p] ?? 0), 0);
+  const sumCells = (cs: string[], list: string[]) => cs.reduce((t, c) => t + v(c, list), 0);
+  const line = (list: string[]) => sumCells(cells, list);
+  const grand = line(all);
+  const heads = org.depts.filter((d) => d.channels.length).map((d) => ({ name: d.name, n: sumCells(d.channels.map((c) => c.channel), all) }));
+  const totalDepth = (x: { of: string[] }) => (x.of.length === all.length ? 'grand' : x.of.length > all.length / 3 ? 'big' : 'mid');
+  return (
+    <div class="ft">
+      <div class="ft-chips" data-testid="ft-chips">
+        {heads.map((h) => <span key={h.name} class="ft-chip"><span>{h.name}</span><b>{fmtNum(h.n)}</b><i>{grand ? `${((h.n / grand) * 100).toFixed(1)}%` : ''}</i></span>)}
+        <span class="ft-chip total"><span>{tc('total')}</span><b>{fmtNum(grand)}</b></span>
+      </div>
+      <div class="tablewrap cy-tall"><table class="ad-table cy-table ft-table" data-testid="file-target-table">
+        <thead>
+          <tr><th class="ft-pack" />{grid.heads.map((h) => (h.kind === 'dept' ? <th key={`h${h.d.id}`} colSpan={h.span} class="grp">{h.d.name}</th> : <th key={`t${h.label}`} />))}<th /></tr>
+          <tr><th class="ft-pack">{tc('pack')}</th>{grid.flat.map((x) => (x.kind === 'cell' ? <th key={`${x.d.id}${x.c}`} class="num">{x.c}</th> : <th key={`t${x.label}`} class="num tot">{x.label}</th>))}<th class="num ft-sum">{tc('total')}</th></tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => {
+            const list = 'p' in r ? [r.p] : r.of;
+            const isTot = 't' in r;
+            return (
+              <tr key={isTot ? `t${i}${r.t}` : r.p} class={isTot ? `ft-total ${totalDepth(r)}` : 'ft-row'}>
+                <td class="ft-pack"><bdi>{isTot ? r.t : r.p}</bdi></td>
+                {grid.flat.map((x) => {
+                  if (x.kind !== 'cell') return <td key={`t${x.label}`} class="num tot">{fmtNum(sumCells(x.cells.map((k) => k.c), list))}</td>;
+                  if (isTot || !onChange) return <td key={`${x.d.id}${x.c}`} class="num">{fmtNum(v(x.c, list))}</td>;
+                  const p = (r as { p: string }).p;
+                  const now = g[x.c]?.[p] ?? 0;
+                  const edited = base && now !== (base[x.c]?.[p] ?? 0);
+                  return <td key={`${x.d.id}${x.c}`} class={`num${edited ? ' ft-edited' : ''}`}><NumCell value={now} label={`${p} ${x.c}`} onChange={(n) => onChange(x.c, p, n)} /></td>;
+                })}
+                <td class="num ft-sum"><b>{fmtNum(line(list))}</b></td>
+              </tr>
+            );
+          })}
+          {!covered && (
+            <tr class="ft-total grand">
+              <td class="ft-pack">{tc('total')}</td>
+              {grid.flat.map((x) => <td key={x.kind === 'cell' ? `${x.d.id}${x.c}` : `t${x.label}`} class={`num${x.kind === 'cell' ? '' : ' tot'}`}>{fmtNum(x.kind === 'cell' ? v(x.c, all) : sumCells(x.cells.map((k) => k.c), all))}</td>)}
+              <td class="num ft-sum"><b>{fmtNum(grand)}</b></td>
+            </tr>
+          )}
+        </tbody>
+      </table></div>
+    </div>
+  );
+}
+
 /** The target uploaded by pack and department, as uploaded (CD columns), editable before the next steps. */
 function DeptUploadTable({ ws, period, org, nt, cdStep, onSaved }: { ws: Workspace; period: string; org: OrgDto; nt: NtUpload; cdStep: boolean; onSaved: (msg: string) => void }) {
   useLang();
   const [g, setG] = useState<Record<string, Grid>>(() => JSON.parse(JSON.stringify(nt.byChannel ?? {})) as Record<string, Grid>);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const cats = catMap(org);
-  const subOf = subMap(org.packs);
-  const grid = deptColumns(orderedDeptCols(org.depts.filter((d) => d.channels.length), '_'), (name) => tc('totalOf', { name }));
-  const packs = [...new Set([...Object.keys(nt.byPack), ...Object.values(g).flatMap((x) => Object.keys(x))])];
   const changed = JSON.stringify(g) !== JSON.stringify(nt.byChannel ?? {});
-  const colSum = (cells: { c: string }[], list: string[]) => cells.reduce((s, k) => s + list.reduce((t, p) => t + (g[k.c]?.[p] ?? 0), 0), 0);
   async function save() {
     setBusy(true); setErr(null);
     try {
       const byPack: Grid = {};
       for (const x of Object.values(g)) for (const [p, n] of Object.entries(x)) byPack[p] = (byPack[p] ?? 0) + n;
       await uploadMonths(ws, 'new_target', { [period]: { ...nt, mode: 'dept', byPack, byChannel: g } });
+      // The file's own layout is kept (nt.layout).
       // The department target follows the upload (no CD when uploaded by department).
       const dept: Record<string, Grid> = {};
       for (const d of org.depts) {
@@ -522,28 +593,10 @@ function DeptUploadTable({ ws, period, org, nt, cdStep, onSaved }: { ws: Workspa
     <div class="cy-step" data-testid="dept-upload-table">
       <div class="cy-step-head"><span class="cy-step-n">✎</span><div><b>{tc('duTitle', { period })}</b><p class="muted small">{tc('duHelp')}</p></div></div>
       <div class="cy-step-body">
-        <div class="tablewrap cy-tall"><table class="ad-table cy-table">
-          <thead>
-            <tr><th /><th />{grid.heads.map((h) => (h.kind === 'dept' ? <th key={`h${h.d.id}`} colSpan={h.span} class="grp">{h.d.name}</th> : <th key={`t${h.label}`} />))}<th /></tr>
-            <tr><th>{tc('pack')}</th><th>{tc('subCategory')}</th>{grid.flat.map((x) => (x.kind === 'cell' ? <th key={`${x.d.id}${x.c}`} class="num">{x.c}</th> : <th key={`t${x.label}`} class="num tot">{x.label}</th>))}<th class="num">{tc('total')}</th></tr>
-          </thead>
-          <tbody>{cdRows(packs, cats).map((r) => {
-            const list = r.kind === 'sub' ? r.packs : [r.pack];
-            return (
-              <tr key={r.kind === 'sub' ? r.label : r.pack} class={r.kind === 'sub' ? `sub l${r.level}` : ''}>
-                <td><bdi>{r.kind === 'sub' ? r.label : r.pack}</bdi></td><td class="small muted">{r.kind === 'pack' ? subOf(r.pack) : ''}</td>
-                {grid.flat.map((x) => (x.kind === 'cell'
-                  ? <td key={`${x.d.id}${x.c}`} class="num">{r.kind === 'pack'
-                    ? <NumCell value={g[x.c]?.[r.pack] ?? 0} label={`${r.pack} ${x.c}`} onChange={(n) => setG((o) => ({ ...o, [x.c]: { ...(o[x.c] ?? {}), [r.pack]: Math.max(0, Math.round(n)) } }))} />
-                    : fmtNum(colSum([{ c: x.c }], list))}</td>
-                  : <td key={`t${x.label}`} class="num tot">{fmtNum(colSum(x.cells, list))}</td>))}
-                <td class="num"><b>{fmtNum(Object.keys(g).reduce((s, c) => s + list.reduce((t, p) => t + (g[c]?.[p] ?? 0), 0), 0))}</b></td>
-              </tr>
-            );
-          })}</tbody>
-        </table></div>
+        <FileTargetTable org={org} g={g} layout={nt.layout ?? []} base={nt.byChannel ?? {}}
+          onChange={(c, p, n) => setG((o) => ({ ...o, [c]: { ...(o[c] ?? {}), [p]: Math.max(0, Math.round(n)) } }))} />
         <div class="actions">
-          <button type="button" class="btn primary" data-testid="du-save" disabled={busy || !changed} onClick={() => void save()}>{tc('duSave')}</button>
+          <button type="button" class="btn primary" data-testid="du-save" disabled={busy} onClick={() => void save()}>{tc('duSave')}</button>
           {changed && <button type="button" class="btn" onClick={() => setG(JSON.parse(JSON.stringify(nt.byChannel ?? {})) as Record<string, Grid>)}>{tc('resetAllEdits')}</button>}
         </div>
         {err && <div class="alert" role="alert">{err}</div>}

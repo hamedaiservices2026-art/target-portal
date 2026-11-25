@@ -528,7 +528,67 @@ export const TEMPLATES: Record<string, { file: string; columns: string[]; sample
  * rows: Pack; columns: the months of the year, then FY). The sheet named ABC /
  * Total is the check: channels must add up to it. Values are rounded to whole cases.
  */
-export function parseAopByDept(sheets: { sheet: string; data: unknown[][] }[], channels: string[], idx: PackIndex): { byMonth: Record<Month, Record<string, Record<string, number>>>; checks: Check[] } {
+/** The rows of a target file in its own order: packs, and the file's Total rows with the packs each one sums. */
+export type FileRow = { p: string } | { t: string; of: string[] };
+
+/**
+ * The file's layout from one sheet (the ABC / total sheet): packs in order and
+ * each "Total …" row with the packs it adds up, found from the numbers (the
+ * nearest packs above it whose months add up to the total).
+ */
+export function fileLayout(data: unknown[][], idx: PackIndex): FileRow[] {
+  const hRow = data.findIndex((r) => Array.isArray(r) && r.some((x) => PACK_NAMES.some((n) => squash(n) === squash(x))));
+  if (hRow < 0) return [];
+  const header = data[hRow]!;
+  const pCol = header.findIndex((x) => PACK_NAMES.some((n) => squash(n) === squash(x)));
+  const nCols = header.map((x, i) => (i !== pCol && (parseMonth(x) || /fy|total/i.test(String(x ?? ''))) ? i : -1)).filter((i) => i >= 0);
+  const rows: { name: string; code: string | null; total: boolean; v: number[] }[] = [];
+  for (const r of data.slice(hRow + 1)) {
+    if (!Array.isArray(r)) continue;
+    const name = cellText(r[pCol]);
+    if (!name) continue;
+    const total = isSubtotal(name);
+    rows.push({ name, total, code: total ? null : idx.get(packKey(name)) ?? null, v: nCols.map((i) => cellNumber(r[i]) ?? 0) });
+  }
+  const out: FileRow[] = [];
+  const seen = new Set<string>();
+  rows.forEach((row, t) => {
+    if (!row.total) {
+      if (row.code && !seen.has(row.code)) { seen.add(row.code); out.push({ p: row.code }); }
+      return;
+    }
+    const sum = row.v.map(() => 0);
+    const of: string[] = [];
+    let ok = false;
+    for (let k = t - 1; k >= 0; k--) {
+      const x = rows[k]!;
+      if (x.total) continue;
+      x.v.forEach((n, i) => { sum[i] = (sum[i] ?? 0) + n; });
+      if (x.code && !of.includes(x.code)) of.unshift(x.code);
+      if (sum.every((n, i) => Math.abs(n - row.v[i]!) <= 1)) { ok = true; break; }
+    }
+    if (ok && of.length) out.push({ t: row.name, of });
+  });
+  return out;
+}
+
+/** Whole cases per pack whose sum keeps the column's total (largest remainder). */
+function roundKeepTotal(g: Record<string, number>): Record<string, number> {
+  const keys = Object.keys(g);
+  const want = Math.round(keys.reduce((s, k) => s + g[k]!, 0));
+  const out: Record<string, number> = {};
+  for (const k of keys) out[k] = Math.floor(g[k]!);
+  let left = want - keys.reduce((s, k) => s + out[k]!, 0);
+  for (const k of [...keys].sort((a, b) => (g[b]! - Math.floor(g[b]!)) - (g[a]! - Math.floor(g[a]!)))) {
+    if (left <= 0) break;
+    out[k]! += 1;
+    left--;
+  }
+  for (const k of keys) if (out[k] === 0) delete out[k];
+  return out;
+}
+
+export function parseAopByDept(sheets: { sheet: string; data: unknown[][] }[], channels: string[], idx: PackIndex): { byMonth: Record<Month, Record<string, Record<string, number>>>; layout: FileRow[]; checks: Check[] } {
   const checks: Check[] = [];
   const consonants = (s: string) => s.slice(0, 1) + s.slice(1).replace(/[aeiou]/g, '');
   const chanOf = (name: string): string | null => {
@@ -562,10 +622,12 @@ export function parseAopByDept(sheets: { sheet: string; data: unknown[][] }[], c
     }
     return out;
   };
+  let layout: FileRow[] = [];
   for (const s of sheets) {
     if (/^(abc|total|all)$/i.test(s.sheet.trim())) {
       const t = read(s.data);
       if (t) Object.assign(totalSheet, t);
+      layout = fileLayout(s.data, idx);
       continue;
     }
     const ch = chanOf(s.sheet);
@@ -574,9 +636,12 @@ export function parseAopByDept(sheets: { sheet: string; data: unknown[][] }[], c
     if (!g) { checks.push({ level: 'error', text: `Sheet ${s.sheet}: the Pack column and the month columns were not found.` }); continue; }
     for (const [m, packs] of Object.entries(g)) {
       const dst = ((byMonth[m] ??= {})[ch] ??= {});
-      for (const [p, n] of Object.entries(packs)) dst[p] = Math.round((dst[p] ?? 0) + n);
+      for (const [p, n] of Object.entries(packs)) dst[p] = (dst[p] ?? 0) + n;
     }
   }
+  // Whole cases, keeping each channel's monthly total as in the file.
+  for (const chs of Object.values(byMonth)) for (const [c, g] of Object.entries(chs)) chs[c] = roundKeepTotal(g);
+  if (!layout.length && sheets[0]) layout = fileLayout(sheets[0].data, idx);
   if (skipped.length) checks.push({ level: 'warning', text: `Sheet(s) not matched to a channel and not read: ${skipped.join(', ')}. Channels: ${channels.join(', ')}.` });
   const missing = channels.filter((c) => !Object.values(byMonth).some((x) => x[c]));
   if (missing.length) checks.push({ level: 'warning', text: `No sheet for channel(s): ${missing.join(', ')} (they get 0).` });
@@ -593,5 +658,5 @@ export function parseAopByDept(sheets: { sheet: string; data: unknown[][] }[], c
   const months = Object.keys(byMonth).sort();
   if (!months.length) checks.push({ level: 'error', text: 'No month was read.' });
   else checks.push({ level: 'info', text: `${months.length} month(s) read (${months[0]} to ${months[months.length - 1]}), ${Object.keys(Object.assign({}, ...Object.values(byMonth))).length} channel(s).` });
-  return { byMonth, checks };
+  return { byMonth, layout, checks };
 }
