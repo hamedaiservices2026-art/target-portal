@@ -103,6 +103,13 @@ test('the whole cycle: CD splits and submits, Admin calculates and sends, the He
   await cd.getByTestId('uplift-pct').fill('10');
   await cd.getByTestId('uplift-apply').click();
   await expect(cell).toHaveValue(/550/);
+  // Avg sales / PAGO / YAGO columns can be hidden and shown again.
+  const catTable = cd.getByTestId('cd-by-category');
+  await expect(catTable.getByRole('columnheader', { name: 'PAGO' }).first()).toBeVisible();
+  await cd.getByTestId('cd-cat-bench').uncheck();
+  await expect(catTable.getByRole('columnheader', { name: 'PAGO' })).toHaveCount(0);
+  await cd.getByTestId('cd-cat-bench').check();
+  await expect(catTable.getByRole('columnheader', { name: 'PAGO' }).first()).toBeVisible();
   await cd.getByRole('tab', { name: 'vs PAGO sales' }).click();
   await expect(cd.getByTestId('head-sales-cat')).toContainText('CSD');
   await cd.getByRole('button', { name: 'Approve and return to Admin' }).click();

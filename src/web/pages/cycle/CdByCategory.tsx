@@ -35,6 +35,8 @@ export function CdByCategory({ work, heads, cats, subOf, bench, editable, setWor
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [upPct, setUpPct] = useState('');
   const [upScope, setUpScope] = useState<'all' | Category>('all');
+  const [showB, setShowB] = useState(() => { try { return localStorage.getItem('cd-cat-bench') !== '0'; } catch { return true; } });
+  const toggleB = (on: boolean) => { setShowB(on); try { localStorage.setItem('cd-cat-bench', on ? '1' : '0'); } catch { /* ignore */ } };
   const packs = Object.keys(work.nt).filter((p) => (work.nt[p] ?? 0) > 0);
   const inCat = (c: Category) => packs.filter((p) => (cats.get(p) ?? 'LRB-Others') === c);
   const val = (p: string, h: CdHead) => deptPack(work.dm, h.id, p);
@@ -88,14 +90,14 @@ export function CdByCategory({ work, heads, cats, subOf, bench, editable, setWor
       <tr key={key} class={cls}>
         <td>{label}</td>
         <td class="num">{editable ? <NumCell value={tgt} label={`${key} ${tc('target')}`} onChange={(n) => setTotal(list, n)} /> : fmtNum(tgt)}</td>
-        <BenchCells v={tgt} b={sumBench(list.flatMap((p) => heads.map((h) => bench(p, h))))} team />
+        {showB && <BenchCells v={tgt} b={sumBench(list.flatMap((p) => heads.map((h) => bench(p, h))))} team />}
         {heads.map((h, i) => {
           const v = list.reduce((s, p) => s + val(p, h), 0);
           return [
             <td key={h.id} class="num">
               {editable && heads.length > 1 ? <NumCell value={v} label={`${key} ${h.name}`} onChange={(n) => change(list, i, n)} /> : fmtNum(v)}
             </td>,
-            <BenchCells key={`b${h.id}`} v={v} b={sumBench(list.map((p) => bench(p, h)))} />,
+            showB ? <BenchCells key={`b${h.id}`} v={v} b={sumBench(list.map((p) => bench(p, h)))} /> : null,
           ];
         })}
       </tr>
@@ -121,9 +123,12 @@ export function CdByCategory({ work, heads, cats, subOf, bench, editable, setWor
           <span class="muted small">{tc('upliftHelp')}</span>
         </div>
       )}
+      <label class="small cy-bench-toggle">
+        <input type="checkbox" data-testid="cd-cat-bench" checked={showB} onChange={(e) => toggleB(e.currentTarget.checked)} />{' '}{tc('showBench')}
+      </label>
       {err && <div class="alert" role="alert">{err}</div>}
       <div class="tablewrap"><table class="ad-table cy-table">
-        <thead><tr><th>{tc('category')}</th><th class="num">{tc('target')}</th><BenchHead team />{heads.map((h) => [<th key={h.id} class="num"><bdi>{h.name}</bdi></th>, <BenchHead key={`b${h.id}`} />])}</tr></thead>
+        <thead><tr><th>{tc('category')}</th><th class="num">{tc('target')}</th>{showB && <BenchHead team />}{heads.map((h) => [<th key={h.id} class="num"><bdi>{h.name}</bdi></th>, showB ? <BenchHead key={`b${h.id}`} /> : null])}</tr></thead>
         <tbody>{CATEGORIES.flatMap((c) => {
           const list = inCat(c);
           if (!list.length) return [];
