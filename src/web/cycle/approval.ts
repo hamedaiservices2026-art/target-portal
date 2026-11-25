@@ -3,7 +3,6 @@
 // PAGO and PLAN with the file's Total rows, the pack mix and the signature
 // line; sheet 2, "By Manager", has the target by pack and channel with a
 // total per Head and the grand total (ABC). Totals and % are Excel formulas.
-import { insertElementMarkupAccordingToOrderOfSiblings } from 'write-excel-file/utility';
 import type { FileRow } from './parsers';
 import type { Grid } from './compute';
 
@@ -111,18 +110,59 @@ const SHEET_ORDER = ['sheetPr', 'dimension', 'sheetViews', 'sheetFormatPr', 'col
   'printOptions', 'pageMargins', 'pageSetup', 'headerFooter', 'rowBreaks', 'colBreaks', 'customProperties', 'cellWatches', 'ignoredErrors', 'smartTags',
   'drawing', 'legacyDrawing', 'legacyDrawingHF', 'picture', 'oleObjects', 'controls', 'webPublishItems', 'tableParts', 'extLst'];
 
+/** Split the worksheet's top-level child elements (sheetData can be large: plain scanning). */
+function topChildren(inner: string): string[] {
+  const out: string[] = [];
+  const re = /<(\/?)([A-Za-z][\w:]*)[^>]*?(\/?)>/g;
+  let depth = 0;
+  let start = -1;
+  for (let m = re.exec(inner); m; m = re.exec(inner)) {
+    const [tag, close, , self] = m;
+    if (depth === 0 && !close) start = m.index;
+    if (close) depth--; else if (!self) depth++;
+    if (depth === 0 && start >= 0) { out.push(inner.slice(start, m.index + tag.length)); start = -1; }
+  }
+  return out;
+}
+
+/**
+ * Add elements to a worksheet and put every top-level element in the order the
+ * file format requires (Excel blanks a sheet whose elements are out of order).
+ * An added element replaces one of the same name.
+ */
+export function orderSheetXml(xml: string, add: string[]): string {
+  const open = xml.match(/<worksheet\b[^>]*>/);
+  const end = xml.lastIndexOf('</worksheet>');
+  if (!open || end < 0) return xml;
+  const head = xml.slice(0, open.index! + open[0].length);
+  const name = (el: string) => /^<([\w:]+)/.exec(el)?.[1] ?? '';
+  const added = new Set(add.map(name));
+  const kids = topChildren(xml.slice(head.length, end)).filter((k) => !added.has(name(k))).concat(add);
+  const rank = (el: string) => { const i = SHEET_ORDER.indexOf(name(el)); return i < 0 ? SHEET_ORDER.length : i; };
+  const sorted = kids.map((k, i) => ({ k, i })).sort((a, b) => rank(a.k) - rank(b.k) || a.i - b.i).map((x) => x.k);
+  return head + sorted.join('') + xml.slice(end);
+}
+
 /** Print setup as in the template: one page (fit to page), A4, centred, the template's margins. */
 export const PRINT_FEATURE = {
   files: {
     transform: {
+      // Totals and % are formulas without stored results: Excel works them out on opening.
+      'xl/workbook.xml': {
+        transform(xml: string) {
+          return xml.replace(/<calcPr\b[^>]*\/>/, '<calcPr calcId="191029" fullCalcOnLoad="1"/>');
+        },
+      },
       'xl/worksheets/sheet{id}.xml': {
         transform(xml: string, options: { print?: { orientation: 'portrait' | 'landscape' } }) {
           if (!options.print) return xml;
-          const ins = (x: string, el: string) => insertElementMarkupAccordingToOrderOfSiblings(x, el, SHEET_ORDER, 'worksheet');
-          let out = ins(xml, '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>');
-          out = ins(out, '<printOptions horizontalCentered="1"/>');
-          out = ins(out, '<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>');
-          return ins(out, `<pageSetup paperSize="9" orientation="${options.print.orientation}" fitToWidth="1" fitToHeight="1"/>`);
+          const add = [
+            '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>',
+            '<printOptions horizontalCentered="1"/>',
+            '<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>',
+            `<pageSetup paperSize="9" orientation="${options.print.orientation}" fitToWidth="1" fitToHeight="1"/>`,
+          ];
+          return orderSheetXml(xml, add);
         },
       },
     },
