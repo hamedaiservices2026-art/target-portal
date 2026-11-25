@@ -1,7 +1,7 @@
 // Admin › Target cycle (handover sections 3, 4, 6, 9): the 5-step start with
 // every upload, the Commercial Director hand-off, the target calculator, the
 // send / restart control per Head of Department, route targets and variance.
-import type { ComponentChildren } from 'preact';
+import { createContext, type ComponentChildren } from 'preact';
 import { useLocation } from 'preact-iso';
 import { useContext, useEffect, useMemo, useState } from 'preact/hooks';
 import { CATEGORIES, packKey } from '../../../shared/calc/packs';
@@ -41,6 +41,24 @@ const aopDeptOf = (v: AopDeptMonth | undefined): { byChannel: Record<string, Gri
   !v ? null : 'byChannel' in v && 'layout' in v ? (v as { byChannel: Record<string, Grid>; layout: FileRow[] }) : { byChannel: v as Record<string, Grid>, layout: [] };
 
 const BATCH = 200;
+
+/** What is already loaded, for the upload steps' "add new months / update" choice. */
+const StatusCtx = createContext<DataStatus>([]);
+const MONTH_RE = /^\d{4}-\d{2}$/;
+/** The months a parsed file holds: the payload's month keys (or its `data`'s, for the Key Account previous targets). */
+function monthsOfPayload(p: unknown): string[] {
+  if (!p || typeof p !== 'object') return [];
+  const o = (p as { data?: unknown }).data && typeof (p as { data?: unknown }).data === 'object' ? (p as { data: object }).data : p;
+  return Object.keys(o).filter((k) => MONTH_RE.test(k)).sort();
+}
+/** The payload without the given months (same shape). */
+function dropMonths(p: unknown, skip: Set<string>): unknown {
+  const strip = (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o).filter(([k]) => !(MONTH_RE.test(k) && skip.has(k))));
+  const x = p as { data?: Record<string, unknown>; extra?: Record<string, unknown> };
+  if (x.data && typeof x.data === 'object') return { ...x, data: strip(x.data), ...(x.extra ? { extra: strip(x.extra) } : {}) };
+  return strip(p as Record<string, unknown>);
+}
+type UpMode = 'add' | 'update' | 'replace';
 
 async function uploadRoutes(ws: Workspace, kind: 'sales' | 'prev_target', data: RouteMonthData, extra: Record<string, Record<string, unknown>> | null, file: string, onProgress: (n: number) => void): Promise<number> {
   const months = Object.keys(data).sort();
@@ -82,7 +100,12 @@ function UploadStep({ ws, clearKind, n, title, help, template, done, locked, par
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
-  const [replace, setReplace] = useState(false);
+  const [mode, setMode] = useState<UpMode>('update');
+  const status = useContext(StatusCtx);
+  const loadedMonths = new Set(clearKind ? status.filter((s) => s.kind === clearKind.kind).map((s) => s.month) : []);
+  const fileMonths = parsed ? monthsOfPayload(parsed.payload) : [];
+  const newMonths = fileMonths.filter((m) => !loadedMonths.has(m));
+  const oldMonths = fileMonths.filter((m) => loadedMonths.has(m));
   const [input, setInput] = useState<{ rows?: unknown[][]; sheets?: { sheet: string; data: unknown[][] }[] } | null>(null);
   const packsVer = useContext(PacksVersion);
   // Packs were added to the pack master from this file's check: read the file again with them.
@@ -109,8 +132,12 @@ function UploadStep({ ws, clearKind, n, title, help, template, done, locked, par
     setBusy(true);
     setErr(null);
     try {
-      if (replace && ws && clearKind) await api('POST', `/api/admin/data/${ws}/clear-all`, clearKind);
-      setMsg(await upload(parsed.payload, parsed.file, setProgress));
+      if (mode === 'replace' && ws && clearKind) await api('POST', `/api/admin/data/${ws}/clear-all`, clearKind);
+      // "Add new months only": the months already loaded are left as they are.
+      const payload = mode === 'add' && fileMonths.length ? dropMonths(parsed.payload, new Set(oldMonths)) : parsed.payload;
+      if (mode === 'add' && fileMonths.length && !newMonths.length) { setMsg(tc('upNothingNew')); setParsed(null); return; }
+      const out = await upload(payload, parsed.file, setProgress);
+      setMsg(mode === 'add' && oldMonths.length ? `${out} ${tc('upSkipped', { n: oldMonths.length })}` : out);
       setParsed(null);
     } catch (x) {
       setErr(errText(x));
@@ -119,7 +146,8 @@ function UploadStep({ ws, clearKind, n, title, help, template, done, locked, par
       setProgress(0);
     }
   }
-  const blocking = parsed?.checks.some((c) => c.level === 'error') ?? false;
+  const blocking = (parsed?.checks.some((c) => c.level === 'error') ?? false) || (mode === 'add' && fileMonths.length > 0 && newMonths.length === 0);
+  const span = (l: string[]) => (l.length === 0 ? '—' : l.length === 1 ? l[0]! : `${l[0]} → ${l[l.length - 1]} (${l.length})`);
 
   return (
     <div class={`cy-step${done ? ' done' : ''}`} data-testid={`step-${n ?? 'extra'}`}>
@@ -140,8 +168,13 @@ function UploadStep({ ws, clearKind, n, title, help, template, done, locked, par
               <Checks checks={parsed.checks} />
               {ws && clearKind && (
                 <fieldset class="cy-keep" data-testid="keep-or-replace">
-                  <label class="small"><input type="radio" checked={!replace} onChange={() => setReplace(false)} /> {tc('keepPrev')}</label>{' '}
-                  <label class="small"><input type="radio" checked={replace} onChange={() => setReplace(true)} data-testid="replace-prev" /> {tc('replacePrev')}</label>
+                  {fileMonths.length > 0 && (
+                    <p class="small" data-testid="up-months"><b>{tc('upInFile')}</b> {span(fileMonths)} · <b>{tc('upNew')}</b> {span(newMonths)} · <b>{tc('upAlready')}</b> {span(oldMonths)}</p>
+                  )}
+                  <label class="small"><input type="radio" name={`up-${clearKind.kind}`} checked={mode === 'add'} onChange={() => setMode('add')} data-testid="up-add" /> <b>{tc('upAdd')}</b> {tc('upAddHelp')}</label><br />
+                  <label class="small"><input type="radio" name={`up-${clearKind.kind}`} checked={mode === 'update'} onChange={() => setMode('update')} data-testid="up-update" /> <b>{tc('upUpdate')}</b> {tc('upUpdateHelp')}</label><br />
+                  <label class="small"><input type="radio" name={`up-${clearKind.kind}`} checked={mode === 'replace'} onChange={() => setMode('replace')} data-testid="replace-prev" /> <b>{tc('upReplace')}</b> {tc('upReplaceHelp')}</label>
+                  {mode === 'add' && fileMonths.length > 0 && newMonths.length === 0 && <p class="small banner warn">{tc('upNothingNew')}</p>}
                 </fieldset>
               )}
               <div class="actions">
@@ -950,6 +983,7 @@ function StartTab({ ws, period, l, reload, part }: { ws: Workspace; period: stri
   return (
     <PacksAdded.Provider value={reload}>
     <PacksVersion.Provider value={org.packs.length}>
+    <StatusCtx.Provider value={status}>
     <>
       <div class="cy-progress" aria-label={tc('stepsDone', { n, of })}>
         <div class="bar"><span style={{ width: `${(n / of) * 100}%` }} /></div>
@@ -1046,6 +1080,7 @@ function StartTab({ ws, period, l, reload, part }: { ws: Workspace; period: stri
           )}
           <UploadStep ws={ws} clearKind={{ table: 'routes', kind: 'sales' }} n={ka ? 1 : 2} title={ka ? tc('step5Ka') : tc('step5')} help={ka ? tc('step5HelpKa') : tc('step5Help')}
             template={() => (ka ? T.kaSales(org, period) : T.sales(org, period, ws))} done={salesDone} locked={false}
+            loaded={prevLoaded(status, 'sales')}
             parse={({ rows }) => {
               const r = parseSales(rows!, idx, routes);
               return { checks: r.checks, summary: tc('sumMonths', { n: Object.keys(r.data).length }), payload: r.data };
@@ -1089,6 +1124,7 @@ function StartTab({ ws, period, l, reload, part }: { ws: Workspace; period: stri
       )}
       {part === 'start' && exists && !ka && <SendStep ws={ws} period={period} l={l} onDone={reload} missing={missing} />}
     </>
+    </StatusCtx.Provider>
     </PacksVersion.Provider>
     </PacksAdded.Provider>
   );
