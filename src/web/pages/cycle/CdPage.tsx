@@ -210,7 +210,7 @@ function GmTab({ work, edit, l, setWork, onApproved }: { work: CdWork; edit: boo
     for (const p of packs) if (p in work.splitNt && work.splitNt[p] !== work.nt[p]) rescalePack(dm, p, work.nt[p]!);
     const basis = { ...work.basis };
     if (fresh.length) {
-      const r = splitFor(work, l, Object.fromEntries(fresh.map((p) => [p, work.nt[p]!])), hasPrev(work, l) ? 'prev' : 'sales');
+      const r = splitFor(work, l, Object.fromEntries(fresh.map((p) => [p, work.nt[p]!])), l.bench.upload?.mode === 'dept' ? 'uploaded' : hasPrev(work, l) ? 'prev' : 'sales');
       for (const [d, ch] of Object.entries(r.dm)) for (const [c, g] of Object.entries(ch)) Object.assign((dm[d] ??= {})[c] ??= {}, g);
       Object.assign(basis, r.basis);
     }
@@ -353,17 +353,21 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
 
   return (
     <>
+      {uploadedSplit ? (
+        <div class="banner info small" data-testid="split-how">{tc('cdUploadedHelp')}</div>
+      ) : (<>
       <MonthPicker period={cycle.period} months={months} available={bench.available} disabled={!edit} onChange={setMonths} title={tc('avgBasedOn')} />
       <div class="banner info small" data-testid="split-how">{fromUpload ? tc('splitHowUploaded') : fromPrev ? tc('splitHowPrev', { months: monthsLabel(prevTargetMonths(bench.deptChannel, months)) }) : tc('splitHowSales', { months: monthsLabel(months), pago: pm })}
         <div class="cy-formula" data-testid="split-formula"><b>{tc('formulaWord')}</b> {fromUpload ? tc('formulaUploaded') : fromPrev
           ? tc('formulaPrev', { months: monthsLabel(prevTargetMonths(bench.deptChannel, months)) })
           : tc('formulaSales', { months: monthsLabel(months) })}</div>
       </div>
+      </>)}
       <Section title={tc('deptTitle', { period: cycle.period })} right={
         <div class="toolbar">
-          {edit && prevOk && <button type="button" class="btn primary" data-testid="split-prev" onClick={() => split('prev')}>{tc('splitByPrev')}</button>}
-          {edit && <button type="button" class={`btn${prevOk ? '' : ' primary'}`} data-testid="split-all" onClick={() => split('sales')}>{tc('splitAll')}</button>}
-          {edit && uploadedSplit && <button type="button" class="btn" onClick={() => split('uploaded')}>{tc('useUploadedSplit')}</button>}
+          {edit && !uploadedSplit && prevOk && <button type="button" class="btn primary" data-testid="split-prev" onClick={() => split('prev')}>{tc('splitByPrev')}</button>}
+          {edit && !uploadedSplit && <button type="button" class={`btn${prevOk ? '' : ' primary'}`} data-testid="split-all" onClick={() => split('sales')}>{tc('splitAll')}</button>}
+          {edit && uploadedSplit && <button type="button" class="btn" data-testid="split-uploaded" title={tc('backToUploadedHelp')} onClick={() => split('uploaded')}>{tc('backToUploaded')}</button>}
           <label class="small"><input type="checkbox" checked={hideZero} onChange={(e) => setHideZero(e.currentTarget.checked)} /> {tc('hideZero')}</label>
           <Tabs<View> value={view} onChange={setView} items={[{ id: 'cases', label: tc('viewSplit') }, { id: 'pago', label: tc('vsPagoSales') }, { id: 'yago', label: tc('vsYagoSales') }]} />
         </div>
