@@ -291,6 +291,8 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
   useLang();
   const [view, setView] = useState<View>('cases');
   const [hideZero, setHideZero] = useState(true);
+  // A target sent already split by department: the CD may still choose to distribute it by sales.
+  const [useCalc, setUseCalc] = useState(() => l.bench.upload?.mode !== 'dept' || (Object.keys(work.basis).length > 0 && !Object.values(work.basis).some((b) => b.startsWith('uploaded'))));
   const { org, bench, cycle } = l;
   const cats = catMap(org);
   const pm = pagoOf(cycle.period);
@@ -347,15 +349,24 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
   }
   const badPacks = packs.filter((p) => org.depts.reduce((s, d) => s + deptPack(work.dm, String(d.id), p), 0) !== work.nt[p]);
   const uploadedSplit = bench.upload?.mode === 'dept';
+  const calcOn = !uploadedSplit || useCalc;
   const fromUpload = Object.values(work.basis).some((b) => b.startsWith('uploaded'));
   const fromPrev = Object.values(work.basis).some((b) => b === 'prev_target');
   const prevOk = hasPrev(work, l);
 
   return (
     <>
-      {uploadedSplit ? (
-        <div class="banner info small" data-testid="split-how">{tc('cdUploadedHelp')}</div>
-      ) : (<>
+      {uploadedSplit && (
+        <div class="banner info small cd-choice" data-testid="cd-choice">
+          <b>{tc('cdHowTitle')}</b>
+          <label><input type="radio" name="cd-how" checked={!useCalc} disabled={!edit} data-testid="cd-how-uploaded"
+            onChange={() => { setUseCalc(false); split('uploaded'); }} /> {tc('cdHowUploaded')}</label>
+          <label><input type="radio" name="cd-how" checked={useCalc} disabled={!edit} data-testid="cd-how-calc"
+            onChange={() => { setUseCalc(true); split(prevOk ? 'prev' : 'sales'); }} /> {tc('cdHowCalc')}</label>
+          {!useCalc && <p class="small muted">{tc('cdUploadedHelp')}</p>}
+        </div>
+      )}
+      {calcOn && (<>
       <MonthPicker period={cycle.period} months={months} available={bench.available} disabled={!edit} onChange={setMonths} title={tc('avgBasedOn')} />
       <div class="banner info small" data-testid="split-how">{fromUpload ? tc('splitHowUploaded') : fromPrev ? tc('splitHowPrev', { months: monthsLabel(prevTargetMonths(bench.deptChannel, months)) }) : tc('splitHowSales', { months: monthsLabel(months), pago: pm })}
         <div class="cy-formula" data-testid="split-formula"><b>{tc('formulaWord')}</b> {fromUpload ? tc('formulaUploaded') : fromPrev
@@ -365,9 +376,9 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
       </>)}
       <Section title={tc('deptTitle', { period: cycle.period })} right={
         <div class="toolbar">
-          {edit && !uploadedSplit && prevOk && <button type="button" class="btn primary" data-testid="split-prev" onClick={() => split('prev')}>{tc('splitByPrev')}</button>}
-          {edit && !uploadedSplit && <button type="button" class={`btn${prevOk ? '' : ' primary'}`} data-testid="split-all" onClick={() => split('sales')}>{tc('splitAll')}</button>}
-          {edit && uploadedSplit && <button type="button" class="btn" data-testid="split-uploaded" title={tc('backToUploadedHelp')} onClick={() => split('uploaded')}>{tc('backToUploaded')}</button>}
+          {edit && calcOn && prevOk && <button type="button" class="btn primary" data-testid="split-prev" onClick={() => split('prev')}>{tc('splitByPrev')}</button>}
+          {edit && calcOn && <button type="button" class={`btn${prevOk ? '' : ' primary'}`} data-testid="split-all" onClick={() => split('sales')}>{tc('splitAll')}</button>}
+          {edit && uploadedSplit && !useCalc && <button type="button" class="btn" data-testid="split-uploaded" title={tc('backToUploadedHelp')} onClick={() => split('uploaded')}>{tc('backToUploaded')}</button>}
           <label class="small"><input type="checkbox" checked={hideZero} onChange={(e) => setHideZero(e.currentTarget.checked)} /> {tc('hideZero')}</label>
           <Tabs<View> value={view} onChange={setView} items={[{ id: 'cases', label: tc('viewSplit') }, { id: 'pago', label: tc('vsPagoSales') }, { id: 'yago', label: tc('vsYagoSales') }]} />
         </div>

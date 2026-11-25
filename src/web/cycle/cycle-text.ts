@@ -667,6 +667,9 @@ export const CY = {
   backToUploadedHelp: ["Undo all your changes and show the table as the Admin uploaded it.", "إلغاء كل تعديلاتك وعرض الجدول كما رفعه المسؤول."],
   addPacksBtn: ["Add these {n} pack(s) to the pack master", "أضف هذه العبوات ({n}) إلى قائمة العبوات"],
   packCategory: ["Category", "الفئة"],
+  cdHowTitle: ["How do you want to split this target by department?", "كيف تريد توزيع هذا الهدف على الأقسام؟"],
+  cdHowUploaded: ["Keep the split the Admin uploaded (no calculation)", "الإبقاء على التوزيع الذي رفعه المسؤول (بدون حساب)"],
+  cdHowCalc: ["Distribute it by average sales (choose the months)", "التوزيع حسب متوسط المبيعات (اختر الأشهر)"],
   // Admin › Hierarchy (v16)
   hzIntro: ['Add, move, rename or delete here, or upload the whole hierarchy in one file. Every Channel Head is the top of one department.', 'أضف أو انقل أو أعد التسمية أو احذف هنا، أو ارفع الهيكل كاملًا في ملف واحد. كل رئيس قناة هو أعلى قسم واحد.'],
   hzAdd: ['Add', 'إضافة'],
