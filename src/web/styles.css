@@ -442,3 +442,4 @@ td.bench .gsub { display: block; font-size: 11px; }
 .cdd-chart .cdd-m.aop { fill: var(--cdd-aop); }
 .cdd-chart .cdd-hit { fill: transparent; }
 .cdd-chart .cdd-row:hover .cdd-hit { fill: var(--chip); }
+.cy-mini-wrap { max-block-size: 260px; overflow-y: auto; }

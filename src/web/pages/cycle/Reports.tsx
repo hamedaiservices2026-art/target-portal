@@ -16,7 +16,7 @@ import { tc } from '../../cycle/i18n';
 import { getCycle, getOrg, loadRouteData, useAsync } from '../../cycle/load';
 import type { RouteMonthData } from '../../cycle/parsers';
 import { api } from '../../api';
-import { defaultPeriod, downloadCsv, fmtGap, gapClass, MonthPicker, Section, Tabs, useMyWorkspaces, WsPeriod } from '../../cycle/ui';
+import { defaultPeriod, downloadCsv, fmtGap, gapClass, MonthPicker, monthsLabel, Section, Tabs, useMyWorkspaces, WsPeriod } from '../../cycle/ui';
 
 type TabId = 'flow' | 'avg' | 'summary' | 'dash' | 'cdd';
 type Loaded = { cycle: CycleDto; org: OrgDto };
@@ -204,84 +204,156 @@ function Summary({ l }: { l: Loaded }) {
 // ---------- dashboard ----------
 
 type DashRow = { dept: string; target: number; sales: number; gap: number | null };
+type DashLvl = 'head' | 'manager' | 'supervisor' | 'route';
 
-export function dashboardData(l: Loaded, sales: RouteMonthData, month: string): { cat: string; rows: DashRow[] }[] {
+/**
+ * Target vs the average sales of the months given, per category, by Head (the
+ * department target) or by manager, supervisor or route (the route target).
+ */
+export function dashboardData(l: Loaded, sales: RouteMonthData, months: string[], lvl: DashLvl = 'head', calc: Record<string, Record<string, Grid>> = {}): { cat: string; rows: DashRow[] }[] {
   const { org, cycle } = l;
   const cats = catMap(org);
-  const idx = routeIndex(org);
-  const byDept = groupSales(sales, (r) => { const i = idx.get(r); return i ? String(i.deptId) : null; });
-  const dept = cycle.dept ?? {};
-  const groups = [...CATEGORIES.map((c) => ({ cat: c as string, f: (g: Grid | undefined) => sumCat(g, cats, c) })), { cat: 'Total', f: (g: Grid | undefined) => total(g) }];
+  const ms = months.filter((m) => sales[m]);
+  const avgRoute = (r: string): Grid => {
+    const g: Grid = {};
+    for (const m of ms) for (const [p, v] of Object.entries(sales[m]?.[r] ?? {})) g[p] = (g[p] ?? 0) + v / ms.length;
+    return g;
+  };
+  const add = (a: Grid, b: Grid) => { for (const [p, v] of Object.entries(b)) a[p] = (a[p] ?? 0) + v; };
+  // Entities: name, target grid, sales grid.
+  const ents = new Map<string, { name: string; t: Grid; s: Grid }>();
+  const ent = (k: string, name: string) => { let e = ents.get(k); if (!e) { e = { name, t: {}, s: {} }; ents.set(k, e); } return e; };
+  if (lvl === 'head') {
+    const idx = routeIndex(org);
+    for (const d of org.depts) add(ent(String(d.id), d.name).t, cycle.dept?.[String(d.id)] ?? {});
+    for (const leaf of org.leaves) { const i = idx.get(leaf.routeCode); if (i) add(ent(String(i.deptId), org.depts.find((d) => d.id === i.deptId)?.name ?? '').s, avgRoute(leaf.routeCode)); }
+  } else {
+    const byId = new Map(org.nodes.map((n) => [n.id, n]));
+    const depth = (id: number) => { let d = 0; for (let q = byId.get(id)?.parentId ?? null; q !== null; q = byId.get(q)?.parentId ?? null) d++; return d; };
+    const routeT = new Map<string, Grid>();
+    for (const routes of Object.values(calc)) for (const [r, g] of Object.entries(routes)) { const x = routeT.get(r) ?? {}; add(x, g); routeT.set(r, x); }
+    for (const leaf of org.leaves) {
+      const t = routeT.get(leaf.routeCode);
+      if (!t) continue;
+      const sg = avgRoute(leaf.routeCode);
+      if (lvl === 'route') { const e = ent(leaf.routeCode, leaf.label && leaf.label !== leaf.routeCode ? `${leaf.routeCode} · ${leaf.label}` : leaf.routeCode); add(e.t, t); add(e.s, sg); continue; }
+      for (let n = byId.get(leaf.nodeId); n; n = n.parentId === null ? undefined : byId.get(n.parentId)) {
+        const d = depth(n.id);
+        if ((lvl === 'manager' && d === 1) || (lvl === 'supervisor' && d >= 2)) { const e = ent(String(n.id), n.name); add(e.t, t); add(e.s, sg); }
+      }
+    }
+  }
+  const list = [...ents.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const groups = [...CATEGORIES.map((c) => ({ cat: c as string, f: (g: Grid) => sumCat(g, cats, c) })), { cat: 'Total', f: (g: Grid) => total(g) }];
   return groups.map(({ cat, f }) => {
-    const rows = org.depts.map((d) => {
-      const target = f(dept[String(d.id)]);
-      const s = f(byDept[month]?.[String(d.id)]);
-      return { dept: d.name, target, sales: s, gap: s > 0 ? target / s - 1 : null };
-    });
+    const rows = list.map((e) => {
+      const target = Math.round(f(e.t));
+      const s = Math.round(f(e.s));
+      return { dept: e.name, target, sales: s, gap: s > 0 ? target / s - 1 : null };
+    }).filter((r) => r.target || r.sales);
     const t = rows.reduce((a, r) => a + r.target, 0);
-    const s = rows.reduce((a, r) => a + r.sales, 0);
-    rows.push({ dept: 'Total', target: t, sales: s, gap: s > 0 ? t / s - 1 : null });
+    const s2 = rows.reduce((a, r) => a + r.sales, 0);
+    rows.push({ dept: 'Total', target: t, sales: s2, gap: s2 > 0 ? t / s2 - 1 : null });
     return { cat, rows };
   });
 }
 
-async function downloadPptx(l: Loaded, data: { cat: string; rows: DashRow[] }[], month: string) {
+async function downloadPptx(l: Loaded, data: { cat: string; rows: DashRow[] }[], label: string) {
   const { default: PptxGenJS } = await import('pptxgenjs');
   const pptx = new PptxGenJS();
   pptx.layout = 'LAYOUT_WIDE';
   const title = pptx.addSlide();
   title.addText(`Target vs sales · ${l.cycle.ws.toUpperCase()} · ${l.cycle.period}`, { x: 0.6, y: 2.6, w: 12, h: 1, fontSize: 32, bold: true });
-  title.addText(`Compared with sales of ${month}`, { x: 0.6, y: 3.6, w: 12, h: 0.6, fontSize: 18, color: '555555' });
+  title.addText(`Compared with sales of ${label}`, { x: 0.6, y: 3.6, w: 12, h: 0.6, fontSize: 18, color: '555555' });
   for (const g of data) {
     const s = pptx.addSlide();
-    s.addText(`${g.cat}: target vs ${month} sales`, { x: 0.5, y: 0.3, w: 12, h: 0.6, fontSize: 24, bold: true });
-    const body = g.rows.filter((r) => r.dept !== 'Total');
+    s.addText(`${g.cat}: target vs ${label} sales`, { x: 0.5, y: 0.3, w: 12, h: 0.6, fontSize: 24, bold: true });
+    const body = g.rows.filter((r) => r.dept !== 'Total').slice(0, 30);
     s.addChart(pptx.ChartType.bar, [
       { name: 'Target', labels: body.map((r) => r.dept), values: body.map((r) => r.target) },
-      { name: `Sales ${month}`, labels: body.map((r) => r.dept), values: body.map((r) => r.sales) },
+      { name: `Sales ${label}`, labels: body.map((r) => r.dept), values: body.map((r) => r.sales) },
     ], { x: 0.5, y: 1.1, w: 7.2, h: 5.6, barDir: 'col', showLegend: true, legendPos: 'b', chartColors: ['1F6FB2', 'A0A7B4'], valAxisLabelFormatCode: '#,##0' });
     s.addTable([
-      [{ text: 'Head', options: { bold: true } }, { text: 'Target', options: { bold: true } }, { text: 'Sales', options: { bold: true } }, { text: 'Gap', options: { bold: true } }],
-      ...g.rows.map((r) => [r.dept, r.target.toLocaleString('en-US'), r.sales.toLocaleString('en-US'), r.gap === null ? '—' : `${r.gap >= 0 ? '+' : ''}${(r.gap * 100).toFixed(1)}%`].map((text) => ({ text }))),
-    ], { x: 8, y: 1.1, w: 4.8, fontSize: 12, border: { type: 'solid', color: 'DDDDDD', pt: 0.5 } });
+      [{ text: 'Name', options: { bold: true } }, { text: 'Target', options: { bold: true } }, { text: 'Sales', options: { bold: true } }, { text: 'Gap', options: { bold: true } }],
+      ...g.rows.slice(-31).map((r) => [r.dept, r.target.toLocaleString('en-US'), r.sales.toLocaleString('en-US'), r.gap === null ? '—' : `${r.gap >= 0 ? '+' : ''}${(r.gap * 100).toFixed(1)}%`].map((text) => ({ text }))),
+    ], { x: 8, y: 1.1, w: 4.8, fontSize: 10, border: { type: 'solid', color: 'DDDDDD', pt: 0.5 } });
   }
   await pptx.writeFile({ fileName: `dashboard_${l.cycle.ws}_${l.cycle.period}.pptx` });
 }
 
-function Dashboard({ l, sales, month, setMonth, months }: { l: Loaded; sales: RouteMonthData; month: string; setMonth: (m: string) => void; months: string[] }) {
+/** One comparison of the dashboard: its own sales months (ticked, averaged). */
+function DashComparison({ l, n, lvl, calc, initial, onRemove }: {
+  l: Loaded; n: number; lvl: DashLvl; calc: Record<string, Record<string, Grid>>; initial: string[]; onRemove?: () => void;
+}) {
   useLang();
-  const data = useMemo(() => dashboardData(l, sales, month), [l, sales, month]);
+  const ws = l.cycle.ws;
+  const [months, setMonths] = useState<string[]>(initial);
   const [busy, setBusy] = useState(false);
-  if (!l.cycle.dept) return <p class="card muted">{tc('noDeptTarget')}</p>;
+  const avail = useAsync(() => api<{ months: string[] }>('GET', `/api/data/${ws}/sales-months`), [ws]);
+  const sales = useAsync(months.length ? () => loadRouteData(ws, 'sales', months).then((r) => r.data) : null, [ws, months.join(',')]);
+  const data = useMemo(() => (sales.data ? dashboardData(l, sales.data, months, lvl, calc) : null), [l, sales.data, lvl, calc, months.join(',')]);
+  const label = monthsLabel(months.slice().sort());
   return (
-    <Section title={tc('tabDash')} right={
-      <div class="toolbar">
-        <label class="small">{tc('compareWith')}{' '}
-          <select value={month} onChange={(e) => setMonth(e.currentTarget.value)}>
-            {months.map((m) => <option key={m} value={m}>{m === pagoOf(l.cycle.period) ? `${m} (PAGO)` : m === yagoOf(l.cycle.period) ? `${m} (YAGO)` : m}</option>)}
-          </select>
-        </label>
-        <button type="button" class="btn" disabled={busy} onClick={() => { setBusy(true); void downloadPptx(l, data, month).finally(() => setBusy(false)); }}>{tc('downloadPptx')}</button>
+    <section class="card cy-section" data-testid={`dash-cmp-${n}`}>
+      <div class="cy-section-head">
+        <h2>{tc('dashCmpTitle', { n })}</h2>
+        <div class="toolbar">
+          <button type="button" class="btn" disabled={busy || !data} onClick={() => { if (!data) return; setBusy(true); void downloadPptx(l, data, label).finally(() => setBusy(false)); }}>{tc('downloadPptx')}</button>
+          {onRemove && <button type="button" class="btn link" onClick={onRemove}>{tc('tsCmpRemove')}</button>}
+        </div>
       </div>
-    }>
-      <div class="cy-cards">
-        {data.map((g) => {
-          const t = g.rows[g.rows.length - 1]!;
-          return (
-            <section key={g.cat} class="card cy-card">
-              <h3>{g.cat}</h3>
-              <p class="big">{fmtNum(t.target)}</p>
-              <p class="small">{tc('salesWord')} {month}: {fmtNum(t.sales)} · <span class={gapClass(t.gap)}>{fmtGap(t.gap)}</span></p>
-              <table class="cy-mini">
-                <tbody>{g.rows.slice(0, -1).map((r) => (
-                  <tr key={r.dept}><td>{r.dept}</td><td class="num">{fmtNum(r.target)}</td><td class="num"><span class={gapClass(r.gap)}>{fmtGap(r.gap)}</span></td></tr>
-                ))}</tbody>
-              </table>
-            </section>
-          );
-        })}
+      <MonthPicker period={l.cycle.period} months={months} onChange={setMonths} available={avail.data ? new Set(avail.data.months) : null} title={tc('tsCmpMonths')} />
+      {!months.length && <p class="small muted">{tc('pickMonths')}</p>}
+      {sales.error && <div class="alert">{sales.error}</div>}
+      {months.length > 0 && !data && <p class="muted">{tc('loading')}</p>}
+      {data && (
+        <div class="cy-cards">
+          {data.map((g) => {
+            const t = g.rows[g.rows.length - 1]!;
+            return (
+              <section key={g.cat} class="card cy-card">
+                <h3>{g.cat}</h3>
+                <p class="big">{fmtNum(t.target)}</p>
+                <p class="small">{tc('salesWord')} {label}: {fmtNum(t.sales)} · <span class={gapClass(t.gap)}>{fmtGap(t.gap)}</span></p>
+                <div class="cy-mini-wrap"><table class="cy-mini">
+                  <tbody>{g.rows.slice(0, -1).map((r) => (
+                    <tr key={r.dept} title={`${tc('salesWord')}: ${fmtNum(r.sales)}`}><td><bdi>{r.dept}</bdi></td><td class="num">{fmtNum(r.target)}</td><td class="num"><span class={gapClass(r.gap)}>{fmtGap(r.gap)}</span></td></tr>
+                  ))}</tbody>
+                </table></div>
+              </section>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function Dashboard({ l }: { l: Loaded }) {
+  useLang();
+  const { cycle } = l;
+  const ka = cycle.ws === 'ka';
+  const [lvl, setLvl] = useState<DashLvl>('head');
+  const [cmps, setCmps] = useState<{ id: number; months: string[] }[]>(() => [{ id: 1, months: [pagoOf(cycle.period)] }]);
+  const calc = useAsync(lvl !== 'head' ? () => api<Record<string, Record<string, Grid>>>('GET', `/api/cycle/${cycle.ws}/${cycle.period}/calc`) : null, [cycle.ws, cycle.period, lvl !== 'head']);
+  if (!cycle.dept) return <p class="card muted">{tc('noDeptTarget')}</p>;
+  const levels: DashLvl[] = ka ? ['head', 'manager', 'route'] : ['head', 'manager', 'supervisor', 'route'];
+  const label: Record<DashLvl, string> = { head: tc('lvHead'), manager: ka ? 'KAM' : tc('lvManager'), supervisor: tc('lvSupervisor'), route: ka ? 'KAE' : tc('route') };
+  const noCalc = lvl !== 'head' && calc.data && Object.keys(calc.data).length === 0;
+  return (
+    <>
+      <div class="toolbar cdd-filters">
+        <b class="small">{tc('dashShowBy')}</b>
+        <Tabs<DashLvl> value={lvl} onChange={setLvl} items={levels.map((x) => ({ id: x, label: label[x] }))} />
       </div>
-    </Section>
+      {noCalc && <p class="banner warn small">{tc('cddNoRoutes')}</p>}
+      {(lvl === 'head' || calc.data) && cmps.map((c, k) => (
+        <DashComparison key={c.id} l={l} n={k + 1} lvl={lvl} calc={calc.data ?? {}} initial={c.months}
+          onRemove={cmps.length > 1 ? () => setCmps(cmps.filter((x) => x.id !== c.id)) : undefined} />
+      ))}
+      {lvl !== 'head' && !calc.data && <p class="muted">{tc('loading')}</p>}
+      <div class="actions"><button type="button" class="btn" data-testid="dash-add-cmp" onClick={() => setCmps([...cmps, { id: Date.now(), months: [yagoOf(cycle.period)] }])}>{tc('tsCmpAdd')}</button></div>
+    </>
   );
 }
 
@@ -294,7 +366,6 @@ export function Reports({ ws: wsParam, period: periodParam }: { ws?: string; per
   const ws: Workspace = wsParam === 'ka' ? 'ka' : wsParam === 'ops' ? 'ops' : allowed.includes('ops') || !allowed.length ? 'ops' : allowed[0]!;
   const period = periodParam && /^\d{4}-\d{2}$/.test(periodParam) ? periodParam : defaultPeriod();
   const [tab, setTab] = useState<TabId>('flow');
-  const [month, setMonth] = useState(pagoOf(period));
   const loaded = useAsync<Loaded>(async () => {
     const [cycle, org] = await Promise.all([getCycle(ws, period), getOrg(ws)]);
     return { cycle, org };
@@ -303,9 +374,8 @@ export function Reports({ ws: wsParam, period: periodParam }: { ws?: string; per
   const [avgPick, setAvgPick] = useState<string[] | null>(null);
   const avgMonths = avgPick ?? l?.cycle.settings.avgMonths ?? [];
   const avail = useAsync(tab === 'avg' ? () => api<{ months: string[] }>('GET', `/api/data/${ws}/sales-months`) : null, [ws, tab]);
-  const pickMonths = useMemo(() => Array.from({ length: 15 }, (_, i) => addMonths(period, -1 - i)), [period]);
-  const needSales = tab === 'avg' ? avgMonths : tab === 'dash' ? [month] : null;
-  const sales = useAsync(l && needSales ? () => loadRouteData(ws, 'sales', needSales).then((r) => r.data) : null, [l, tab, month, ws, avgMonths.join(',')]);
+  const needSales = tab === 'avg' ? avgMonths : null;
+  const sales = useAsync(l && needSales ? () => loadRouteData(ws, 'sales', needSales).then((r) => r.data) : null, [l, tab, ws, avgMonths.join(',')]);
   return (
     <section class="cycle" data-testid="reports">
       <PageHead title={tc('reportsTitle')} intro={tc('reportsIntro')} />
@@ -318,10 +388,10 @@ export function Reports({ ws: wsParam, period: periodParam }: { ws?: string; per
       {l && tab === 'flow' && <Flow l={l} />}
       {l && tab === 'summary' && <Summary l={l} />}
       {l && tab === 'cdd' && <CdDashboard ws={ws} cycle={l.cycle} org={l.org} />}
-      {l && (tab === 'avg' || tab === 'dash') && sales.error && <div class="alert">{sales.error}</div>}
-      {l && (tab === 'avg' || tab === 'dash') && !sales.data && !sales.error && <p class="muted">{tc('loading')}</p>}
+      {l && tab === 'avg' && sales.error && <div class="alert">{sales.error}</div>}
+      {l && tab === 'avg' && !sales.data && !sales.error && <p class="muted">{tc('loading')}</p>}
       {l && tab === 'avg' && sales.data && <Averages l={l} sales={sales.data} months={avgMonths} setMonths={setAvgPick} available={avail.data ? new Set(avail.data.months) : null} />}
-      {l && tab === 'dash' && sales.data && <Dashboard l={l} sales={sales.data} month={month} setMonth={setMonth} months={pickMonths} />}
+      {l && tab === 'dash' && <Dashboard l={l} />}
     </section>
   );
 }

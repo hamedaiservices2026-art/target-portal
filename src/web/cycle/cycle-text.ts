@@ -698,6 +698,8 @@ export const CY = {
   tsCmpHelp: ["Each cell is the New Target vs the average sales of the months ticked, in %. Hover a cell to see the cases.", "كل خانة هي الهدف الجديد مقابل متوسط مبيعات الأشهر المختارة بالنسبة المئوية. مرر المؤشر لرؤية الصناديق."],
   tsCmpAdd: ["+ Add another comparison", "+ إضافة مقارنة أخرى"],
   tsCmpRemove: ["Remove", "إزالة"],
+  dashCmpTitle: ["Comparison {n}: target vs sales", "المقارنة {n}: الهدف مقابل المبيعات"],
+  dashShowBy: ["Show by", "العرض حسب"],
   // Admin › Hierarchy (v16)
   hzIntro: ['Add, move, rename or delete here, or upload the whole hierarchy in one file. Every Channel Head is the top of one department.', 'أضف أو انقل أو أعد التسمية أو احذف هنا، أو ارفع الهيكل كاملًا في ملف واحد. كل رئيس قناة هو أعلى قسم واحد.'],
   hzAdd: ['Add', 'إضافة'],
