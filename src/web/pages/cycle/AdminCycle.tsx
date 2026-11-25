@@ -4,7 +4,7 @@
 import type { ComponentChildren } from 'preact';
 import { useLocation } from 'preact-iso';
 import { useContext, useEffect, useMemo, useState } from 'preact/hooks';
-import { CATEGORIES } from '../../../shared/calc/packs';
+import { CATEGORIES, packKey } from '../../../shared/calc/packs';
 import { PACK_GROUPS } from '../../../shared/imports';
 import { pago as pagoOf } from '../../../shared/calc/periods';
 import { CalcTab } from './AdminCalc';
@@ -492,19 +492,36 @@ function AopDeptStep({ ws, period, org, saved, modePicker, onSaved }: {
 
 // ---------- step 2 by department: the uploaded target, editable ----------
 
+/** The row colours of the AOP by pack and department file (Excel fills and font colours). */
+const FILE_COLOURS: Record<string, [string, string, boolean]> = {
+  'total cans': ['#C1E5F5', '#000', true], 'total ssnr': ['#C1E5F5', '#000', true], 'total mspet': ['#C1E5F5', '#000', true],
+  'total abc': ['#00B050', '#000', true], 'total tt dmm': ['#00B050', '#000', true],
+  'total water': ['#00B0F0', '#000', true], 'total lit': ['#FFFF00', '#000', true],
+  'total gatorade': ['#FBE3D6', '#000', false], 'mplus_nrb300': ['#D9F2D0', '#000', false],
+  'total rockstar': ['#000000', '#FFC000', true], 'total sting energy': ['#C00000', '#FFF', true], 'total energy': ['#000000', '#FFF', true],
+  'total britvic': ['#CAEEFB', '#000', true], 'total lrb-others': ['#FFC000', '#000', true], 'total lrb': ['#0000FF', '#FFF', true],
+};
+function rowColour(label: string): Record<string, string> | undefined {
+  const c = FILE_COLOURS[label.trim().toLowerCase().replace(/\s+/g, ' ')];
+  return c ? { '--ft-bg': c[0], '--ft-fg': c[1], '--ft-w': c[2] ? '700' : '400' } : undefined;
+}
+
 /**
  * The target by pack and department as in the file: packs in the file's order
  * with the file's Total rows, heads and channels as columns, a grand total.
  * Editable when onChange is given (changed cells are marked against `base`).
  */
-function FileTargetTable({ org, g, layout, base, onChange }: {
+function FileTargetTable({ org, g, layout: layoutRaw, base, onChange }: {
   org: OrgDto; g: Record<string, Grid>; layout: FileRow[]; base?: Record<string, Grid>; onChange?: (channel: string, pack: string, n: number) => void;
 }) {
   useLang();
   const cats = catMap(org);
+  const pidx = useMemo(() => packIndex(org.packs.map((p) => p.code)), [org]);
+  const code = (n: string) => pidx.get(packKey(n)) ?? n;
+  const layout = layoutRaw.map((x): FileRow => ('p' in x ? { p: code(x.p) } : { t: x.t, of: [...new Set(x.of.map(code))] }));
   const grid = deptColumns(orderedDeptCols(org.depts.filter((d) => d.channels.length), '_'), (name) => tc('totalOf', { name }));
   const cells = grid.flat.filter((x) => x.kind === 'cell').map((x) => (x.kind === 'cell' ? x.c : ''));
-  const all = [...new Set(Object.values(g).flatMap((x) => Object.keys(x)))];
+  const all = [...new Set([...Object.values(g).flatMap((x) => Object.keys(x)), ...layout.flatMap((x) => ('p' in x ? [x.p] : []))])];
   // The file's order; packs not in the file (added later) follow, by category.
   const inFile = new Set(layout.flatMap((x) => ('p' in x ? [x.p] : [])));
   const rest = cdRows(all.filter((p) => !inFile.has(p)), cats).flatMap((x) => (x.kind === 'pack' ? [x.pack] : []));
@@ -533,7 +550,7 @@ function FileTargetTable({ org, g, layout, base, onChange }: {
             const list = 'p' in r ? [r.p] : r.of;
             const isTot = 't' in r;
             return (
-              <tr key={isTot ? `t${i}${r.t}` : r.p} class={isTot ? `ft-total ${totalDepth(r)}` : 'ft-row'}>
+              <tr key={isTot ? `t${i}${r.t}` : r.p} class={isTot ? `ft-total ${totalDepth(r)}` : 'ft-row'} style={rowColour(isTot ? r.t : r.p)}>
                 <td class="ft-pack"><bdi>{isTot ? r.t : r.p}</bdi></td>
                 {grid.flat.map((x) => {
                   if (x.kind !== 'cell') return <td key={`t${x.label}`} class="num tot">{fmtNum(sumCells(x.cells.map((k) => k.c), list))}</td>;

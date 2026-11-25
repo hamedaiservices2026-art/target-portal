@@ -554,7 +554,9 @@ export function fileLayout(data: unknown[][], idx: PackIndex): FileRow[] {
   const seen = new Set<string>();
   rows.forEach((row, t) => {
     if (!row.total) {
-      if (row.code && !seen.has(row.code)) { seen.add(row.code); out.push({ p: row.code }); }
+      // A pack missing from the pack master keeps its name, so it shows once it is added.
+      const id = row.code ?? row.name;
+      if (!seen.has(id)) { seen.add(id); out.push({ p: id }); }
       return;
     }
     const sum = row.v.map(() => 0);
@@ -564,7 +566,8 @@ export function fileLayout(data: unknown[][], idx: PackIndex): FileRow[] {
       const x = rows[k]!;
       if (x.total) continue;
       x.v.forEach((n, i) => { sum[i] = (sum[i] ?? 0) + n; });
-      if (x.code && !of.includes(x.code)) of.unshift(x.code);
+      const id = x.code ?? x.name;
+      if (!of.includes(id)) of.unshift(id);
       if (sum.every((n, i) => Math.abs(n - row.v[i]!) <= 1)) { ok = true; break; }
     }
     if (ok && of.length) out.push({ t: row.name, of });

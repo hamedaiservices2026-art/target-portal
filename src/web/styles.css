@@ -398,3 +398,8 @@ td.bench .gsub { display: block; font-size: 11px; }
 .ft-table tr.ft-total td.ft-pack { color: inherit; }
 .ft-table td.ft-edited { box-shadow: inset 0 0 0 2px var(--warn); background: var(--warn-bg); }
 .ft-table .cy-num { inline-size: 88px; }
+/* Rows coloured as in the uploaded Excel file */
+.ft-table tr[style] td, .ft-table tr[style] td.ft-pack, .ft-table tr[style] td.tot, .ft-table tr[style] td.ft-sum { background: var(--ft-bg); color: var(--ft-fg); font-weight: var(--ft-w); }
+.ft-table tr[style] td .cy-num { background: #fff; color: #000; }
+.ft-table thead tr:last-child th { background: #0000FF; color: #fff; }
+.ft-table thead tr:last-child th.ft-pack { background: #0000FF; }
