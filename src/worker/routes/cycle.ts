@@ -10,7 +10,7 @@ import {
   saveCd, saveSettings, sendToCd, sendToHeadAll, setDeptTarget, submitCd,
 } from '../services/cycle';
 import {
-  clearRouteMonths, dataStatus, listCdRoles, logUpload, packSubs, readMonthData, readOrg, readRouteRows, saveMonthData, setCdRoles, setPackSubs,
+  clearAllData, clearRouteMonths, dataStatus, listCdRoles, logUpload, packSubs, readMonthData, readOrg, readRouteRows, saveMonthData, setCdRoles, setPackSubs,
   setChannels, setDeptWorkspace, uploadRouteRows, workspace,
   setupHistory, undoSetupChange,
 } from '../services/cycleData';
@@ -53,6 +53,7 @@ cycle.put('/api/admin/packs-sub', h(async (c, db, me, body) => c.json(await setP
 cycle.get('/api/admin/cd-roles', h(async (c, db) => c.json({ roles: await listCdRoles(db) })));
 cycle.put('/api/admin/users/:id/cd', h(async (c, db, me, body) => c.json(await setCdRoles(db, me, parseId(p(c, 'id')), await body()))));
 
+cycle.post('/api/admin/data/:ws/clear-all', h(async (c, db, me, body) => c.json(await clearAllData(db, me, ws(c), await body()))));
 cycle.post('/api/admin/data/:ws/routes/clear', h(async (c, db, me, body) => c.json(await clearRouteMonths(db, me, ws(c), await body()))));
 cycle.post('/api/admin/data/:ws/routes', h(async (c, db, me, body) => c.json(await uploadRouteRows(db, me, ws(c), await body()))));
 cycle.post('/api/admin/data/:ws/log', h(async (c, db, me, body) => {

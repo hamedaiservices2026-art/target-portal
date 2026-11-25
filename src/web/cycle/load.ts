@@ -43,7 +43,7 @@ export async function loadRouteData(ws: Workspace, kind: 'sales' | 'prev_target'
   return { data, extra };
 }
 
-export async function loadMonthData<T>(ws: Workspace, kind: 'new_target' | 'aop' | 'fy_target' | 'dept_channel'): Promise<Record<string, T>> {
+export async function loadMonthData<T>(ws: Workspace, kind: 'new_target' | 'aop' | 'fy_target' | 'dept_channel' | 'aop_dept'): Promise<Record<string, T>> {
   return api<Record<string, T>>('GET', `/api/data/${ws}/months?kind=${kind}`);
 }
 

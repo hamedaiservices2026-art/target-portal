@@ -240,6 +240,20 @@ export function aop(org: Org, period: string): Promise<void> {
   return save(`aop_by_pack_${y - 1}_${y}.xlsx`, sheets);
 }
 
+/** AOP by pack and department: one sheet per channel (Pack, the 12 months of the year, FY), plus ABC (all channels). */
+export function aopByDept(org: Org, period: string): Promise<void> {
+  const y = Number(period.slice(0, 4));
+  const packs = templatePacks(org);
+  const chans = orderedDeptCols(org.depts.filter((d) => d.channels.length), '_').flatMap((d) => d.chans);
+  const months = Array.from({ length: 12 }, (_, i) => `${y}-${String(i + 1).padStart(2, '0')}`);
+  const head = [bold('Pack'), ...months.map((m) => bold(m)), bold(`FY ${y}`)];
+  const sheet = (name: string) => ({
+    sheet: name.slice(0, 31),
+    data: [head, ...packs.map((p) => [str(p.code), ...months.map(() => num(0)), num(0)])] as Cell[][],
+  });
+  return save(`aop_by_pack_by_dept_${y}.xlsx`, [...chans.map(sheet), sheet('ABC')]);
+}
+
 /** Step 4: full-year target: Period (YYYYMM), Sales Target Category, Cases. */
 export function fyTarget(org: Org, period: string): Promise<void> {
   const y = Number(period.slice(0, 4));

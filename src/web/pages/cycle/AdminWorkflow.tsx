@@ -7,6 +7,7 @@ import type { Workspace } from '../../../worker/auth';
 import type { CycleDto, ProgressNode } from '../../../worker/services/cycle';
 import type { OrgDto } from '../../../worker/services/cycleData';
 import { api } from '../../api';
+import { ConfirmButton, errText } from '../../components/AdminBits';
 import { fmtDateTime } from '../../format';
 import { useLang } from '../../i18n';
 import { tc } from '../../cycle/i18n';
@@ -29,6 +30,19 @@ export function WorkflowTab({ ws, period, l }: { ws: Workspace; period: string; 
   const [lang] = useLang();
   const { cycle } = l;
   const [open, setOpen] = useState<Set<number>>(new Set());
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  /** Admin: a submitted target goes back to that manager / supervisor to change (the people below wait until they submit again). */
+  async function giveBack(n: ProgressNode) {
+    setMsg(null);
+    try {
+      await api('POST', `/api/admin/months/${prog.data!.monthId}/nodes/${n.nodeId}/reopen`);
+      setMsg({ ok: true, text: tc('wfReturned', { name: n.userName ?? n.name }) });
+      prog.reload();
+    } catch (x) {
+      const t = errText(x);
+      setMsg({ ok: false, text: /reopen_pending_below/.test(t) ? tc('wfReturnPendingBelow') : t });
+    }
+  }
   const prog = useAsync(() => api<Progress>('GET', `/api/cycle/${ws}/${period}/progress`), [ws, period, cycle.version]);
   const steps = workflowSteps(cycle);
   const nodes = prog.data?.nodes ?? [];
@@ -48,6 +62,7 @@ export function WorkflowTab({ ws, period, l }: { ws: Workspace; period: string; 
         <p class="small muted">{tc('cdStatus')}: <b>{tc(`cd_${cycle.cdStatus}` as 'cd_draft')}</b>{!cycle.settings.cdStep && ` (${tc('off')})`}</p>
       </Section>
       {prog.error && <div class="alert" role="alert">{prog.error}</div>}
+      {msg && <div class={msg.ok ? 'banner ok' : 'alert'} role={msg.ok ? 'status' : 'alert'} data-testid="wf-msg">{msg.text}</div>}
       {cycle.heads.map((h) => {
         const mine = nodes.filter((n) => n.deptId === h.deptId);
         const withDepth = mine.map((n) => ({ n, d: depthOf(n, byId) }));
@@ -88,7 +103,7 @@ export function WorkflowTab({ ws, period, l }: { ws: Workspace; period: string; 
                 </button>
                 {isOpen && (
                   <div class="tablewrap"><table class="ad-table cy-table">
-                    <thead><tr><th>{tc('name')}</th><th>{tc('level')}</th><th>{tc('user')}</th><th>{tc('status')}</th><th>{tc('openedAt')}</th><th>{tc('submittedAt')}</th></tr></thead>
+                    <thead><tr><th>{tc('name')}</th><th>{tc('level')}</th><th>{tc('user')}</th><th>{tc('status')}</th><th>{tc('openedAt')}</th><th>{tc('submittedAt')}</th><th /></tr></thead>
                     <tbody>{withDepth.sort((a, b) => a.d - b.d || a.n.name.localeCompare(b.n.name)).map(({ n, d }) => (
                       <tr key={n.nodeId}>
                         <td><span style={{ paddingInlineStart: `${d * 14}px` }}>{n.name}</span></td>
@@ -97,6 +112,10 @@ export function WorkflowTab({ ws, period, l }: { ws: Workspace; period: string; 
                         <td><span class={`pill ${n.status === 'submitted' ? 'ok' : n.status === 'in_progress' ? 'warn' : ''}`}>{tc((STATUS_KEY[n.status] ?? 'nsWaiting') as 'nsWaiting')}</span></td>
                         <td class="small">{fmtDateTime(n.openedAt, lang)}</td>
                         <td class="small">{fmtDateTime(n.submittedAt, lang)}</td>
+                        <td>{n.status === 'submitted' && prog.data?.monthId && (
+                          <ConfirmButton label={tc('wfReturn')} question={tc('wfReturnQ', { name: n.userName ?? n.name })} yesLabel={tc('wfReturn')} danger={false} testId="wf-return"
+                            onConfirm={() => giveBack(n)} />
+                        )}</td>
                       </tr>
                     ))}</tbody>
                   </table></div>

@@ -42,6 +42,8 @@ export type CycleSettings = {
    * Operation target of the linked departments (MT, Non Retail) plus an uplift.
    */
   ntMode: NtMode;
+  /** With the AOP option: the AOP by pack only (goes to the CD), or by pack and department (already split, no CD). */
+  aopBy?: 'pack' | 'dept';
   /** Key Accounts: the admin's note on the previous targets (for reference in the calculation). */
   note?: string;
   /** Key Accounts: the uplift over the Operation target, from and to (%). */
@@ -248,6 +250,10 @@ function parseSettings(body: Obj, period: string): CycleSettings {
     if (!(NT_MODES as readonly unknown[]).includes(body.ntMode)) throw bad(`ntMode must be one of ${NT_MODES.join(', ')}`);
     s.ntMode = body.ntMode as NtMode;
   }
+  if (body.aopBy !== undefined && body.aopBy !== null) {
+    if (body.aopBy !== 'pack' && body.aopBy !== 'dept') throw bad('aopBy must be pack or dept');
+    s.aopBy = body.aopBy;
+  }
   if (body.note !== undefined && body.note !== null) {
     if (typeof body.note !== 'string') throw bad('note must be a text');
     s.note = body.note.slice(0, 2000);
@@ -304,8 +310,8 @@ async function capStatements(db: D1Database, cap: number | null): Promise<D1Prep
  * target uploaded by department is already split, so it skips the CD. Key
  * Accounts never go to the CD.
  */
-export function cdStepOf(ws: Workspace, s: Pick<CycleSettings, 'ntMode'>): boolean {
-  return ws !== 'ka' && s.ntMode !== 'dept';
+export function cdStepOf(ws: Workspace, s: Pick<CycleSettings, 'ntMode' | 'aopBy'>): boolean {
+  return ws !== 'ka' && s.ntMode !== 'dept' && !(s.ntMode === 'aop' && s.aopBy === 'dept');
 }
 
 export async function saveSettings(db: D1Database, actorId: number, ws: Workspace, periodRaw: string, body: Obj): Promise<CycleSettings> {

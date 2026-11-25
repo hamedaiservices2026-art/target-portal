@@ -198,6 +198,19 @@ describe('target cycle (handover flow)', () => {
     expect(kamNode?.u).not.toBeNull();
   });
 
+  it('AOP by pack and department skips the CD; data can be cleared before an upload', async () => {
+    await api('PUT', `/admin/cycle/ops/${P}/settings`, admin, { ntMode: 'aop', aopBy: 'dept' });
+    expect((await json(await api('GET', `/cycle/ops/${P}`, admin))).settings.cdStep).toBe(false);
+    await api('PUT', `/admin/cycle/ops/${P}/settings`, admin, { aopBy: 'pack' });
+    expect((await json(await api('GET', `/cycle/ops/${P}`, admin))).settings.cdStep).toBe(true);
+    for (const m of ['2027-01', '2027-02']) {
+      expect((await api('POST', '/admin/data/ops/months', admin, { kind: 'aop_dept', month: m, values: { MT: { CSD_CANS150: 5 } } })).status).toBe(200);
+    }
+    expect(await json(await api('POST', '/admin/data/ops/clear-all', admin, { table: 'months', kind: 'aop_dept' }))).toEqual({ removed: 2 });
+    expect(await json(await api('GET', '/data/ops/months?kind=aop_dept', admin))).toEqual({});
+    expect((await api('POST', '/admin/data/ops/clear-all', other, { table: 'months', kind: 'aop_dept' })).status).toBe(403);
+  });
+
   it('a target uploaded by department skips the Commercial Director', async () => {
     await api('PUT', `/admin/cycle/ops/${P}/settings`, admin, { ntMode: 'dept' });
     const cyc = await json(await api('GET', `/cycle/ops/${P}`, admin));

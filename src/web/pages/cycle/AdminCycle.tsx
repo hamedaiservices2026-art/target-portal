@@ -28,7 +28,7 @@ import { catMap, cdRows, defaultDeptSplit, NO_CHANNEL, prevTargetMonths, startNe
 import { tc } from '../../cycle/i18n';
 import { clearRouteCache, getCycle, getOrg, loadMonthData, loadRouteData, useAsync } from '../../cycle/load';
 import {
-  packIndex, parseAop, parseChannelGrid, parseNewTargetByLeaf, parseNewTargetByPack, parsePrevTargets, parseSales, sheetMonth,
+  packIndex, parseAop, parseChannelGrid, parseNewTargetByLeaf, parseNewTargetByPack, parsePrevTargets, parseAopByDept, parseSales, sheetMonth,
   type Check, type RouteMonthData,
 } from '../../cycle/parsers';
 import { Checks, defaultPeriod, downloadCsv, fmtCases, NumCell, Section, Tabs, writeWorkbook, WsPeriod } from '../../cycle/ui';
@@ -52,7 +52,7 @@ async function uploadRoutes(ws: Workspace, kind: 'sales' | 'prev_target', data: 
   return rows.length;
 }
 
-export async function uploadMonths(ws: Workspace, kind: 'new_target' | 'aop' | 'fy_target' | 'dept_channel', byMonth: Record<string, unknown>): Promise<number> {
+export async function uploadMonths(ws: Workspace, kind: 'new_target' | 'aop' | 'fy_target' | 'dept_channel' | 'aop_dept', byMonth: Record<string, unknown>): Promise<number> {
   const months = Object.keys(byMonth).sort();
   for (const m of months) await api('POST', `/api/admin/data/${ws}/months`, { kind, month: m, values: byMonth[m] });
   return months.length;
@@ -63,7 +63,9 @@ function has(status: DataStatus, kind: string, month: string): boolean {
 }
 
 /** One upload step: template, file, checks, confirm. */
-function UploadStep({ n, title, help, template, done, locked, parse, upload, multiSheet, loaded, children }: {
+function UploadStep({ ws, clearKind, n, title, help, template, done, locked, parse, upload, multiSheet, loaded, children }: {
+  /** What "Remove the previous data" clears before the upload (every month of this kind). */
+  ws?: Workspace; clearKind?: { table: 'routes' | 'months'; kind: string };
   n: number | null; title: string; help: string; template: () => Promise<void>; done: boolean; locked: boolean;
   loaded?: string | null; children?: ComponentChildren;
   parse: (input: { rows?: unknown[][]; sheets?: { sheet: string; data: unknown[][] }[] }) => { checks: Check[]; summary: string; payload: unknown };
@@ -76,6 +78,7 @@ function UploadStep({ n, title, help, template, done, locked, parse, upload, mul
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
+  const [replace, setReplace] = useState(false);
 
   async function onFile(e: Event) {
     const f = (e.currentTarget as HTMLInputElement).files?.[0];
@@ -95,6 +98,7 @@ function UploadStep({ n, title, help, template, done, locked, parse, upload, mul
     setBusy(true);
     setErr(null);
     try {
+      if (replace && ws && clearKind) await api('POST', `/api/admin/data/${ws}/clear-all`, clearKind);
       setMsg(await upload(parsed.payload, parsed.file, setProgress));
       setParsed(null);
     } catch (x) {
@@ -123,6 +127,12 @@ function UploadStep({ n, title, help, template, done, locked, parse, upload, mul
             <>
               <p class="small">{parsed.summary}</p>
               <Checks checks={parsed.checks} />
+              {ws && clearKind && (
+                <fieldset class="cy-keep" data-testid="keep-or-replace">
+                  <label class="small"><input type="radio" checked={!replace} onChange={() => setReplace(false)} /> {tc('keepPrev')}</label>{' '}
+                  <label class="small"><input type="radio" checked={replace} onChange={() => setReplace(true)} data-testid="replace-prev" /> {tc('replacePrev')}</label>
+                </fieldset>
+              )}
               <div class="actions">
                 <button type="button" class="btn primary" disabled={busy || blocking} onClick={() => void onUpload()}>
                   {busy ? (progress ? tc('uploadingN', { n: fmtNum(progress) }) : tc('uploading')) : tc('upload')}
@@ -409,6 +419,66 @@ function SendStep({ ws, period, l, onDone, missing }: { ws: Workspace; period: s
       )}
       {err && <div class="alert" role="alert">{err}</div>}
     </div>
+  );
+}
+
+// ---------- step 2, AOP by pack and department ----------
+
+/** The AOP by pack and department (all months of the year, one sheet per channel); the target month's part becomes the New Target. */
+function AopDeptStep({ ws, period, org, saved, modePicker, onSaved }: {
+  ws: Workspace; period: string; org: OrgDto; saved: NtUpload | null; modePicker: ComponentChildren; onSaved: (msg: string) => void;
+}) {
+  useLang();
+  const data = useAsync(() => loadMonthData<Record<string, Grid>>('ops', 'aop_dept'), [period]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const idx = useMemo(() => packIndex(org.packs.map((p) => p.code)), [org]);
+  const channels = org.depts.flatMap((d) => d.channels.map((c) => c.channel));
+  const months = Object.keys(data.data ?? {}).sort();
+  const mine = data.data?.[period] ?? null;
+  const used = saved?.mode === 'dept' && (saved.file ?? '').startsWith('AOP');
+  async function use() {
+    if (!mine) return;
+    setBusy(true); setErr(null);
+    try {
+      const byPack: Grid = {};
+      for (const g of Object.values(mine)) for (const [p, n] of Object.entries(g)) byPack[p] = (byPack[p] ?? 0) + n;
+      await uploadMonths(ws, 'new_target', { [period]: { mode: 'dept', byPack, byChannel: mine, file: `AOP by department ${period}` } });
+      const dept: Record<string, Grid> = {};
+      for (const d of org.depts) {
+        const t: Grid = {};
+        for (const c of d.channels) for (const [p, n] of Object.entries(mine[c.channel] ?? {})) t[p] = (t[p] ?? 0) + n;
+        dept[String(d.id)] = t;
+      }
+      await api('PUT', `/api/admin/cycle/${ws}/${period}/dept-target`, { dept });
+      onSaved(tc('aopDeptUsed', { period, total: fmtNum(total(byPack)) }));
+    } catch (x) {
+      setErr(errText(x));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <>
+      <UploadStep ws={ws} clearKind={{ table: 'months', kind: 'aop_dept' }} n={null} title={tc('aopDeptTitle')} help={tc('aopDeptHelp')}
+        template={() => T.aopByDept(org, period)} done={!!mine} locked={false} multiSheet
+        loaded={months.length ? tc('loadedMonths', { from: months[0]!, to: months[months.length - 1]!, n: months.length }) : null}
+        parse={({ sheets }) => {
+          const r = parseAopByDept(sheets!, channels, idx);
+          return { checks: r.checks, summary: tc('sumMonths', { n: Object.keys(r.byMonth).length }), payload: r.byMonth };
+        }}
+        upload={async (p) => { const n = await uploadMonths(ws, 'aop_dept', p as Record<string, unknown>); data.reload(); return tc('savedMonths', { n }); }}>
+        {modePicker}
+      </UploadStep>
+      <div class={`cy-step${used ? ' done' : ''}`} data-testid="aop-dept-use">
+        <div class="cy-step-head"><span class="cy-step-n">{used ? '✓' : '•'}</span>
+          <div><b>{tc('aopDeptUseTitle', { period })}</b><p class="muted small">{mine ? tc('aopDeptUseHelp', { total: fmtNum(Object.values(mine).reduce((s2, g) => s2 + total(g), 0)) }) : tc('aopDeptNone', { period })}</p></div></div>
+        <div class="cy-step-body">
+          <button type="button" class="btn primary" data-testid="aop-dept-use-btn" disabled={busy || !mine} onClick={() => void use()}>{used ? tc('aopDeptUseAgain') : tc('aopDeptUse')}</button>
+          {err && <div class="alert" role="alert">{err}</div>}
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -812,9 +882,24 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
         <>
           {!ka && <DeptColumnsStep org={org} onSaved={reload} />}
           {mode === 'ops' && ka && <KaFromOpsStep period={period} l={l} modePicker={modePicker} onChanged={reload} />}
-          {mode === 'aop' && <AopTargetStep ws={ws} period={period} org={org} saved={nt} locked={locked} modePicker={modePicker} onSaved={(m) => after(m)} onPacksChanged={reload} />}
+          {mode === 'aop' && !ka && (
+            <div class="cy-step" data-testid="aop-by">
+              <div class="cy-step-head"><span class="cy-step-n">2</span><div><b>{tc('aopByTitle')}</b><p class="muted small">{tc('aopByHelp')}</p></div></div>
+              <div class="cy-step-body toolbar">
+                {(['pack', 'dept'] as const).map((b) => (
+                  <label key={b} class="small"><input type="radio" name="aop-by" data-testid={`aop-by-${b}`} checked={(cycle.settings.aopBy ?? 'pack') === b} disabled={modeBusy || locked}
+                    onChange={() => void (async () => { setModeBusy(true); try { await api('PUT', `/api/admin/cycle/${ws}/${period}/settings`, { aopBy: b }); reload(); } finally { setModeBusy(false); } })()} />
+                    {' '}{b === 'pack' ? tc('aopByPack') : tc('aopByDept')}</label>
+                ))}
+              </div>
+            </div>
+          )}
+          {mode === 'aop' && (ka || (cycle.settings.aopBy ?? 'pack') === 'pack') && <AopTargetStep ws={ws} period={period} org={org} saved={nt} locked={locked} modePicker={modePicker} onSaved={(m) => after(m)} onPacksChanged={reload} />}
+          {mode === 'aop' && !ka && cycle.settings.aopBy === 'dept' && (
+            <AopDeptStep ws={ws} period={period} org={org} saved={nt} modePicker={modePicker} onSaved={(m) => { after(m); ntData.reload(); }} />
+          )}
           {mode === 'pack' && (
-            <UploadStep n={2} title={tc('step2', { period })} help={tc('step2aHelp')} template={() => T.newTargetByPack(org, period)} done={done[1]!} locked={locked} loaded={loadedText}
+            <UploadStep ws={ws} clearKind={{ table: 'months', kind: 'new_target' }} n={2} title={tc('step2', { period })} help={tc('step2aHelp')} template={() => T.newTargetByPack(org, period)} done={done[1]!} locked={locked} loaded={loadedText}
               parse={({ rows }) => {
                 const r = parseNewTargetByPack(rows!, period, idx);
                 return { checks: r.checks, summary: tc('sumPacks', { n: Object.keys(r.byPack).length, total: fmtNum(total(r.byPack)) }), payload: r.byPack };
@@ -824,7 +909,7 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
             </UploadStep>
           )}
           {mode === 'dept' && !ka && (
-            <UploadStep n={2} title={tc('step2', { period })} help={tc('step2bHelp')} template={() => T.newTargetByDept(org, period)} done={done[1]!} locked={locked} loaded={loadedText}
+            <UploadStep ws={ws} clearKind={{ table: 'months', kind: 'new_target' }} n={2} title={tc('step2', { period })} help={tc('step2bHelp')} template={() => T.newTargetByDept(org, period)} done={done[1]!} locked={locked} loaded={loadedText}
               parse={({ rows }) => {
                 const r = parseChannelGrid(rows!, channels, idx, groups);
                 const byPack: Grid = {};
@@ -847,11 +932,11 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
               {modePicker}
             </UploadStep>
           )}
-          {mode === 'dept' && !ka && nt?.mode === 'dept' && nt.byChannel && (
+          {(mode === 'dept' || (mode === 'aop' && cycle.settings.aopBy === 'dept')) && !ka && nt?.mode === 'dept' && nt.byChannel && (
             <DeptUploadTable key={`${cycle.version}`} ws={ws} period={period} org={org} nt={nt} onSaved={(m) => { after(m); ntData.reload(); }} />
           )}
           {mode === 'leaf' && ka && (
-            <UploadStep n={2} title={tc('step2', { period })} help={tc('step2cHelp')} template={() => T.newTargetByLeaf(org, period)} done={done[1]!} locked={locked} loaded={loadedText}
+            <UploadStep ws={ws} clearKind={{ table: 'months', kind: 'new_target' }} n={2} title={tc('step2', { period })} help={tc('step2cHelp')} template={() => T.newTargetByLeaf(org, period)} done={done[1]!} locked={locked} loaded={loadedText}
               parse={({ rows }) => {
                 const r = parseNewTargetByLeaf(rows!, period, idx, routes);
                 return { checks: r.checks, summary: tc('sumPacks', { n: Object.keys(r.byPack).length, total: fmtNum(total(r.byPack)) }), payload: { mode: 'leaf', byPack: r.byPack, byLeaf: r.byLeaf, byKam: r.byKam } };
@@ -864,14 +949,14 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
             <div class="cy-step" data-testid="step-2"><div class="cy-step-head"><span class="cy-step-n">2</span><div><b>{tc('step2', { period })}</b></div></div>{modePicker}</div>
           )}
           {!ka && (
-            <UploadStep n={3} title={tc('step3')} help={tc('step3Help')} template={() => T.aop(org, period)} done={done[2]!} locked={locked} multiSheet
+            <UploadStep ws={ws} clearKind={{ table: 'months', kind: 'aop' }} n={3} title={tc('step3')} help={tc('step3Help')} template={() => T.aop(org, period)} done={done[2]!} locked={locked} multiSheet
               parse={({ sheets }) => {
                 const r = parseAop(sheets!, idx);
                 return { checks: r.checks, summary: tc('sumMonths', { n: Object.keys(r.byMonth).length }), payload: r.byMonth };
               }}
               upload={async (p) => after(tc('savedMonths', { n: await uploadMonths(ws, 'aop', p as Record<string, unknown>) }))} />
           )}
-          <UploadStep n={ka ? 3 : 4} title={ka ? tc('step5Ka') : tc('step5')} help={ka ? tc('step5HelpKa') : tc('step5Help')}
+          <UploadStep ws={ws} clearKind={{ table: 'routes', kind: 'sales' }} n={ka ? 3 : 4} title={ka ? tc('step5Ka') : tc('step5')} help={ka ? tc('step5HelpKa') : tc('step5Help')}
             template={() => (ka ? T.kaSales(org, period) : T.sales(org, period, ws))} done={salesDone} locked={false}
             parse={({ rows }) => {
               const r = parseSales(rows!, idx, routes);
@@ -879,7 +964,7 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
             }}
             upload={async (p, file, prog) => after(tc('savedRows', { n: fmtNum(await uploadRoutes(ws, 'sales', p as RouteMonthData, null, file, prog)) }))} />
           {ka ? (
-            <UploadStep n={4} title={tc('stepPrevKa')} help={tc('stepPrevKaHelp')} template={() => T.kaPrevTargets(org, period)} done={prevDone} locked={false}
+            <UploadStep ws={ws} clearKind={{ table: 'routes', kind: 'prev_target' }} n={4} title={tc('stepPrevKa')} help={tc('stepPrevKaHelp')} template={() => T.kaPrevTargets(org, period)} done={prevDone} locked={false}
               loaded={prevLoaded(status, 'prev_target')}
               parse={({ rows }) => {
                 const r = parsePrevTargets(rows!, idx);
@@ -892,7 +977,7 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
               <KaNote period={period} cycle={cycle} onSaved={reload} />
             </UploadStep>
           ) : (
-            <UploadStep n={5} title={tc('stepPrevDept')} help={tc('stepPrevDeptHelp')} template={() => T.deptChannelTargets(org, period)} done={prevDone} locked={false} multiSheet
+            <UploadStep ws={ws} clearKind={{ table: 'months', kind: 'dept_channel' }} n={5} title={tc('stepPrevDept')} help={tc('stepPrevDeptHelp')} template={() => T.deptChannelTargets(org, period)} done={prevDone} locked={false} multiSheet
               loaded={prevLoaded(status, 'dept_channel')}
               parse={({ sheets }) => {
                 const byMonth: Record<string, Record<string, Grid>> = {};
@@ -1097,6 +1182,7 @@ function RoutesTab({ ws, period, l }: { ws: Workspace; period: string; l: Loaded
         {!allFinal && <p class="banner warn small">{tc('notAllFinal')}</p>}
         <p class="small">{tc('routeTargetsHelp', { n: fmtNum(rows.length) })}</p>
       </Section>
+      <FinalSummary ws={ws} period={period} org={org} calc={calc} rows={rows} />
       <Section title={tc('varianceTitle')}>
         {variance.length === 0 ? <p class="muted">{tc('noVariance')}</p> : (
           <div class="tablewrap"><table class="ad-table cy-table">
@@ -1108,6 +1194,65 @@ function RoutesTab({ ws, period, l }: { ws: Workspace; period: string; l: Loaded
         )}
       </Section>
     </>
+  );
+}
+
+// ---------- final target: uploaded by the admin vs set by the users ----------
+
+type Lvl = 'head' | 'manager' | 'supervisor' | 'route';
+
+/** Per Head, manager, supervisor and route: the target the admin sent (uploaded), the target the users set, and the variance. */
+function FinalSummary({ ws, period, org, calc, rows }: { ws: Workspace; period: string; org: OrgDto; calc: Record<string, Record<string, Grid>>; rows: (string | number)[][] }) {
+  useLang();
+  const [lvl, setLvl] = useState<Lvl>('head');
+  const byId = new Map(org.nodes.map((n) => [n.id, n]));
+  const depthOf = (id: number) => { let d = 0; for (let p = byId.get(id)?.parentId ?? null; p !== null; p = byId.get(p)?.parentId ?? null) d++; return d; };
+  const up = new Map<string, number>();
+  for (const routes of Object.values(calc)) for (const [r, g] of Object.entries(routes)) up.set(r, (up.get(r) ?? 0) + total(g));
+  const set = new Map<string, number>();
+  for (const r of rows) set.set(String(r[2]), (set.get(String(r[2])) ?? 0) + Number(r[5]));
+  const nodeUp = new Map<number, number>();
+  const nodeSet = new Map<number, number>();
+  const leaves = org.leaves.filter((x) => up.has(x.routeCode) || set.has(x.routeCode));
+  for (const leaf of leaves) {
+    for (let n = byId.get(leaf.nodeId); n; n = n.parentId === null ? undefined : byId.get(n.parentId)) {
+      nodeUp.set(n.id, (nodeUp.get(n.id) ?? 0) + (up.get(leaf.routeCode) ?? 0));
+      nodeSet.set(n.id, (nodeSet.get(n.id) ?? 0) + (set.get(leaf.routeCode) ?? 0));
+    }
+  }
+  const lvOf = (d: number): Lvl => (d === 0 ? 'head' : d === 1 ? 'manager' : 'supervisor');
+  const pathName = (id: number) => { const out: string[] = []; for (let n = byId.get(id); n; n = n.parentId === null ? undefined : byId.get(n.parentId)) out.unshift(n.name); return out; };
+  type Row = { key: string; name: string; under: string; up: number; set: number };
+  const list: Row[] = lvl === 'route'
+    ? leaves.map((x) => ({ key: x.routeCode, name: x.label && x.label !== x.routeCode ? `${x.routeCode} · ${x.label}` : x.routeCode, under: pathName(x.nodeId).join(' › '), up: up.get(x.routeCode) ?? 0, set: set.get(x.routeCode) ?? 0 }))
+    : org.nodes.filter((n) => nodeUp.has(n.id) && lvOf(Math.min(depthOf(n.id), 2)) === lvl && (lvl !== 'supervisor' || depthOf(n.id) >= 2))
+      .map((n) => ({ key: String(n.id), name: n.name, under: pathName(n.id).slice(0, -1).join(' › '), up: nodeUp.get(n.id) ?? 0, set: nodeSet.get(n.id) ?? 0 }));
+  list.sort((a, b) => a.under.localeCompare(b.under) || a.name.localeCompare(b.name));
+  const tot = list.reduce((acc, r) => ({ up: acc.up + r.up, set: acc.set + r.set }), { up: 0, set: 0 });
+  const pct = (a: number, b: number) => (a ? `${(((b - a) / a) * 100).toFixed(1)}%` : '—');
+  const label: Record<Lvl, string> = { head: tc('lvHead'), manager: ws === 'ka' ? 'KAM' : tc('lvManager'), supervisor: tc('lvSupervisor'), route: tc('route') };
+  const levels: Lvl[] = ws === 'ka' ? ['head', 'manager', 'route'] : ['head', 'manager', 'supervisor', 'route'];
+  return (
+    <Section title={tc('fsTitle')} right={
+      <div class="toolbar">
+        <Tabs<Lvl> value={lvl} onChange={setLvl} items={levels.map((x) => ({ id: x, label: label[x] }))} />
+        <button type="button" class="btn" onClick={() => downloadCsv(`target_summary_${lvl}_${ws}_${period}.csv`, [label[lvl], tc('fsUnder'), tc('fsUploaded'), tc('fsSet'), tc('diff'), '%'],
+          list.map((r) => [r.name, r.under, r.up, r.set, r.set - r.up, pct(r.up, r.set)]))}>{tc('downloadCsv')}</button>
+      </div>
+    }>
+      <p class="small muted">{tc('fsHelp')}</p>
+      <div class="tablewrap cy-tall"><table class="ad-table cy-table" data-testid="final-summary">
+        <thead><tr><th>{label[lvl]}</th><th>{tc('fsUnder')}</th><th class="num">{tc('fsUploaded')}</th><th class="num">{tc('fsSet')}</th><th class="num">{tc('diff')}</th><th class="num">%</th></tr></thead>
+        <tbody>{list.map((r) => (
+          <tr key={r.key}>
+            <td><bdi>{r.name}</bdi></td><td class="small muted">{r.under}</td>
+            <td class="num">{fmtNum(r.up)}</td><td class="num">{fmtNum(r.set)}</td>
+            <td class={`num${r.set - r.up ? ' warn' : ''}`}>{fmtNum(r.set - r.up)}</td><td class="num small">{pct(r.up, r.set)}</td>
+          </tr>
+        ))}</tbody>
+        <tfoot><tr class="sub l1"><td>{tc('total')}</td><td /><td class="num">{fmtNum(tot.up)}</td><td class="num">{fmtNum(tot.set)}</td><td class="num">{fmtNum(tot.set - tot.up)}</td><td class="num small">{pct(tot.up, tot.set)}</td></tr></tfoot>
+      </table></div>
+    </Section>
   );
 }
 

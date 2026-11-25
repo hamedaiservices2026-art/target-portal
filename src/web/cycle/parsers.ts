@@ -521,3 +521,76 @@ export const TEMPLATES: Record<string, { file: string; columns: string[]; sample
   prev_target: { file: 'previous_targets.xlsx', columns: ['Period', 'Delivery System', 'Route Code', 'Salesman ID', 'Sales Target Category', 'Cases'], sample: [['202609', 'TT DMM', 'R001', 'S100', 'CSD_CANS150', 33]] },
   dept_channel: { file: 'department_channel_targets.xlsx', columns: ['Pack', 'TT DMM', 'TT Outer', 'Total TT', 'MT', 'MT SSV', 'MT Bulk', 'Total MT', 'HoReCa', 'WS', 'ABC'], sample: [['CSD_CANS150', 300, 200, 500, 150, 50, 20, 220, 100, 180, 1000]] },
 };
+
+/**
+ * AOP by pack and department (one sheet per channel, e.g. "TT Damm", "MT SSV";
+ * rows: Pack; columns: the months of the year, then FY). The sheet named ABC /
+ * Total is the check: channels must add up to it. Values are rounded to whole cases.
+ */
+export function parseAopByDept(sheets: { sheet: string; data: unknown[][] }[], channels: string[], idx: PackIndex): { byMonth: Record<Month, Record<string, Record<string, number>>>; checks: Check[] } {
+  const checks: Check[] = [];
+  const consonants = (s: string) => s.slice(0, 1) + s.slice(1).replace(/[aeiou]/g, '');
+  const chanOf = (name: string): string | null => {
+    const k = squash(name);
+    return channels.find((c) => squash(c) === k) ?? channels.find((c) => consonants(squash(c)) === consonants(k)) ?? null;
+  };
+  const unknown = new Set<string>();
+  const byMonth: Record<Month, Record<string, Record<string, number>>> = {};
+  const totalSheet: Record<Month, Record<string, number>> = {};
+  const skipped: string[] = [];
+  const read = (data: unknown[][]): Record<Month, Record<string, number>> | null => {
+    const hRow = data.findIndex((r) => Array.isArray(r) && r.some((x) => PACK_NAMES.some((n) => squash(n) === squash(x))));
+    if (hRow < 0) return null;
+    const header = data[hRow]!;
+    const pCol = header.findIndex((x) => PACK_NAMES.some((n) => squash(n) === squash(x)));
+    const mCols: [number, Month][] = [];
+    header.forEach((x, i) => { const m = i === pCol || /fy|total/i.test(String(x ?? '')) ? null : parseMonth(x); if (m) mCols.push([i, m]); });
+    const out: Record<Month, Record<string, number>> = {};
+    for (const r of data.slice(hRow + 1)) {
+      if (!Array.isArray(r)) continue;
+      const name = cellText(r[pCol]);
+      if (!name || isSubtotal(name)) continue;
+      const code = resolvePack(idx, name, unknown);
+      if (!code) continue;
+      for (const [i, m] of mCols) {
+        const n = cellNumber(r[i]);
+        if (n === null || n === 0) continue;
+        const g = (out[m] ??= {});
+        g[code] = (g[code] ?? 0) + n;
+      }
+    }
+    return out;
+  };
+  for (const s of sheets) {
+    if (/^(abc|total|all)$/i.test(s.sheet.trim())) {
+      const t = read(s.data);
+      if (t) Object.assign(totalSheet, t);
+      continue;
+    }
+    const ch = chanOf(s.sheet);
+    if (!ch) { skipped.push(s.sheet); continue; }
+    const g = read(s.data);
+    if (!g) { checks.push({ level: 'error', text: `Sheet ${s.sheet}: the Pack column and the month columns were not found.` }); continue; }
+    for (const [m, packs] of Object.entries(g)) {
+      const dst = ((byMonth[m] ??= {})[ch] ??= {});
+      for (const [p, n] of Object.entries(packs)) dst[p] = Math.round((dst[p] ?? 0) + n);
+    }
+  }
+  if (skipped.length) checks.push({ level: 'warning', text: `Sheet(s) not matched to a channel and not read: ${skipped.join(', ')}. Channels: ${channels.join(', ')}.` });
+  const missing = channels.filter((c) => !Object.values(byMonth).some((x) => x[c]));
+  if (missing.length) checks.push({ level: 'warning', text: `No sheet for channel(s): ${missing.join(', ')} (they get 0).` });
+  // Check against the ABC / Total sheet.
+  let off = 0;
+  for (const [m, t] of Object.entries(totalSheet)) {
+    for (const [p, n] of Object.entries(t)) {
+      const sum = Object.values(byMonth[m] ?? {}).reduce((s2, g) => s2 + (g[p] ?? 0), 0);
+      if (Math.abs(sum - n) > Math.max(2, Object.keys(byMonth[m] ?? {}).length)) off++;
+    }
+  }
+  if (Object.keys(totalSheet).length) checks.push(off ? { level: 'warning', text: `${off} pack-month(s) where the channels do not add up to the ABC sheet.` } : { level: 'info', text: 'The channels add up to the ABC sheet.' });
+  checks.push(...unknownPacksCheck(unknown));
+  const months = Object.keys(byMonth).sort();
+  if (!months.length) checks.push({ level: 'error', text: 'No month was read.' });
+  else checks.push({ level: 'info', text: `${months.length} month(s) read (${months[0]} to ${months[months.length - 1]}), ${Object.keys(Object.assign({}, ...Object.values(byMonth))).length} channel(s).` });
+  return { byMonth, checks };
+}
