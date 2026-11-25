@@ -714,6 +714,13 @@ export const CY = {
   chartNote: ["Note under the charts", "ملاحظة تحت المخططات"],
   chartNotePh: ["e.g. Source: sales file, average of 3 months", "مثال: المصدر ملف المبيعات، متوسط 3 أشهر"],
   chartReset: ["Back to the default look", "العودة للشكل الافتراضي"],
+  dashVs: ["Compare with", "المقارنة مع"],
+  dashVsSales: ["Sales", "المبيعات"],
+  dashVsAop: ["AOP", "الخطة"],
+  dashCmpTitleAop: ["Comparison {n}: target vs AOP", "المقارنة {n}: الهدف مقابل الخطة"],
+  dashAopHelp: ["Compared with the AOP of {period} (the target month).", "مقارنة بخطة {period} (شهر الهدف)."],
+  dashAopTotalOnly: ["There is no AOP by department for this month (upload the AOP by pack and department), so only the total is compared.", "لا توجد خطة حسب القسم لهذا الشهر (ارفع الخطة حسب العبوة والقسم)، لذا تتم مقارنة الإجمالي فقط."],
+  dashTotalGapVs: ["total target vs {x}", "إجمالي الهدف مقابل {x}"],
   // Admin › Hierarchy (v16)
   hzIntro: ['Add, move, rename or delete here, or upload the whole hierarchy in one file. Every Channel Head is the top of one department.', 'أضف أو انقل أو أعد التسمية أو احذف هنا، أو ارفع الهيكل كاملًا في ملف واحد. كل رئيس قناة هو أعلى قسم واحد.'],
   hzAdd: ['Add', 'إضافة'],

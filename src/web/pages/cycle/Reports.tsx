@@ -13,7 +13,7 @@ import { CdDashboard } from './CdDashboard';
 import { fmtNum, useLang } from '../../i18n';
 import { avgOf, catMap, groupSales, routeIndex, sumCat, total, type Grid } from '../../cycle/compute';
 import { tc } from '../../cycle/i18n';
-import { getCycle, getOrg, loadRouteData, useAsync } from '../../cycle/load';
+import { getCycle, getOrg, loadMonthData, loadRouteData, useAsync } from '../../cycle/load';
 import type { RouteMonthData } from '../../cycle/parsers';
 import { api } from '../../api';
 import { defaultPeriod, downloadCsv, fmtGap, gapClass, MonthPicker, monthsLabel, Section, Tabs, useMyWorkspaces, WsPeriod } from '../../cycle/ui';
@@ -210,7 +210,8 @@ type DashLvl = 'head' | 'manager' | 'supervisor' | 'route';
  * Target vs the average sales of the months given, per category, by Head (the
  * department target) or by manager, supervisor or route (the route target).
  */
-export function dashboardData(l: Loaded, sales: RouteMonthData, months: string[], lvl: DashLvl = 'head', calc: Record<string, Record<string, Grid>> = {}): { cat: string; rows: DashRow[] }[] {
+export function dashboardData(l: Loaded, sales: RouteMonthData, months: string[], lvl: DashLvl = 'head', calc: Record<string, Record<string, Grid>> = {},
+  aop?: { byChannel: Record<string, Grid> | null; byPack: Grid | null }): { cat: string; rows: DashRow[] }[] {
   const { org, cycle } = l;
   const cats = catMap(org);
   const ms = months.filter((m) => sales[m]);
@@ -226,7 +227,12 @@ export function dashboardData(l: Loaded, sales: RouteMonthData, months: string[]
   if (lvl === 'head') {
     const idx = routeIndex(org);
     for (const d of org.depts) add(ent(String(d.id), d.name).t, cycle.dept?.[String(d.id)] ?? {});
-    for (const leaf of org.leaves) { const i = idx.get(leaf.routeCode); if (i) add(ent(String(i.deptId), org.depts.find((d) => d.id === i.deptId)?.name ?? '').s, avgRoute(leaf.routeCode)); }
+    if (aop) {
+      // Compared with the AOP: by department (the AOP by pack and department), summed over each Head's channels.
+      if (aop.byChannel) for (const d of org.depts) for (const c of d.channels) add(ent(String(d.id), d.name).s, aop.byChannel[c.channel] ?? {});
+    } else {
+      for (const leaf of org.leaves) { const i = idx.get(leaf.routeCode); if (i) add(ent(String(i.deptId), org.depts.find((d) => d.id === i.deptId)?.name ?? '').s, avgRoute(leaf.routeCode)); }
+    }
   } else {
     const byId = new Map(org.nodes.map((n) => [n.id, n]));
     const depth = (id: number) => { let d = 0; for (let q = byId.get(id)?.parentId ?? null; q !== null; q = byId.get(q)?.parentId ?? null) d++; return d; };
@@ -235,7 +241,7 @@ export function dashboardData(l: Loaded, sales: RouteMonthData, months: string[]
     for (const leaf of org.leaves) {
       const t = routeT.get(leaf.routeCode);
       if (!t) continue;
-      const sg = avgRoute(leaf.routeCode);
+      const sg = aop ? {} : avgRoute(leaf.routeCode);
       if (lvl === 'route') { const e = ent(leaf.routeCode, leaf.label && leaf.label !== leaf.routeCode ? `${leaf.routeCode} · ${leaf.label}` : leaf.routeCode); add(e.t, t); add(e.s, sg); continue; }
       for (let n = byId.get(leaf.nodeId); n; n = n.parentId === null ? undefined : byId.get(n.parentId)) {
         const d = depth(n.id);
@@ -252,7 +258,7 @@ export function dashboardData(l: Loaded, sales: RouteMonthData, months: string[]
       return { dept: e.name, target, sales: s, gap: s > 0 ? target / s - 1 : null };
     }).filter((r) => r.target || r.sales);
     const t = rows.reduce((a, r) => a + r.target, 0);
-    const s2 = rows.reduce((a, r) => a + r.sales, 0);
+    const s2 = aop && !aop.byChannel ? Math.round(f(aop.byPack ?? {})) : rows.reduce((a, r) => a + r.sales, 0);
     rows.push({ dept: 'Total', target: t, sales: s2, gap: s2 > 0 ? t / s2 - 1 : null });
     return { cat, rows };
   });
@@ -264,14 +270,14 @@ async function downloadPptx(l: Loaded, data: { cat: string; rows: DashRow[] }[],
   pptx.layout = 'LAYOUT_WIDE';
   const title = pptx.addSlide();
   title.addText(`Target vs sales · ${l.cycle.ws.toUpperCase()} · ${l.cycle.period}`, { x: 0.6, y: 2.6, w: 12, h: 1, fontSize: 32, bold: true });
-  title.addText(`Compared with sales of ${label}`, { x: 0.6, y: 3.6, w: 12, h: 0.6, fontSize: 18, color: '555555' });
+  title.addText(`Compared with ${label}`, { x: 0.6, y: 3.6, w: 12, h: 0.6, fontSize: 18, color: '555555' });
   for (const g of data) {
     const s = pptx.addSlide();
-    s.addText(`${st.titles[g.cat] || g.cat}: target vs ${label} sales`, { x: 0.5, y: 0.3, w: 12, h: 0.6, fontSize: 24, bold: true });
+    s.addText(`${st.titles[g.cat] || g.cat}: target vs ${label}`, { x: 0.5, y: 0.3, w: 12, h: 0.6, fontSize: 24, bold: true });
     const body = g.rows.filter((r) => r.dept !== 'Total').slice(0, 30);
     s.addChart(pptx.ChartType.bar, [
       { name: 'Target', labels: body.map((r) => r.dept), values: body.map((r) => r.target) },
-      { name: `Sales ${label}`, labels: body.map((r) => r.dept), values: body.map((r) => r.sales) },
+      { name: label, labels: body.map((r) => r.dept), values: body.map((r) => r.sales) },
     ], { x: 0.5, y: 1.1, w: 7.2, h: 5.6, barDir: 'col', showLegend: true, legendPos: 'b', chartColors: [st.tColor.slice(1).toUpperCase(), st.sColor.slice(1).toUpperCase()], valAxisLabelFormatCode: '#,##0',
       valGridLine: { style: 'none' }, valAxisHidden: true, showValue: st.showVals, dataLabelFormatCode: '#,##0', dataLabelFontSize: 9 });
     if (st.note) s.addText(st.note, { x: 0.5, y: 6.8, w: 12, h: 0.4, fontSize: 12, color: '555555' });
@@ -336,7 +342,7 @@ function TargetSalesChart({ title, rows, salesLabel, st }: { title: string; rows
           const x = left + 10 + i * (gw + 18);
           const bw = gw / 2 - 1;
           return (
-            <g key={r.dept} class="cdd-row"><title>{`${r.dept}\nTarget: ${fmtNum(r.target)}\n${tc('salesWord')} ${salesLabel}: ${fmtNum(r.sales)}\n${fmtGap(r.gap)}`}</title>
+            <g key={r.dept} class="cdd-row"><title>{`${r.dept}\nTarget: ${fmtNum(r.target)}\n${salesLabel}: ${fmtNum(r.sales)}\n${fmtGap(r.gap)}`}</title>
               <rect x={x - 4} y={topPad - 30} width={gw + 8} height={plotH + 30} class="cdd-hit" />
               <rect x={x} y={y(r.target)} width={bw} height={Math.max(0, y(0) - y(r.target))} fill={st.tColor} rx={3} />
               <rect x={x + bw + 2} y={y(r.sales)} width={bw} height={Math.max(0, y(0) - y(r.sales))} fill={st.sColor} rx={3} />
@@ -348,7 +354,7 @@ function TargetSalesChart({ title, rows, salesLabel, st }: { title: string; rows
           );
         })}
       </svg></div>
-      <p class="small"><span class={gapClass(tot.gap)}>{fmtGap(tot.gap)}</span> {tc('dashTotalGap')}</p>
+      <p class="small"><span class={gapClass(tot.gap)}>{fmtGap(tot.gap)}</span> {tc('dashTotalGapVs', { x: salesLabel })}</p>
       {st.note && <p class="small muted">{st.note}</p>}
     </section>
   );
@@ -363,17 +369,36 @@ function DashComparison({ l, n, lvl, calc, initial, onRemove }: {
   const [months, setMonths] = useState<string[]>(initial);
   const [busy, setBusy] = useState(false);
   const [shape, setShape] = useState<DashShape>('cards');
+  const [vs, setVs] = useState<'sales' | 'aop'>('sales');
+  const aopDept = useAsync(vs === 'aop' ? () => loadMonthData<Record<string, Grid> | { byChannel: Record<string, Grid> }>(ws, 'aop_dept') : null, [ws, vs]);
+  const aopPack = useAsync(vs === 'aop' ? () => loadMonthData<Record<string, { cases: number }>>(ws, 'aop') : null, [ws, vs]);
   const [st, setSt] = useState<ChartStyle>(loadStyle);
   const setStyle = (x: ChartStyle) => { setSt(x); saveStyle(x); };
   const avail = useAsync(() => api<{ months: string[] }>('GET', `/api/data/${ws}/sales-months`), [ws]);
   const sales = useAsync(months.length ? () => loadRouteData(ws, 'sales', months).then((r) => r.data) : null, [ws, months.join(',')]);
-  const data = useMemo(() => (sales.data ? dashboardData(l, sales.data, months, lvl, calc) : null), [l, sales.data, lvl, calc, months.join(',')]);
-  const label = monthsLabel(months.slice().sort());
+  const period = l.cycle.period;
+  const aop = useMemo(() => {
+    if (vs !== 'aop' || !aopDept.data || !aopPack.data) return null;
+    const ad = aopDept.data[period];
+    const byChannel = ad ? ('byChannel' in ad ? (ad as { byChannel: Record<string, Grid> }).byChannel : (ad as Record<string, Grid>)) : null;
+    const pk = aopPack.data[period];
+    return { byChannel, byPack: pk ? Object.fromEntries(Object.entries(pk).map(([p, v]) => [p, v.cases])) : null };
+  }, [vs, aopDept.data, aopPack.data, period]);
+  const data = useMemo(() => (vs === 'aop' ? (aop ? dashboardData(l, {}, [], lvl, calc, aop) : null) : sales.data ? dashboardData(l, sales.data, months, lvl, calc) : null),
+    [l, sales.data, lvl, calc, months.join(','), vs, aop]);
+  const label = vs === 'aop' ? `AOP ${period}` : `${tc('salesWord')} ${monthsLabel(months.slice().sort())}`;
+  const noAop = vs === 'aop' && aop && (lvl !== 'head' ? true : !aop.byChannel);
   return (
     <section class="card cy-section" data-testid={`dash-cmp-${n}`}>
       <div class="cy-section-head">
-        <h2>{tc('dashCmpTitle', { n })}</h2>
+        <h2>{vs === 'aop' ? tc('dashCmpTitleAop', { n }) : tc('dashCmpTitle', { n })}</h2>
         <div class="toolbar">
+          <label class="small">{tc('dashVs')}{' '}
+            <select value={vs} data-testid={`dash-vs-${n}`} onChange={(e) => setVs(e.currentTarget.value as 'sales' | 'aop')}>
+              <option value="sales">{tc('dashVsSales')}</option>
+              <option value="aop">{tc('dashVsAop')}</option>
+            </select>
+          </label>
           <label class="small">{tc('cddShape')}{' '}
             <select value={shape} data-testid={`dash-shape-${n}`} onChange={(e) => setShape(e.currentTarget.value as DashShape)}>
               <option value="cards">{tc('dashShapeCards')}</option>
@@ -385,14 +410,16 @@ function DashComparison({ l, n, lvl, calc, initial, onRemove }: {
           {onRemove && <button type="button" class="btn link" onClick={onRemove}>{tc('tsCmpRemove')}</button>}
         </div>
       </div>
-      <MonthPicker period={l.cycle.period} months={months} onChange={setMonths} available={avail.data ? new Set(avail.data.months) : null} title={tc('tsCmpMonths')} />
-      {!months.length && <p class="small muted">{tc('pickMonths')}</p>}
+      {vs === 'sales' && <MonthPicker period={l.cycle.period} months={months} onChange={setMonths} available={avail.data ? new Set(avail.data.months) : null} title={tc('tsCmpMonths')} />}
+      {vs === 'sales' && !months.length && <p class="small muted">{tc('pickMonths')}</p>}
+      {vs === 'aop' && <p class="small muted">{tc('dashAopHelp', { period })}</p>}
+      {noAop && <p class="banner warn small">{lvl !== 'head' ? tc('cddNoAopBelow') : tc('dashAopTotalOnly')}</p>}
       {sales.error && <div class="alert">{sales.error}</div>}
-      {months.length > 0 && !data && <p class="muted">{tc('loading')}</p>}
+      {(vs === 'aop' || months.length > 0) && !data && <p class="muted">{tc('loading')}</p>}
       {data && shape === 'chart' && (
         <>
           <ChartEditor st={st} set={setStyle} cats={data.map((g) => g.cat)} />
-          <p class="small cdd-legend"><i class="sw" style={{ background: st.tColor }} />{tc('newTarget')}<i class="sw" style={{ background: st.sColor }} />{tc('salesWord')} {label}</p>
+          <p class="small cdd-legend"><i class="sw" style={{ background: st.tColor }} />{tc('newTarget')}<i class="sw" style={{ background: st.sColor }} />{label}</p>
           <div class="dash-charts">{data.map((g) => <TargetSalesChart key={g.cat} title={g.cat} rows={g.rows} salesLabel={label} st={st} />)}</div>
         </>
       )}
@@ -400,7 +427,7 @@ function DashComparison({ l, n, lvl, calc, initial, onRemove }: {
         <div class="tablewrap cy-tall"><table class="ad-table cy-table" data-testid={`dash-table-${n}`}>
           <thead>
             <tr><th rowSpan={2}>{tc('nameWord')}</th>{data.map((g) => <th key={g.cat} colSpan={3} class="grp">{g.cat}</th>)}</tr>
-            <tr>{data.map((g) => [<th key={`${g.cat}t`} class="num">{tc('newTarget')}</th>, <th key={`${g.cat}s`} class="num">{tc('salesWord')}</th>, <th key={`${g.cat}g`} class="num">%</th>])}</tr>
+            <tr>{data.map((g) => [<th key={`${g.cat}t`} class="num">{tc('newTarget')}</th>, <th key={`${g.cat}s`} class="num">{vs === 'aop' ? 'AOP' : tc('salesWord')}</th>, <th key={`${g.cat}g`} class="num">%</th>])}</tr>
           </thead>
           <tbody>{data[data.length - 1]!.rows.map((row, i) => (
             <tr key={row.dept} class={row.dept === 'Total' ? 'sub l1' : ''}>
@@ -421,10 +448,10 @@ function DashComparison({ l, n, lvl, calc, initial, onRemove }: {
               <section key={g.cat} class="card cy-card">
                 <h3>{g.cat}</h3>
                 <p class="big">{fmtNum(t.target)}</p>
-                <p class="small">{tc('salesWord')} {label}: {fmtNum(t.sales)} · <span class={gapClass(t.gap)}>{fmtGap(t.gap)}</span></p>
+                <p class="small">{label}: {fmtNum(t.sales)} · <span class={gapClass(t.gap)}>{fmtGap(t.gap)}</span></p>
                 <div class="cy-mini-wrap"><table class="cy-mini">
                   <tbody>{g.rows.slice(0, -1).map((r) => (
-                    <tr key={r.dept} title={`${tc('salesWord')}: ${fmtNum(r.sales)}`}><td><bdi>{r.dept}</bdi></td><td class="num">{fmtNum(r.target)}</td><td class="num"><span class={gapClass(r.gap)}>{fmtGap(r.gap)}</span></td></tr>
+                    <tr key={r.dept} title={`${label}: ${fmtNum(r.sales)}`}><td><bdi>{r.dept}</bdi></td><td class="num">{fmtNum(r.target)}</td><td class="num"><span class={gapClass(r.gap)}>{fmtGap(r.gap)}</span></td></tr>
                   ))}</tbody>
                 </table></div>
               </section>
