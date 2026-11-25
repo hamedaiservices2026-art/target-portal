@@ -258,7 +258,8 @@ export function dashboardData(l: Loaded, sales: RouteMonthData, months: string[]
       return { dept: e.name, target, sales: s, gap: s > 0 ? target / s - 1 : null };
     }).filter((r) => r.target || r.sales);
     const t = rows.reduce((a, r) => a + r.target, 0);
-    const s2 = aop && !aop.byChannel ? Math.round(f(aop.byPack ?? {})) : rows.reduce((a, r) => a + r.sales, 0);
+    const aopTotal = () => (aop!.byChannel ? org.depts.reduce((a, d) => a + d.channels.reduce((b, c) => b + f(aop!.byChannel![c.channel] ?? {}), 0), 0) : f(aop!.byPack ?? {}));
+    const s2 = aop && (lvl !== 'head' || !aop.byChannel) ? Math.round(aopTotal()) : rows.reduce((a, r) => a + r.sales, 0);
     rows.push({ dept: 'Total', target: t, sales: s2, gap: s2 > 0 ? t / s2 - 1 : null });
     return { cat, rows };
   });
