@@ -8,7 +8,7 @@ import { useLang } from '../../i18n';
 import { tc } from '../../cycle/i18n';
 import type { Loaded } from './AdminCycle';
 
-export type TabId = 'start' | 'calc' | 'control' | 'workflow' | 'routes';
+export type TabId = 'files' | 'start' | 'calc' | 'control' | 'workflow' | 'routes';
 
 type Next = { text: string; tab: TabId | null; wait?: boolean; done?: boolean; href?: string; hrefLabel?: string };
 
@@ -43,8 +43,8 @@ function startStep(ws: Workspace, period: string, l: Loaded): Next | null {
   } else if (!has(status, 'new_target', period)) {
     return { text: s.ntMode === 'aop' ? tc('nsNtAop', { period }) : tc('nsNt', { period }), tab: 'start' };
   }
-  if (!s.avgMonths.every((m) => has(status, 'sales', m))) return { text: ka ? tc('nsSalesKa') : tc('nsSales'), tab: 'start' };
-  if (ka && !has(status, 'prev_target')) return { text: tc('nsPrevKa'), tab: 'start' };
+  if (!s.avgMonths.every((m) => has(status, 'sales', m))) return { text: ka ? tc('nsSalesKa') : tc('nsSales'), tab: 'files' };
+  if (ka && !has(status, 'prev_target')) return { text: tc('nsPrevKa'), tab: 'files' };
   if (!ka) {
     if (s.cdStep) {
       if (cycle.cdStatus === 'draft') return { text: tc('nsSendCd'), tab: 'start' };
@@ -90,8 +90,8 @@ function afterStart(ws: Workspace, l: Loaded, period: string): Next {
   return { text: tc('nsWaitLevels'), tab: 'workflow', wait: true };
 }
 
-const TAB_LABEL: Record<TabId, 'tabStart' | 'tabCalc' | 'tabControl' | 'tabWorkflow' | 'tabRoutes'> = {
-  start: 'tabStart', calc: 'tabCalc', control: 'tabControl', workflow: 'tabWorkflow', routes: 'tabRoutes',
+const TAB_LABEL: Record<TabId, 'tabFiles' | 'tabStart' | 'tabCalc' | 'tabControl' | 'tabWorkflow' | 'tabRoutes'> = {
+  files: 'tabFiles', start: 'tabStart', calc: 'tabCalc', control: 'tabControl', workflow: 'tabWorkflow', routes: 'tabRoutes',
 };
 
 export function NextStep({ ws, period, l, tab, onGo }: { ws: Workspace; period: string; l: Loaded; tab: TabId; onGo: (t: TabId) => void }) {

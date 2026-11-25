@@ -362,7 +362,7 @@ function SendStep({ ws, period, l, onDone, missing }: { ws: Workspace; period: s
   return (
     <div class={`cy-step${done ? ' done' : ''}`} data-testid="step-6">
       <div class="cy-step-head">
-        <span class="cy-step-n">{done ? '✓' : 6}</span>
+        <span class="cy-step-n">{done ? '✓' : 3}</span>
         <div><b>{tc('step8')}</b><p class="muted small">{cycle.settings.cdStep ? tc('step8HelpCd') : tc('step8HelpNoCd')}</p></div>
       </div>
       {cycle.cdStatus === 'returned' && cycle.cdComment && <div class="banner warn">{tc('cdReturnedWith')} <q>{cycle.cdComment}</q></div>}
@@ -847,7 +847,8 @@ function KaNote({ period, cycle, onSaved }: { period: string; cycle: CycleDto; o
 
 // ---------- tab: start ----------
 
-function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l: Loaded; reload: () => void }) {
+/** `part`: 'files' = the uploaded files (AOP, sales, previous targets); 'start' = the cycle, the new target and the send. */
+function StartTab({ ws, period, l, reload, part }: { ws: Workspace; period: string; l: Loaded; reload: () => void; part: 'files' | 'start' }) {
   useLang();
   const { cycle, org, status } = l;
   const exists = cycle.version > 0 || cycle.updatedAt !== '';
@@ -877,9 +878,9 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
   const colsDone = org.depts.length > 0 && org.depts.every((d) => d.channels.length > 0);
   const missing = ka ? [] : [
     ...(!ntDone ? [tc('step2', { period })] : []),
-    ...(!done[2] ? [tc('step3')] : []),
-    ...(!salesDone ? [`${tc('step5')} (${cycle.settings.avgMonths.filter((m) => !has(status, 'sales', m)).join(', ')})`] : []),
-    ...(!prevDone ? [tc('stepPrevDept')] : []),
+    ...(!done[2] ? [`${tc('tabFiles')} › ${tc('step3')}`] : []),
+    ...(!salesDone ? [`${tc('tabFiles')} › ${tc('step5')} (${cycle.settings.avgMonths.filter((m) => !has(status, 'sales', m)).join(', ')})`] : []),
+    ...(!prevDone ? [`${tc('tabFiles')} › ${tc('stepPrevDept')}`] : []),
     ...(!colsDone ? [tc('dcTitle')] : []),
   ];
 
@@ -931,7 +932,7 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
         <div class="bar"><span style={{ width: `${(n / of) * 100}%` }} /></div>
         <b>{tc('stepsDone', { n, of })}</b>
       </div>
-      {exists && (
+      {part === 'start' && exists && (
         <div class="toolbar cy-revert">
           <span class="muted small">{tc('revertHelp', { period })}</span>
           <span class="spacer" />
@@ -945,8 +946,8 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
         </div>
       )}
       {revertMsg && <div class="banner ok" role="status" data-testid="revert-done">{revertMsg}</div>}
-      <SettingsStep ws={ws} period={period} cycle={cycle} exists={exists} onSaved={reload} />
-      {exists && (
+      {part === 'start' && <SettingsStep ws={ws} period={period} cycle={cycle} exists={exists} onSaved={reload} />}
+      {part === 'start' && exists && (
         <>
           {!ka && <DeptColumnsStep org={org} onSaved={reload} />}
           {mode === 'ops' && ka && <KaFromOpsStep period={period} l={l} modePicker={modePicker} onChanged={reload} />}
@@ -1004,15 +1005,20 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
           {((ka && mode === 'dept') || (!ka && (mode === 'leaf' || mode === 'ops'))) && (
             <div class="cy-step" data-testid="step-2"><div class="cy-step-head"><span class="cy-step-n">2</span><div><b>{tc('step2', { period })}</b></div></div>{modePicker}</div>
           )}
+        </>
+      )}
+      {part === 'files' && (
+        <>
+          <p class="muted small">{tc('filesHelp')}</p>
           {!ka && (
-            <UploadStep ws={ws} clearKind={{ table: 'months', kind: 'aop' }} n={3} title={tc('step3')} help={tc('step3Help')} template={() => T.aop(org, period)} done={done[2]!} locked={locked} multiSheet
+            <UploadStep ws={ws} clearKind={{ table: 'months', kind: 'aop' }} n={1} title={tc('step3')} help={tc('step3Help')} template={() => T.aop(org, period)} done={done[2]!} locked={locked} multiSheet
               parse={({ sheets }) => {
                 const r = parseAop(sheets!, idx);
                 return { checks: r.checks, summary: tc('sumMonths', { n: Object.keys(r.byMonth).length }), payload: r.byMonth };
               }}
               upload={async (p) => after(tc('savedMonths', { n: await uploadMonths(ws, 'aop', p as Record<string, unknown>) }))} />
           )}
-          <UploadStep ws={ws} clearKind={{ table: 'routes', kind: 'sales' }} n={ka ? 3 : 4} title={ka ? tc('step5Ka') : tc('step5')} help={ka ? tc('step5HelpKa') : tc('step5Help')}
+          <UploadStep ws={ws} clearKind={{ table: 'routes', kind: 'sales' }} n={ka ? 1 : 2} title={ka ? tc('step5Ka') : tc('step5')} help={ka ? tc('step5HelpKa') : tc('step5Help')}
             template={() => (ka ? T.kaSales(org, period) : T.sales(org, period, ws))} done={salesDone} locked={false}
             parse={({ rows }) => {
               const r = parseSales(rows!, idx, routes);
@@ -1020,7 +1026,7 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
             }}
             upload={async (p, file, prog) => after(tc('savedRows', { n: fmtNum(await uploadRoutes(ws, 'sales', p as RouteMonthData, null, file, prog)) }))} />
           {ka ? (
-            <UploadStep ws={ws} clearKind={{ table: 'routes', kind: 'prev_target' }} n={4} title={tc('stepPrevKa')} help={tc('stepPrevKaHelp')} template={() => T.kaPrevTargets(org, period)} done={prevDone} locked={false}
+            <UploadStep ws={ws} clearKind={{ table: 'routes', kind: 'prev_target' }} n={2} title={tc('stepPrevKa')} help={tc('stepPrevKaHelp')} template={() => T.kaPrevTargets(org, period)} done={prevDone} locked={false}
               loaded={prevLoaded(status, 'prev_target')}
               parse={({ rows }) => {
                 const r = parsePrevTargets(rows!, idx);
@@ -1033,7 +1039,7 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
               <KaNote period={period} cycle={cycle} onSaved={reload} />
             </UploadStep>
           ) : (
-            <UploadStep ws={ws} clearKind={{ table: 'months', kind: 'dept_channel' }} n={5} title={tc('stepPrevDept')} help={tc('stepPrevDeptHelp')} template={() => T.deptChannelTargets(org, period)} done={prevDone} locked={false} multiSheet
+            <UploadStep ws={ws} clearKind={{ table: 'months', kind: 'dept_channel' }} n={3} title={tc('stepPrevDept')} help={tc('stepPrevDeptHelp')} template={() => T.deptChannelTargets(org, period)} done={prevDone} locked={false} multiSheet
               loaded={prevLoaded(status, 'dept_channel')}
               parse={({ sheets }) => {
                 const byMonth: Record<string, Record<string, Grid>> = {};
@@ -1053,9 +1059,9 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
               }}
               upload={async (p) => after(tc('savedMonths', { n: await uploadMonths(ws, 'dept_channel', p as Record<string, unknown>) }))} />
           )}
-          {!ka && <SendStep ws={ws} period={period} l={l} onDone={reload} missing={missing} />}
         </>
       )}
+      {part === 'start' && exists && !ka && <SendStep ws={ws} period={period} l={l} onDone={reload} missing={missing} />}
     </>
     </PacksVersion.Provider>
     </PacksAdded.Provider>
@@ -1322,7 +1328,7 @@ export function AdminCycle({ ws: wsParam, period: periodParam }: { ws?: string; 
   const ws: Workspace = wsParam === 'ka' ? 'ka' : 'ops';
   const period = periodParam && /^\d{4}-\d{2}$/.test(periodParam) ? periodParam : defaultPeriod();
   // The tab lives in the address (?tab=), so changing the month or reloading keeps it.
-  const TAB_IDS: TabId[] = ['start', 'calc', 'control', 'workflow', 'routes'];
+  const TAB_IDS: TabId[] = ['files', 'start', 'calc', 'control', 'workflow', 'routes'];
   const tab: TabId = TAB_IDS.includes(query.tab as TabId) ? (query.tab as TabId) : 'start';
   const go = (w: Workspace, p: string, t: TabId) => route(`/admin/cycle/${w}/${p}${t === 'start' ? '' : `?tab=${t}`}`, true);
   const setTab = (t: TabId) => go(ws, period, t);
@@ -1343,7 +1349,7 @@ export function AdminCycle({ ws: wsParam, period: periodParam }: { ws?: string; 
       <PageHead title={tc('cycleTitle')} intro={tc('cycleIntro')} />
       <WsPeriod ws={ws} period={period} onChange={(w, p) => go(w, p, tab)} />
       <Tabs<TabId> value={tab} onChange={setTab} items={[
-        { id: 'start', label: tc('tabStart') }, { id: 'calc', label: tc('tabCalc') }, { id: 'control', label: tc('tabControl') },
+        { id: 'files', label: tc('tabFiles') }, { id: 'start', label: tc('tabStart') }, { id: 'calc', label: tc('tabCalc') }, { id: 'control', label: tc('tabControl') },
         { id: 'workflow', label: tc('tabWorkflow') }, { id: 'routes', label: tc('tabRoutes') },
       ]} />
       {loaded.error && <div class="alert" role="alert">{loaded.error} <button type="button" class="btn" onClick={loaded.reload}>{tc('retry')}</button></div>}
@@ -1351,7 +1357,7 @@ export function AdminCycle({ ws: wsParam, period: periodParam }: { ws?: string; 
       {l && l.org.depts.length === 0 && <div class="banner warn">{tc('noDepts')} <a href="/admin/departments">{tc('openDepts')}</a></div>}
       {l && l.cycle.period === period && l.cycle.ws === ws && <NextStep ws={ws} period={period} l={l} tab={tab} onGo={setTab} />}
       {l && l.cycle.period === period && l.cycle.ws === ws && <div key={`${ws}/${period}`} class="cy-tabbody">
-      {tab === 'start' && <StartTab ws={ws} period={period} l={l} reload={loaded.reload} />}
+      {(tab === 'start' || tab === 'files') && <StartTab key={tab} ws={ws} period={period} l={l} reload={loaded.reload} part={tab} />}
       {tab === 'calc' && (ws === 'ka'
         ? <KaCalcTab period={period} l={l} reload={loaded.reload} onNext={() => setTab('control')} />
         : <CalcTab ws={ws} period={period} l={l} reload={loaded.reload} onNext={() => setTab('control')} />)}

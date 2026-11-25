@@ -18,7 +18,7 @@ test('admin opens a cycle, saves the rules, and reads the reports', async ({ pag
   await expect(page.getByText('0 of 6 steps done')).toBeVisible();
   await page.getByRole('button', { name: 'Open the cycle' }).click();
   await expect(page.getByText('1 of 6 steps done')).toBeVisible();
-  await expect(page.getByTestId('step-4')).toBeVisible();
+  await expect(page.getByTestId('step-6')).toBeVisible();
   await expect(page.getByTestId('cd-status')).toHaveText('With Admin');
 
   await page.getByRole('tab', { name: 'Send to Heads' }).click();
@@ -142,7 +142,7 @@ test('admin sets the department columns of the CD screen', async ({ page }) => {
   await expect(step.getByRole('status')).toContainText('Saved');
   await expect(step.getByTestId('dc-order')).toContainText(/TT DMM · TT Outer · .*Total TT/);
   // Before sending to the CD the missing steps are named.
-  await expect(page.getByTestId('send-missing')).toContainText('3. AOP');
+  await expect(page.getByTestId('send-missing')).toContainText('1. AOP');
   // Revert the month to the beginning.
   await page.getByTestId('revert').click();
   await page.getByRole('button', { name: 'Revert the target' }).last().click();
