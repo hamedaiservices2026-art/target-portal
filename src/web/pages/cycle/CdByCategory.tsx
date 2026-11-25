@@ -10,7 +10,7 @@ import { largestRemainder } from '../../../shared/rounding';
 import type { CdWork } from '../../../shared/calc/cd';
 import { errText } from '../../components/AdminBits';
 import { fmtNum, useLang } from '../../i18n';
-import { deptPack, type Grid } from '../../cycle/compute';
+import { deptPack, rescalePack, type Grid } from '../../cycle/compute';
 import { tc } from '../../cycle/i18n';
 import { NumCell } from '../../cycle/ui';
 import { BenchCells, BenchHead, sumBench } from './DistributeExtras';
@@ -33,6 +33,8 @@ export function CdByCategory({ work, heads, cats, subOf, bench, editable, setWor
   useLang();
   const [err, setErr] = useState<string | null>(null);
   const [open, setOpen] = useState<Set<string>>(new Set());
+  const [upPct, setUpPct] = useState('');
+  const [upScope, setUpScope] = useState<'all' | Category>('all');
   const packs = Object.keys(work.nt).filter((p) => (work.nt[p] ?? 0) > 0);
   const inCat = (c: Category) => packs.filter((p) => (cats.get(p) ?? 'LRB-Others') === c);
   const val = (p: string, h: CdHead) => deptPack(work.dm, h.id, p);
@@ -53,12 +55,39 @@ export function CdByCategory({ work, heads, cats, subOf, bench, editable, setWor
     }
   }
 
+  /** A new total for a group of packs: spread over its packs (by their target), each pack keeps its split by Head and channel. */
+  function setTotal(list: string[], n: number) {
+    setErr(null);
+    const cur = list.map((p) => work.nt[p] ?? 0);
+    const any = cur.some((x) => x > 0);
+    const per = largestRemainder(list.map((p, i) => ({ key: p, value: any ? cur[i]! : 1 })), Math.max(0, Math.round(n)));
+    const dm = structuredClone(work.dm);
+    const nt = { ...work.nt };
+    for (const p of list) {
+      const v = per[p] ?? 0;
+      if (v === (work.nt[p] ?? 0)) continue;
+      // A pack with no split yet goes to the Heads evenly (first channel of each).
+      if (!heads.some((h) => val(p, h) > 0)) heads.forEach((h) => { const c = h.chans[0]; if (c) ((dm[h.id] ??= {})[c] ??= {})[p] = 1; });
+      rescalePack(dm, p, v);
+      nt[p] = v;
+    }
+    setWork({ ...work, nt, splitNt: { ...nt }, dm });
+  }
+  function uplift() {
+    const pct = Number(upPct.replace(',', '.'));
+    if (!Number.isFinite(pct) || pct === 0) return;
+    const list = upScope === 'all' ? packs : inCat(upScope);
+    const tgt = list.reduce((s, p) => s + (work.nt[p] ?? 0), 0);
+    setTotal(list, tgt * (1 + pct / 100));
+    setUpPct('');
+  }
+
   const row = (key: string, label: preact.ComponentChild, list: string[], cls: string) => {
     const tgt = list.reduce((s, p) => s + (work.nt[p] ?? 0), 0);
     return (
       <tr key={key} class={cls}>
         <td>{label}</td>
-        <td class="num">{fmtNum(tgt)}</td>
+        <td class="num">{editable ? <NumCell value={tgt} label={`${key} ${tc('target')}`} onChange={(n) => setTotal(list, n)} /> : fmtNum(tgt)}</td>
         <BenchCells v={tgt} b={sumBench(list.flatMap((p) => heads.map((h) => bench(p, h))))} team />
         {heads.map((h, i) => {
           const v = list.reduce((s, p) => s + val(p, h), 0);
@@ -79,6 +108,19 @@ export function CdByCategory({ work, heads, cats, subOf, bench, editable, setWor
         <h2><span class="n">1</span> {tc('distByCategory')}</h2>
         <span class="muted small">{tc('cdByCategoryHelp')}</span>
       </div>
+      {editable && (
+        <div class="toolbar cy-uplift" data-testid="cd-uplift">
+          <b class="small">{tc('upliftTitle')}</b>
+          <select value={upScope} aria-label={tc('upliftScope')} onChange={(e) => setUpScope(e.currentTarget.value as 'all' | Category)}>
+            <option value="all">{tc('upliftAll')}</option>
+            {CATEGORIES.filter((c) => inCat(c).length).map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <input type="text" inputMode="decimal" style={{ width: '6em' }} value={upPct} placeholder="+5 / -3" aria-label={tc('upliftPct')} data-testid="uplift-pct" onInput={(e) => setUpPct(e.currentTarget.value)} />
+          <span class="small">%</span>
+          <button type="button" class="btn primary" data-testid="uplift-apply" disabled={!upPct.trim() || !Number.isFinite(Number(upPct.replace(',', '.')))} onClick={uplift}>{tc('upliftApply')}</button>
+          <span class="muted small">{tc('upliftHelp')}</span>
+        </div>
+      )}
       {err && <div class="alert" role="alert">{err}</div>}
       <div class="tablewrap"><table class="ad-table cy-table">
         <thead><tr><th>{tc('category')}</th><th class="num">{tc('target')}</th><BenchHead team />{heads.map((h) => [<th key={h.id} class="num"><bdi>{h.name}</bdi></th>, <BenchHead key={`b${h.id}`} />])}</tr></thead>

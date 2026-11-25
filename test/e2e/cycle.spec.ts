@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { readSheet } from 'read-excel-file/node';
 
 // Smoke test of the target cycle screens (handover design): Admin opens a
 // cycle, the setup page saves the rules, the reports load, a Head sees the
@@ -50,7 +51,7 @@ test('a Head sees the approvals page and the bell', async ({ page }) => {
   await expect(page.getByTestId('cd-page')).toHaveCount(0);
 });
 
-test('the whole cycle: CD splits and submits, Admin calculates and sends, the Head approves', async ({ page, browser }) => {
+test('the whole cycle: CD splits and submits, Admin calculates and sends, the Head approves', async ({ page, browser }, testInfo) => {
   test.setTimeout(90_000);
   const P = '2031-06';
   await signIn(page, 'admin', 'admin-pass-123', `/admin/cycle/ops/${P}`);
@@ -98,10 +99,24 @@ test('the whole cycle: CD splits and submits, Admin calculates and sends, the He
   await cell.press('Tab');
   await expect(cd.getByTestId('submit-reason')).toHaveCount(0);
   await expect(cd.getByTestId('split-formula')).toContainText('Formula:');
+  // Uplift: +10% on every category (500 + 10 cases -> 561, kept per pack).
+  await cd.getByTestId('uplift-pct').fill('10');
+  await cd.getByTestId('uplift-apply').click();
+  await expect(cell).toHaveValue(/550/);
   await cd.getByRole('tab', { name: 'vs PAGO sales' }).click();
   await expect(cd.getByTestId('head-sales-cat')).toContainText('CSD');
   await cd.getByRole('button', { name: 'Approve and return to Admin' }).click();
   await expect(cd.getByTestId('cd-status')).toHaveText('Submitted by the Commercial Director');
+  // After the approval: the approval template for signing.
+  await expect(cd.getByTestId('approval-banner')).toBeVisible();
+  const [dl] = await Promise.all([cd.waitForEvent('download'), cd.getByTestId('approval-download-banner').click()]);
+  const xlsx = testInfo.outputPath('approval.xlsx');
+  await dl.saveAs(xlsx);
+  const sheets = await readSheet(xlsx, 'By Manager').then(() => true).catch(() => false);
+  expect(sheets).toBe(true);
+  const s1 = await readSheet(xlsx, 'June');
+  expect(s1.flat()).toContain('TARGET vs YAGO');
+  expect(s1.flat()).toContain('CSD_CANS150');
 
   // Admin calculates the route targets, applies them and sends to the Head.
   await page.reload();
@@ -120,7 +135,7 @@ test('the whole cycle: CD splits and submits, Admin calculates and sends, the He
   // The Head reviews and distributes first (the turn is open), then approves: the split goes to the managers.
   await cd.goto('/approve');
   const item = cd.getByTestId('approval').filter({ hasText: P });
-  await expect(item).toContainText('510');
+  await expect(item).toContainText('561');
   await expect(item.getByTestId('head-summary')).toBeVisible();
   await expect(item.getByTestId('review-distribute')).toBeVisible();
   await item.getByRole('button', { name: 'Approve and send to managers' }).click();

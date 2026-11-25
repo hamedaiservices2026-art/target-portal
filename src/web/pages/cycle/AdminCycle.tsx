@@ -8,6 +8,7 @@ import { CATEGORIES, packKey } from '../../../shared/calc/packs';
 import { PACK_GROUPS } from '../../../shared/imports';
 import { pago as pagoOf } from '../../../shared/calc/periods';
 import { CalcTab } from './AdminCalc';
+import { downloadApprovalFor } from './CdPage';
 import { WorkflowTab } from './AdminWorkflow';
 import * as T from '../../cycle/templates';
 import type { Workspace } from '../../../worker/auth';
@@ -439,6 +440,12 @@ function SendStep({ ws, period, l, onDone, missing }: { ws: Workspace; period: s
                 <button type="button" class="btn" onClick={() => setPreview(null)}>{tc('cancel')}</button>
               </div>
             </>
+          )}
+          {cycle.cdStatus === 'submitted' && (
+            <div class="banner ok cy-approval" data-testid="admin-approval">
+              <b>{tc('approvalAdmin')}</b>{' '}
+              <button type="button" class="btn primary" data-testid="admin-approval-download" onClick={() => void downloadApprovalFor(ws, period).catch((x) => setErr(errText(x)))}>{tc('approvalDownload')}</button>
+            </div>
           )}
           {(cycle.cdStatus === 'with_cd' || cycle.cdStatus === 'submitted') && (
             <ConfirmButton label={tc('recall')} question={tc('recallQ')} yesLabel={tc('recall')} onConfirm={recall} />
