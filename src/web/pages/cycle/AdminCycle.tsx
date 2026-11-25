@@ -3,7 +3,7 @@
 // send / restart control per Head of Department, route targets and variance.
 import type { ComponentChildren } from 'preact';
 import { useLocation } from 'preact-iso';
-import { useEffect, useMemo, useState } from 'preact/hooks';
+import { useContext, useEffect, useMemo, useState } from 'preact/hooks';
 import { CATEGORIES } from '../../../shared/calc/packs';
 import { PACK_GROUPS } from '../../../shared/imports';
 import { pago as pagoOf } from '../../../shared/calc/periods';
@@ -31,7 +31,7 @@ import {
   packIndex, parseAop, parseChannelGrid, parseNewTargetByLeaf, parseNewTargetByPack, parsePrevTargets, parseAopByDept, parseSales, sheetMonth,
   type Check, type RouteMonthData,
 } from '../../cycle/parsers';
-import { Checks, defaultPeriod, downloadCsv, fmtCases, NumCell, Section, Tabs, writeWorkbook, WsPeriod } from '../../cycle/ui';
+import { Checks, defaultPeriod, PacksAdded, PacksVersion, downloadCsv, fmtCases, NumCell, Section, Tabs, writeWorkbook, WsPeriod } from '../../cycle/ui';
 
 export type Loaded = { cycle: CycleDto; org: OrgDto; status: DataStatus; ops?: CycleDto; links?: KaLink[]; ka?: CycleDto };
 type NtUpload = { mode: 'pack' | 'dept' | 'leaf' | 'aop'; byPack: Grid; byChannel?: Record<string, Grid>; byLeaf?: Record<string, Grid>; byKam?: Record<string, Grid>; file?: string };
@@ -79,6 +79,12 @@ function UploadStep({ ws, clearKind, n, title, help, template, done, locked, par
   const [err, setErr] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [replace, setReplace] = useState(false);
+  const [input, setInput] = useState<{ rows?: unknown[][]; sheets?: { sheet: string; data: unknown[][] }[] } | null>(null);
+  const packsVer = useContext(PacksVersion);
+  // Packs were added to the pack master from this file's check: read the file again with them.
+  useEffect(() => {
+    if (input && parsed) setParsed({ ...parse(input), file: parsed.file });
+  }, [packsVer]);
 
   async function onFile(e: Event) {
     const f = (e.currentTarget as HTMLInputElement).files?.[0];
@@ -86,8 +92,9 @@ function UploadStep({ ws, clearKind, n, title, help, template, done, locked, par
     setErr(null);
     setMsg(null);
     try {
-      const input = multiSheet ? { sheets: await readSheets(f) } : { rows: await readSheet(f) };
-      setParsed({ ...parse(input), file: f.name });
+      const inp = multiSheet ? { sheets: await readSheets(f) } : { rows: await readSheet(f) };
+      setInput(inp);
+      setParsed({ ...parse(inp), file: f.name });
     } catch (x) {
       setErr(`${tc('fileUnreadable')} (${x instanceof Error ? x.message : ''})`);
     }
@@ -454,7 +461,7 @@ function AopDeptStep({ ws, period, org, saved, modePicker, onSaved }: {
   }
   return (
     <>
-      <UploadStep ws={ws} clearKind={{ table: 'months', kind: 'aop_dept' }} n={null} title={tc('aopDeptTitle')} help={tc('aopDeptHelp')}
+      <UploadStep ws={ws} clearKind={{ table: 'months', kind: 'aop_dept' }} n={2} title={tc('aopDeptTitle')} help={tc('aopDeptHelp')}
         template={() => T.aopByDept(org, period)} done={!!mine} locked={false} multiSheet
         loaded={months.length ? tc('loadedMonths', { from: months[0]!, to: months[months.length - 1]!, n: months.length }) : null}
         parse={({ sheets }) => {
@@ -843,15 +850,31 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
     ? [{ id: 'ops', label: tc('ntModeOps') }, { id: 'aop', label: tc('ntModeAop') }, { id: 'pack', label: tc('ntModePack') }, { id: 'leaf', label: tc('ntModeLeaf') }]
     : [{ id: 'aop', label: tc('ntModeAop') }, { id: 'pack', label: tc('ntModePack') }, { id: 'dept', label: tc('ntModeDept') }];
   const modePicker = (
-    <div class="toolbar" role="radiogroup" aria-label={tc('ntMode')} data-testid="nt-modes">
-      {modes.map((m) => (
-        <label key={m.id}><input type="radio" name="ntmode" checked={mode === m.id} disabled={locked || modeBusy} onChange={() => void setMode(m.id)} /> <b>{m.label}</b></label>
-      ))}
-    </div>
+    <>
+      <div class="toolbar" role="radiogroup" aria-label={tc('ntMode')} data-testid="nt-modes">
+        {modes.map((m) => (
+          <label key={m.id}><input type="radio" name="ntmode" checked={mode === m.id} disabled={locked || modeBusy} onChange={() => void setMode(m.id)} /> <b>{m.label}</b></label>
+        ))}
+      </div>
+      {mode === 'aop' && !ka && (
+        <div class="cy-aop-by" data-testid="aop-by">
+          <p class="small"><b>{tc('aopByTitle')}</b> <span class="muted">{tc('aopByHelp')}</span></p>
+          <div class="toolbar" role="radiogroup" aria-label={tc('aopByTitle')}>
+            {(['pack', 'dept'] as const).map((b) => (
+              <label key={b} class="small"><input type="radio" name="aop-by" data-testid={`aop-by-${b}`} checked={(cycle.settings.aopBy ?? 'pack') === b} disabled={modeBusy || locked}
+                onChange={() => void (async () => { setModeBusy(true); try { await api('PUT', `/api/admin/cycle/${ws}/${period}/settings`, { aopBy: b }); reload(); } finally { setModeBusy(false); } })()} />
+                {' '}{b === 'pack' ? tc('aopByPack') : tc('aopByDept')}</label>
+            ))}
+          </div>
+        </div>
+      )}
+    </>
   );
   const of = done.length;
 
   return (
+    <PacksAdded.Provider value={reload}>
+    <PacksVersion.Provider value={org.packs.length}>
     <>
       <div class="cy-progress" aria-label={tc('stepsDone', { n, of })}>
         <div class="bar"><span style={{ width: `${(n / of) * 100}%` }} /></div>
@@ -876,18 +899,6 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
         <>
           {!ka && <DeptColumnsStep org={org} onSaved={reload} />}
           {mode === 'ops' && ka && <KaFromOpsStep period={period} l={l} modePicker={modePicker} onChanged={reload} />}
-          {mode === 'aop' && !ka && (
-            <div class="cy-step" data-testid="aop-by">
-              <div class="cy-step-head"><span class="cy-step-n">2</span><div><b>{tc('aopByTitle')}</b><p class="muted small">{tc('aopByHelp')}</p></div></div>
-              <div class="cy-step-body toolbar">
-                {(['pack', 'dept'] as const).map((b) => (
-                  <label key={b} class="small"><input type="radio" name="aop-by" data-testid={`aop-by-${b}`} checked={(cycle.settings.aopBy ?? 'pack') === b} disabled={modeBusy || locked}
-                    onChange={() => void (async () => { setModeBusy(true); try { await api('PUT', `/api/admin/cycle/${ws}/${period}/settings`, { aopBy: b }); reload(); } finally { setModeBusy(false); } })()} />
-                    {' '}{b === 'pack' ? tc('aopByPack') : tc('aopByDept')}</label>
-                ))}
-              </div>
-            </div>
-          )}
           {mode === 'aop' && (ka || (cycle.settings.aopBy ?? 'pack') === 'pack') && <AopTargetStep ws={ws} period={period} org={org} saved={nt} locked={locked} modePicker={modePicker} onSaved={(m) => after(m)} onPacksChanged={reload} />}
           {mode === 'aop' && !ka && cycle.settings.aopBy === 'dept' && (
             <AopDeptStep ws={ws} period={period} org={org} saved={nt} modePicker={modePicker} onSaved={(m) => { after(m); ntData.reload(); }} />
@@ -995,6 +1006,8 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
         </>
       )}
     </>
+    </PacksVersion.Provider>
+    </PacksAdded.Provider>
   );
 }
 

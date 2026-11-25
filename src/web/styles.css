@@ -371,3 +371,6 @@ code.detail { font-size: 12px; word-break: break-word; white-space: pre-wrap; }
 th.bench, td.bench { background: var(--chip); color: var(--muted); font-size: 12px; white-space: nowrap; }
 th.bench.pb, td.bench.pb { background: transparent; border-inline-start: 1px dashed var(--line); }
 td.bench .gsub { display: block; font-size: 11px; }
+.cy-addpacks { margin: 0.4rem 0 0.2rem; display: grid; gap: 0.4rem; justify-items: start; }
+.cy-addpacks table { width: auto; }
+.cy-aop-by { margin-top: 0.4rem; padding-top: 0.4rem; border-top: 1px dashed var(--line); }

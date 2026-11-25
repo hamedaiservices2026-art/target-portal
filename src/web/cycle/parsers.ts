@@ -5,7 +5,8 @@ import { PACK_ALIASES, packKey } from '../../shared/calc/packs';
 import { parseMonth, type Month } from '../../shared/calc/periods';
 
 export type CheckLevel = 'info' | 'warning' | 'error';
-export type Check = { level: CheckLevel; text: string };
+/** `packs`: pack codes missing from the pack master (the screen offers to add them). */
+export type Check = { level: CheckLevel; text: string; packs?: string[] };
 
 export type PackIndex = Map<string, string>;
 
@@ -71,7 +72,7 @@ const ROUTE_NAMES = ['Route Code', 'Route', 'KAE ID', 'KAE', 'KAM ID', 'KAM', 'K
 function unknownPacksCheck(unknown: Set<string>): Check[] {
   if (unknown.size === 0) return [];
   const list = [...unknown].slice(0, 15).join(', ');
-  return [{ level: 'warning', text: `${unknown.size} pack(s) are not in the pack master and their rows are skipped (add them in Admin › Packs): ${list}` }];
+  return [{ level: 'warning', text: `${unknown.size} pack(s) are not in the pack master and their rows are skipped (add them in Admin › Packs): ${list}`, packs: [...unknown] }];
 }
 
 /**

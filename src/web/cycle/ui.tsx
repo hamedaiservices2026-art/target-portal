@@ -1,7 +1,9 @@
 // Small shared pieces of the cycle screens: workspace/month picker, checks
 // list, number and percent formats, editable number cell, tabs.
-import type { ComponentChildren } from 'preact';
-import { useEffect, useState } from 'preact/hooks';
+import { createContext, type ComponentChildren } from 'preact';
+import { useContext, useEffect, useState } from 'preact/hooks';
+import { api } from '../api';
+import { errText } from '../components/AdminBits';
 import { addMonths } from '../../shared/calc/periods';
 import { parseCaseInput } from '../../shared/rules';
 import type { Workspace } from '../../worker/auth';
@@ -89,13 +91,68 @@ export function WsPeriod({ ws, period, onChange, allowed }: {
   );
 }
 
+/** Called after packs were added to the pack master from a check (reloads the packs and reads the file again). */
+export const PacksAdded = createContext<(() => void) | null>(null);
+/** Changes when the pack master changes, so an upload step reads its file again. */
+export const PacksVersion = createContext(0);
+
+const PACK_GRPS = ['CSD', 'Water', 'LRB-Others'] as const;
+/** A first guess of the pack's category from its code; the admin can change it. */
+export function guessGrp(code: string): (typeof PACK_GRPS)[number] {
+  const c = code.toUpperCase();
+  if (c.startsWith('CSD')) return 'CSD';
+  if (/WATER|AQUA|NOVA|\bWTR/.test(c)) return 'Water';
+  return 'LRB-Others';
+}
+
+/** The packs a file has but the pack master lacks: add them all at once, with a category each. */
+function AddPacks({ packs, onDone }: { packs: string[]; onDone: () => void }) {
+  useLang();
+  const [grp, setGrp] = useState<Record<string, string>>(() => Object.fromEntries(packs.map((p) => [p, guessGrp(p)])));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  async function add() {
+    setBusy(true);
+    setErr(null);
+    try {
+      for (const code of packs) {
+        try {
+          await api('POST', '/api/admin/packs', { code, grp: grp[code], active: true });
+        } catch (x) {
+          if (!/already exists/i.test(errText(x))) throw x;
+        }
+      }
+      onDone();
+    } catch (x) {
+      setErr(errText(x));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div class="cy-addpacks" data-testid="add-packs">
+      <table class="ad-table cy-table"><tbody>{packs.map((p) => (
+        <tr key={p}><td><bdi>{p}</bdi></td><td>
+          <select aria-label={`${tc('packCategory')} ${p}`} value={grp[p]} onChange={(e) => setGrp({ ...grp, [p]: e.currentTarget.value })}>
+            {PACK_GRPS.map((g) => <option key={g} value={g}>{g}</option>)}
+          </select>
+        </td></tr>
+      ))}</tbody></table>
+      <button type="button" class="btn primary" disabled={busy} data-testid="add-packs-btn" onClick={() => void add()}>{tc('addPacksBtn', { n: packs.length })}</button>
+      {err && <div class="alert" role="alert">{err}</div>}
+    </div>
+  );
+}
+
 export function Checks({ checks }: { checks: Check[] }) {
+  const onAdded = useContext(PacksAdded);
   if (!checks.length) return null;
   return (
     <ul class="cy-checks">
       {checks.map((c, i) => (
         <li key={i} class={`chk ${c.level}`}>
           <b>{c.level === 'error' ? tc('chkError') : c.level === 'warning' ? tc('chkWarning') : tc('chkInfo')}</b> {c.text}
+          {c.packs?.length && onAdded ? <AddPacks packs={c.packs} onDone={onAdded} /> : null}
         </li>
       ))}
     </ul>

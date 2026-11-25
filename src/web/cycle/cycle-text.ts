@@ -665,6 +665,8 @@ export const CY = {
   cdUploadedHelp: ["The Admin sent this target already split by pack and department, so there is no calculation: this is the uploaded table. Change any cell to raise or lower the target as you like; the pack's New Target follows the cells.", "أرسل المسؤول هذا الهدف مقسماً حسب العبوة والقسم، فلا يوجد حساب: هذا هو الجدول المرفوع. عدّل أي خانة لزيادة الهدف أو تخفيضه كما تريد؛ ويتبع الهدف الجديد للعبوة مجموع الخانات."],
   backToUploaded: ["Back to the uploaded table", "العودة للجدول المرفوع"],
   backToUploadedHelp: ["Undo all your changes and show the table as the Admin uploaded it.", "إلغاء كل تعديلاتك وعرض الجدول كما رفعه المسؤول."],
+  addPacksBtn: ["Add these {n} pack(s) to the pack master", "أضف هذه العبوات ({n}) إلى قائمة العبوات"],
+  packCategory: ["Category", "الفئة"],
   // Admin › Hierarchy (v16)
   hzIntro: ['Add, move, rename or delete here, or upload the whole hierarchy in one file. Every Channel Head is the top of one department.', 'أضف أو انقل أو أعد التسمية أو احذف هنا، أو ارفع الهيكل كاملًا في ملف واحد. كل رئيس قناة هو أعلى قسم واحد.'],
   hzAdd: ['Add', 'إضافة'],
