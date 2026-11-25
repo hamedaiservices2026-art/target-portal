@@ -107,17 +107,71 @@ function Averages({ l, sales, months, setMonths, available }: { l: Loaded; sales
 
 // ---------- summary ----------
 
+/** One comparison of the Target Summary: the New Target per Head and category vs the average sales of the months ticked. */
+function Comparison({ l, n, initial, onRemove }: { l: Loaded; n: number; initial: string[]; onRemove?: () => void }) {
+  useLang();
+  const { org, cycle } = l;
+  const ws = cycle.ws;
+  const [months, setMonths] = useState<string[]>(initial);
+  const avail = useAsync(() => api<{ months: string[] }>('GET', `/api/data/${ws}/sales-months`), [ws]);
+  const sales = useAsync(months.length ? () => loadRouteData(ws, 'sales', months).then((r) => r.data) : null, [ws, months.join(',')]);
+  const cats = catMap(org);
+  const idx = routeIndex(org);
+  const dept = cycle.dept ?? {};
+  const ms = months.filter((m) => sales.data?.[m]);
+  const byDept = sales.data ? groupSales(sales.data, (r) => { const i = idx.get(r); return i ? String(i.deptId) : null; }) : {};
+  const avg = (d: string): Grid => {
+    const g: Grid = {};
+    for (const m of ms) for (const [p, v] of Object.entries(byDept[m]?.[d] ?? {})) g[p] = (g[p] ?? 0) + v / ms.length;
+    return g;
+  };
+  const groups = [...CATEGORIES.map((c) => ({ label: c as string, f: (g: Grid) => sumCat(g, cats, c) })), { label: tc('total'), f: (g: Grid) => total(g) }];
+  const gap = (t: number, s: number) => (s > 0 ? t / s - 1 : null);
+  const rows = org.depts.map((d) => ({ name: d.name, t: dept[String(d.id)] ?? {}, s: avg(String(d.id)) }));
+  const all = { t: {} as Grid, s: {} as Grid };
+  for (const r of rows) { for (const [p, v] of Object.entries(r.t)) all.t[p] = (all.t[p] ?? 0) + v; for (const [p, v] of Object.entries(r.s)) all.s[p] = (all.s[p] ?? 0) + v; }
+  return (
+    <section class="card cy-section ts-cmp" data-testid={`ts-cmp-${n}`}>
+      <div class="cy-section-head">
+        <h2>{tc('tsCmpTitle', { n })}</h2>
+        {onRemove && <button type="button" class="btn link" onClick={onRemove}>{tc('tsCmpRemove')}</button>}
+      </div>
+      <MonthPicker period={cycle.period} months={months} onChange={setMonths} available={avail.data ? new Set(avail.data.months) : null} title={tc('tsCmpMonths')} />
+      {!months.length ? <p class="small muted">{tc('pickMonths')}</p> : sales.loading && !sales.data ? <p class="muted">{tc('loading')}</p> : (
+        <div class="tablewrap"><table class="ad-table cy-table">
+          <thead><tr><th>{tc('head')}</th>{groups.map((g) => <th key={g.label} class="num">{g.label}</th>)}</tr></thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.name}><td>{r.name}</td>{groups.map((g) => {
+                const v = gap(g.f(r.t), g.f(r.s));
+                return <td key={g.label} class="num" title={`${tc('newTarget')} ${fmtNum(g.f(r.t))} · ${tc('salesWord')} ${fmtNum(Math.round(g.f(r.s)))}`}><span class={gapClass(v)}>{fmtGap(v)}</span></td>;
+              })}</tr>
+            ))}
+          </tbody>
+          <tfoot><tr><td>{tc('total')}</td>{groups.map((g) => { const v = gap(g.f(all.t), g.f(all.s)); return <td key={g.label} class="num"><span class={gapClass(v)}>{fmtGap(v)}</span></td>; })}</tr></tfoot>
+        </table></div>
+      )}
+      <p class="small muted">{tc('tsCmpHelp')}</p>
+    </section>
+  );
+}
+
 function Summary({ l }: { l: Loaded }) {
   useLang();
   const { org, cycle } = l;
   const cats = catMap(org);
   const dept = cycle.dept ?? {};
+  // Two comparisons to start (PAGO and YAGO); more can be added.
+  const [cmps, setCmps] = useState<{ id: number; months: string[] }[]>(() => [
+    { id: 1, months: [pagoOf(cycle.period)] }, { id: 2, months: [yagoOf(cycle.period)] },
+  ]);
   function csv() {
     const rows: (string | number)[][] = [];
     for (const d of org.depts) for (const [p, n] of Object.entries(dept[String(d.id)] ?? {})) rows.push([cycle.period, d.name, p, cats.get(p) ?? '', n, 'Cases']);
     downloadCsv(`target_summary_${cycle.ws}_${cycle.period}.csv`, ['Period', 'Head of Department', 'Sales Target Category', 'Category', 'Target', 'Format'], rows);
   }
   return (
+    <>
     <Section title={tc('tabSummary')} right={<button type="button" class="btn" disabled={!cycle.dept} onClick={csv}>{tc('downloadCsv')}</button>}>
       {!cycle.dept ? <p class="muted">{tc('noDeptTarget')}</p> : (
         <div class="tablewrap"><table class="ad-table cy-table">
@@ -137,6 +191,13 @@ function Summary({ l }: { l: Loaded }) {
         </table></div>
       )}
     </Section>
+    {cycle.dept && cmps.map((c, k) => (
+      <Comparison key={c.id} l={l} n={k + 1} initial={c.months} onRemove={cmps.length > 1 ? () => setCmps(cmps.filter((x) => x.id !== c.id)) : undefined} />
+    ))}
+    {cycle.dept && (
+      <div class="actions"><button type="button" class="btn" data-testid="ts-add-cmp" onClick={() => setCmps([...cmps, { id: Date.now(), months: [addMonths(cycle.period, -1)] }])}>{tc('tsCmpAdd')}</button></div>
+    )}
+    </>
   );
 }
 
@@ -230,7 +291,7 @@ export function Reports({ ws: wsParam, period: periodParam }: { ws?: string; per
   useLang();
   const { route } = useLocation();
   const allowed = useMyWorkspaces();
-  const ws: Workspace = wsParam === 'ka' ? 'ka' : wsParam === 'ops' ? 'ops' : allowed[0] ?? 'ops';
+  const ws: Workspace = wsParam === 'ka' ? 'ka' : wsParam === 'ops' ? 'ops' : allowed.includes('ops') || !allowed.length ? 'ops' : allowed[0]!;
   const period = periodParam && /^\d{4}-\d{2}$/.test(periodParam) ? periodParam : defaultPeriod();
   const [tab, setTab] = useState<TabId>('flow');
   const [month, setMonth] = useState(pagoOf(period));

@@ -693,6 +693,11 @@ export const CY = {
   salesmenMissing: ["{n} route(s) have no salesman ID yet.", "{n} مسار بدون رقم مندوب حتى الآن."],
   salesmanPh: ["Salesman ID", "رقم المندوب"],
   salesmenSave: ["Save salesman IDs ({n})", "حفظ أرقام المندوبين ({n})"],
+  tsCmpTitle: ["Comparison {n}: New Target vs sales", "المقارنة {n}: الهدف الجديد مقابل المبيعات"],
+  tsCmpMonths: ["Sales months to compare with (average)", "أشهر المبيعات للمقارنة (المتوسط)"],
+  tsCmpHelp: ["Each cell is the New Target vs the average sales of the months ticked, in %. Hover a cell to see the cases.", "كل خانة هي الهدف الجديد مقابل متوسط مبيعات الأشهر المختارة بالنسبة المئوية. مرر المؤشر لرؤية الصناديق."],
+  tsCmpAdd: ["+ Add another comparison", "+ إضافة مقارنة أخرى"],
+  tsCmpRemove: ["Remove", "إزالة"],
   // Admin › Hierarchy (v16)
   hzIntro: ['Add, move, rename or delete here, or upload the whole hierarchy in one file. Every Channel Head is the top of one department.', 'أضف أو انقل أو أعد التسمية أو احذف هنا، أو ارفع الهيكل كاملًا في ملف واحد. كل رئيس قناة هو أعلى قسم واحد.'],
   hzAdd: ['Add', 'إضافة'],

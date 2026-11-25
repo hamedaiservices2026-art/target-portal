@@ -197,7 +197,8 @@ export function useMyWorkspaces(): Workspace[] {
   const { user } = useSession();
   if (!user) return [];
   if (user.role === 'admin') return ['ops', 'ka'];
-  return user.cd ?? [];
+  // Operations first, so the CD lands on Operations.
+  return [...(user.cd ?? [])].sort((a, b) => (a === 'ops' ? -1 : b === 'ops' ? 1 : 0));
 }
 
 export function Section({ title, children, right }: { title: string; children: ComponentChildren; right?: ComponentChildren }) {
