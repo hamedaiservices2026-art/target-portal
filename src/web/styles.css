@@ -405,3 +405,6 @@ td.bench .gsub { display: block; font-size: 11px; }
 .ft-table thead tr:last-child th.ft-pack { background: #0000FF; }
 .cd-choice { display: grid; gap: 6px; }
 .cd-choice label { display: flex; gap: 6px; align-items: center; }
+.cy-table tr.cd-file[style] td { background: var(--ft-bg); color: var(--ft-fg); font-weight: var(--ft-w); }
+.cy-table tr.cd-file[style] td .cy-num { background: #fff; color: #000; }
+.cd-dist-how { margin-block: 8px; gap: 14px; }

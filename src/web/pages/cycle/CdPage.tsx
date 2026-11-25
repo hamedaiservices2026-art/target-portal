@@ -18,20 +18,22 @@ import { errText, PageHead } from '../../components/AdminBits';
 import { fmtNum, useLang } from '../../i18n';
 import { useSession } from '../../session';
 import {
-  catMap, cdRows, companyMonth, defaultDeptSplit, deptPack, groupSales, NO_CHANNEL, prevTargetMonths, rescalePack, routeIndex, sumCat,
-  type ChannelHist, type Grid,
+  catMap, cdRows, companyMonth, subMap, defaultDeptSplit, deptPack, groupSales, NO_CHANNEL, prevTargetMonths, rescalePack, routeIndex, sumCat,
+  type CdRow, type ChannelHist, type Grid,
 } from '../../cycle/compute';
 import { deptColumns, orderedDeptCols } from '../../cycle/deptOrder';
 import { tc } from '../../cycle/i18n';
 import { getCycle, getOrg, loadMonthData, loadRouteData, useAsync } from '../../cycle/load';
-import type { RouteMonthData } from '../../cycle/parsers';
-import { defaultPeriod, fmtGap, gapClass, MonthPicker, monthsLabel, NumCell, Section, Tabs, useMyWorkspaces, writeWorkbook, WsPeriod } from '../../cycle/ui';
+import { packIndex, type FileRow, type RouteMonthData } from '../../cycle/parsers';
+import { packKey } from '../../../shared/calc/packs';
+import { CdByCategory } from './CdByCategory';
+import { defaultPeriod, rowColour, fmtGap, gapClass, MonthPicker, monthsLabel, NumCell, Section, Tabs, useMyWorkspaces, writeWorkbook, WsPeriod } from '../../cycle/ui';
 
 type TabId = 'gm' | 'dept';
 
 type Bench = {
   sales: RouteMonthData; deptChannel: ChannelHist;
-  upload: { mode: 'pack' | 'dept' | 'leaf'; byPack: Grid; byChannel?: Record<string, Grid> } | null;
+  upload: { mode: 'pack' | 'dept' | 'leaf'; byPack: Grid; byChannel?: Record<string, Grid>; layout?: FileRow[] } | null;
   yagoSales: Grid; pagoSales: Grid; aopNow: Grid; uploaded: Grid;
   available: Set<string>;
 };
@@ -60,7 +62,7 @@ async function loadAll(ws: Workspace, period: string): Promise<Loaded> {
     loadRouteData(ws, 'sales', months),
     loadMonthData<Record<string, Grid>>(ws, 'dept_channel'),
     loadMonthData<Record<string, { cases: number; nr: number | null }>>(ws, 'aop'),
-    loadMonthData<{ mode: 'pack' | 'dept' | 'leaf'; byPack: Grid; byChannel?: Record<string, Grid> }>(ws, 'new_target'),
+    loadMonthData<{ mode: 'pack' | 'dept' | 'leaf'; byPack: Grid; byChannel?: Record<string, Grid>; layout?: FileRow[] }>(ws, 'new_target'),
   ]);
   const aopNow = Object.fromEntries(Object.entries(aop[period] ?? {}).map(([p, v]) => [p, v.cases]));
   const upload = nt[period] ?? null;
@@ -291,6 +293,7 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
   useLang();
   const [view, setView] = useState<View>('cases');
   const [hideZero, setHideZero] = useState(true);
+  const [byCat, setByCat] = useState(true);
   // A target sent already split by department: the CD may still choose to distribute it by sales.
   const [useCalc, setUseCalc] = useState(() => l.bench.upload?.mode !== 'dept' || (Object.keys(work.basis).length > 0 && !Object.values(work.basis).some((b) => b.startsWith('uploaded'))));
   const { org, bench, cycle } = l;
@@ -307,7 +310,19 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
   const { flat, heads } = deptColumns(cols, (name) => tc('totalOf', { name }));
   const packs = Object.keys(work.nt);
   const hasSplit = Object.keys(work.dm).length > 0;
-  const rows = cdRows(packs, cats).filter((r) => !hideZero || r.kind === 'sub' || (work.nt[r.pack] ?? 0) !== 0);
+  // A target uploaded by pack and department keeps the file's order, Total rows and colours.
+  const layout = bench.upload?.mode === 'dept' ? bench.upload.layout ?? [] : [];
+  const pidx = packIndex(org.packs.map((p) => p.code));
+  const code = (n: string) => pidx.get(packKey(n)) ?? n;
+  const fileRows: CdRow[] = layout.map((x) => ('p' in x ? { kind: 'pack' as const, pack: code(x.p) } : { kind: 'sub' as const, label: x.t, packs: [...new Set(x.of.map(code))], level: 2 as const }));
+  const inLayout = new Set(fileRows.flatMap((x) => (x.kind === 'pack' ? [x.pack] : [])));
+  const baseRows: CdRow[] = layout.length
+    ? [...fileRows.filter((x) => x.kind === 'sub' || packs.includes(x.pack)), ...cdRows(packs.filter((p) => !inLayout.has(p)), cats).filter((x) => x.kind === 'pack')]
+    : cdRows(packs, cats);
+  const rows = baseRows.filter((r) => !hideZero || r.kind === 'sub' || (work.nt[r.pack] ?? 0) !== 0);
+  const subOf = subMap(org.packs);
+  const avgOf = (h: { id: string; chans: string[] }, p: string, ms: string[]) => (ms.length ? ms.reduce((s, m) => s + h.chans.reduce((t, c) => t + (byChan[m]?.[`${h.id}\u0000${c}`]?.[p] ?? 0), 0), 0) / ms.length : 0);
+  const headBench = (p: string, h: { id: string; chans: string[] }) => ({ avg: avgOf(h, p, months), pago: avgOf(h, p, [pm]), yago: avgOf(h, p, [ym]) });
   const cell = (d: string, c: string, list: string[]) => list.reduce((s, p) => s + (work.dm[d]?.[c]?.[p] ?? 0), 0);
   const salesOf = (m: string, d: string, c: string, list: string[]) => list.reduce((s, p) => s + (byChan[m]?.[`${d}\u0000${c}`]?.[p] ?? 0), 0);
   const bench2 = (d: string, c: string, list: string[]) => salesOf(view === 'pago' ? pm : ym, d, c, list);
@@ -374,6 +389,14 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
           : tc('formulaSales', { months: monthsLabel(months) })}</div>
       </div>
       </>)}
+      {hasSplit && (
+        <div class="toolbar cd-dist-how" role="radiogroup" aria-label={tc('cdDistHow')} data-testid="cd-dist-how">
+          <b class="small">{tc('cdDistHow')}:</b>
+          <label class="small"><input type="radio" name="cd-dist" checked={byCat} onChange={() => setByCat(true)} data-testid="cd-dist-cat" /> {tc('cdDistCat')}</label>
+          <label class="small"><input type="radio" name="cd-dist" checked={!byCat} onChange={() => setByCat(false)} data-testid="cd-dist-pack" /> {tc('cdDistPack')}</label>
+        </div>
+      )}
+      {hasSplit && byCat && <CdByCategory work={work} heads={cols} cats={cats} subOf={subOf} bench={headBench} editable={edit} setWork={setWork} />}
       <Section title={tc('deptTitle', { period: cycle.period })} right={
         <div class="toolbar">
           {edit && calcOn && prevOk && <button type="button" class="btn primary" data-testid="split-prev" onClick={() => split('prev')}>{tc('splitByPrev')}</button>}
@@ -404,7 +427,7 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
               const off = r.kind === 'pack' && abc !== nt;
               const abcBench = cols.reduce((s, d) => s + deptBench(d, list), 0);
               return (
-                <tr key={r.kind === 'sub' ? r.label : r.pack} class={r.kind === 'sub' ? `sub l${r.level}` : off ? 'bad' : ''}>
+                <tr key={r.kind === 'sub' ? r.label : r.pack} class={`${r.kind === 'sub' ? `sub l${r.level}` : off ? 'bad' : ''}${layout.length ? ' cd-file' : ''}`} style={layout.length ? rowColour(r.kind === 'sub' ? r.label : r.pack) : undefined}>
                   <td><bdi>{r.kind === 'sub' ? r.label : r.pack}</bdi></td>
                   {flat.map((x) => (x.kind === 'cell' ? (
                     <td key={`${x.d.id}${x.c}`} class="num">

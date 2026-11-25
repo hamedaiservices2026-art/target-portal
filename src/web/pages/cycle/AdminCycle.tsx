@@ -31,7 +31,7 @@ import {
   packIndex, parseAop, parseChannelGrid, parseNewTargetByLeaf, parseNewTargetByPack, parsePrevTargets, parseAopByDept, parseSales, sheetMonth,
   type Check, type FileRow, type RouteMonthData,
 } from '../../cycle/parsers';
-import { Checks, defaultPeriod, PacksAdded, PacksVersion, downloadCsv, fmtCases, NumCell, Section, Tabs, writeWorkbook, WsPeriod } from '../../cycle/ui';
+import { Checks, defaultPeriod, rowColour, PacksAdded, PacksVersion, downloadCsv, fmtCases, NumCell, Section, Tabs, writeWorkbook, WsPeriod } from '../../cycle/ui';
 
 export type Loaded = { cycle: CycleDto; org: OrgDto; status: DataStatus; ops?: CycleDto; links?: KaLink[]; ka?: CycleDto };
 type NtUpload = { mode: 'pack' | 'dept' | 'leaf' | 'aop'; byPack: Grid; byChannel?: Record<string, Grid>; byLeaf?: Record<string, Grid>; byKam?: Record<string, Grid>; file?: string; layout?: FileRow[] };
@@ -492,19 +492,6 @@ function AopDeptStep({ ws, period, org, saved, modePicker, onSaved }: {
 
 // ---------- step 2 by department: the uploaded target, editable ----------
 
-/** The row colours of the AOP by pack and department file (Excel fills and font colours). */
-const FILE_COLOURS: Record<string, [string, string, boolean]> = {
-  'total cans': ['#C1E5F5', '#000', true], 'total ssnr': ['#C1E5F5', '#000', true], 'total mspet': ['#C1E5F5', '#000', true],
-  'total abc': ['#00B050', '#000', true], 'total tt dmm': ['#00B050', '#000', true],
-  'total water': ['#00B0F0', '#000', true], 'total lit': ['#FFFF00', '#000', true],
-  'total gatorade': ['#FBE3D6', '#000', false], 'mplus_nrb300': ['#D9F2D0', '#000', false],
-  'total rockstar': ['#000000', '#FFC000', true], 'total sting energy': ['#C00000', '#FFF', true], 'total energy': ['#000000', '#FFF', true],
-  'total britvic': ['#CAEEFB', '#000', true], 'total lrb-others': ['#FFC000', '#000', true], 'total lrb': ['#0000FF', '#FFF', true],
-};
-function rowColour(label: string): Record<string, string> | undefined {
-  const c = FILE_COLOURS[label.trim().toLowerCase().replace(/\s+/g, ' ')];
-  return c ? { '--ft-bg': c[0], '--ft-fg': c[1], '--ft-w': c[2] ? '700' : '400' } : undefined;
-}
 
 /**
  * The target by pack and department as in the file: packs in the file's order

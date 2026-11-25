@@ -670,6 +670,10 @@ export const CY = {
   cdHowTitle: ["How do you want to split this target by department?", "كيف تريد توزيع هذا الهدف على الأقسام؟"],
   cdHowUploaded: ["Keep the split the Admin uploaded (no calculation)", "الإبقاء على التوزيع الذي رفعه المسؤول (بدون حساب)"],
   cdHowCalc: ["Distribute it by average sales (choose the months)", "التوزيع حسب متوسط المبيعات (اختر الأشهر)"],
+  cdByCategoryHelp: ["Open a category to see its sub categories. Type a new total for one Head; the packs of that row are rebalanced across the Heads (each pack keeps its New Target).", "افتح الفئة لرؤية فئاتها الفرعية. اكتب إجمالياً جديداً لرئيس قسم؛ تتم موازنة عبوات هذا الصف على رؤساء الأقسام (كل عبوة تحتفظ بهدفها الجديد)."],
+  cdDistHow: ["Distribute", "التوزيع"],
+  cdDistCat: ["By category first, then by pack", "حسب الفئة أولاً ثم حسب العبوة"],
+  cdDistPack: ["Directly by pack", "مباشرة حسب العبوة"],
   // Admin › Hierarchy (v16)
   hzIntro: ['Add, move, rename or delete here, or upload the whole hierarchy in one file. Every Channel Head is the top of one department.', 'أضف أو انقل أو أعد التسمية أو احذف هنا، أو ارفع الهيكل كاملًا في ملف واحد. كل رئيس قناة هو أعلى قسم واحد.'],
   hzAdd: ['Add', 'إضافة'],
