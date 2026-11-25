@@ -733,6 +733,8 @@ export const CY = {
   capInSetup: ["The cap (on/off, % per level and exceptions) is set in", "يتم ضبط الحد (تفعيل/إيقاف، النسبة لكل مستوى والاستثناءات) في"],
   tabFiles: ["Uploaded files", "الملفات المرفوعة"],
   filesHelp: ["The data files the cycle uses: the AOP, the sales by month and the previous targets. They are kept for every month, so upload each file once and add new months when you have them.", "ملفات البيانات التي تستخدمها الدورة: الخطة السنوية والمبيعات الشهرية والأهداف السابقة. تُحفظ لكل شهر، لذا ارفع كل ملف مرة واحدة وأضف الأشهر الجديدة عند توفرها."],
+  aopUpTitle: ["Upload the AOP", "رفع الخطة السنوية"],
+  aopDeptInFiles: ["The AOP by pack and department is uploaded in Uploaded files › 1. AOP.", "تُرفع الخطة حسب العبوة والقسم في الملفات المرفوعة › 1. الخطة السنوية."],
   // Admin › Hierarchy (v16)
   hzIntro: ['Add, move, rename or delete here, or upload the whole hierarchy in one file. Every Channel Head is the top of one department.', 'أضف أو انقل أو أعد التسمية أو احذف هنا، أو ارفع الهيكل كاملًا في ملف واحد. كل رئيس قناة هو أعلى قسم واحد.'],
   hzAdd: ['Add', 'إضافة'],

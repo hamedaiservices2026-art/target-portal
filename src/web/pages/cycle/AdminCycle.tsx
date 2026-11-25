@@ -460,17 +460,8 @@ function AopDeptStep({ ws, period, org, saved, modePicker, onSaved }: {
   }
   return (
     <>
-      <UploadStep ws={ws} clearKind={{ table: 'months', kind: 'aop_dept' }} n={2} title={tc('aopDeptTitle')} help={tc('aopDeptHelp')}
-        template={() => T.aopByDept(org, period)} done={!!mine} locked={false} multiSheet
-        loaded={months.length ? tc('loadedMonths', { from: months[0]!, to: months[months.length - 1]!, n: months.length }) : null}
-        parse={({ sheets }) => {
-          const r = parseAopByDept(sheets!, channels, idx);
-          const payload = Object.fromEntries(Object.entries(r.byMonth).map(([m, g]) => [m, { byChannel: g, layout: r.layout }]));
-          return { checks: r.checks, summary: tc('sumMonths', { n: Object.keys(r.byMonth).length }), payload };
-        }}
-        upload={async (p) => { const n = await uploadMonths(ws, 'aop_dept', p as Record<string, unknown>); data.reload(); return tc('savedMonths', { n }); }}>
-        {modePicker}
-      </UploadStep>
+      <div class="cy-step" data-testid="step-2"><div class="cy-step-head"><span class="cy-step-n">2</span><div><b>{tc('step2', { period })}</b>
+        <p class="muted small">{tc('aopDeptInFiles')} {months.length ? tc('loadedMonths', { from: months[0]!, to: months[months.length - 1]!, n: months.length }) : ''}</p></div></div>{modePicker}</div>
       <div class={`cy-step${used ? ' done' : ''}`} data-testid="aop-dept-use">
         <div class="cy-step-head"><span class="cy-step-n">{used ? '✓' : '•'}</span>
           <div><b>{tc('aopDeptUseTitle', { period })}</b><p class="muted small">{mine ? tc('aopDeptUseHelp', { total: fmtNum(Object.values(mine).reduce((s2, g) => s2 + total(g), 0)) }) : tc('aopDeptNone', { period })}</p></div></div>
@@ -481,6 +472,28 @@ function AopDeptStep({ ws, period, org, saved, modePicker, onSaved }: {
         </div>
       </div>
     </>
+  );
+}
+
+/** Uploaded files › AOP by pack and department (all months of the year, one sheet per channel). */
+function AopDeptUpload({ ws, period, org, n, children }: { ws: Workspace; period: string; org: OrgDto; n: number; children?: ComponentChildren }) {
+  useLang();
+  const data = useAsync(() => loadMonthData<AopDeptMonth>('ops', 'aop_dept'), [period]);
+  const idx = useMemo(() => packIndex(org.packs.map((p) => p.code)), [org]);
+  const channels = org.depts.flatMap((d) => d.channels.map((c) => c.channel));
+  const months = Object.keys(data.data ?? {}).sort();
+  return (
+    <UploadStep ws={ws} clearKind={{ table: 'months', kind: 'aop_dept' }} n={n} title={`${tc('step3')} · ${tc('aopDeptTitle')}`} help={tc('aopDeptHelp')}
+      template={() => T.aopByDept(org, period)} done={!!aopDeptOf(data.data?.[period])} locked={false} multiSheet
+      loaded={months.length ? tc('loadedMonths', { from: months[0]!, to: months[months.length - 1]!, n: months.length }) : null}
+      parse={({ sheets }) => {
+        const r = parseAopByDept(sheets!, channels, idx);
+        const payload = Object.fromEntries(Object.entries(r.byMonth).map(([m, g]) => [m, { byChannel: g, layout: r.layout }]));
+        return { checks: r.checks, summary: tc('sumMonths', { n: Object.keys(r.byMonth).length }), payload };
+      }}
+      upload={async (p) => { const k = await uploadMonths(ws, 'aop_dept', p as Record<string, unknown>); data.reload(); return tc('savedMonths', { n: k }); }}>
+      {children}
+    </UploadStep>
   );
 }
 
@@ -871,7 +884,7 @@ function StartTab({ ws, period, l, reload, part }: { ws: Workspace; period: stri
   const prevDone = ka ? status.some((s) => s.kind === 'prev_target') : status.some((s) => s.kind === 'dept_channel');
   const done = ka
     ? [exists, ntDone, salesDone, prevDone]
-    : [exists, ntDone, status.some((s) => s.kind === 'aop'), salesDone, prevDone,
+    : [exists, ntDone, status.some((s) => s.kind === 'aop' || s.kind === 'aop_dept'), salesDone, prevDone,
       cycle.settings.cdStep ? cycle.cdStatus === 'with_cd' || cycle.cdStatus === 'submitted' : cycle.dept !== null];
   const n = done.filter(Boolean).length;
   // Steps not done yet, named for the admin before sending to the CD.
@@ -923,6 +936,16 @@ function StartTab({ ws, period, l, reload, part }: { ws: Workspace; period: stri
     </>
   );
   const of = done.length;
+  // Uploaded files › AOP: upload it by pack, or by pack and department.
+  const [aopUp, setAopUp] = useState<'pack' | 'dept'>(cycle.settings.aopBy === 'dept' ? 'dept' : 'pack');
+  const aopChoice = (
+    <div class="toolbar" role="radiogroup" aria-label={tc('aopUpTitle')} data-testid="aop-upload-by">
+      <b class="small">{tc('aopUpTitle')}</b>
+      {(['pack', 'dept'] as const).map((b) => (
+        <label key={b} class="small"><input type="radio" name="aop-up" data-testid={`aop-up-${b}`} checked={aopUp === b} onChange={() => setAopUp(b)} /> {b === 'pack' ? tc('aopByPack') : tc('aopByDept')}</label>
+      ))}
+    </div>
+  );
 
   return (
     <PacksAdded.Provider value={reload}>
@@ -1010,13 +1033,16 @@ function StartTab({ ws, period, l, reload, part }: { ws: Workspace; period: stri
       {part === 'files' && (
         <>
           <p class="muted small">{tc('filesHelp')}</p>
-          {!ka && (
+          {!ka && aopUp === 'dept' && <AopDeptUpload ws={ws} period={period} org={org} n={1}>{aopChoice}</AopDeptUpload>}
+          {!ka && aopUp === 'pack' && (
             <UploadStep ws={ws} clearKind={{ table: 'months', kind: 'aop' }} n={1} title={tc('step3')} help={tc('step3Help')} template={() => T.aop(org, period)} done={done[2]!} locked={locked} multiSheet
               parse={({ sheets }) => {
                 const r = parseAop(sheets!, idx);
                 return { checks: r.checks, summary: tc('sumMonths', { n: Object.keys(r.byMonth).length }), payload: r.byMonth };
               }}
-              upload={async (p) => after(tc('savedMonths', { n: await uploadMonths(ws, 'aop', p as Record<string, unknown>) }))} />
+              upload={async (p) => after(tc('savedMonths', { n: await uploadMonths(ws, 'aop', p as Record<string, unknown>) }))}>
+              {aopChoice}
+            </UploadStep>
           )}
           <UploadStep ws={ws} clearKind={{ table: 'routes', kind: 'sales' }} n={ka ? 1 : 2} title={ka ? tc('step5Ka') : tc('step5')} help={ka ? tc('step5HelpKa') : tc('step5Help')}
             template={() => (ka ? T.kaSales(org, period) : T.sales(org, period, ws))} done={salesDone} locked={false}
