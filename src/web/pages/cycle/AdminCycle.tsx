@@ -171,10 +171,10 @@ function SettingsStep({ ws, period, cycle, exists, onSaved }: { ws: Workspace; p
     setBusy(true);
     setErr(null);
     try {
-      await api('PUT', `/api/admin/cycle/${ws}/${period}/settings`, { deadlines: s.deadlines, capPct: s.capPct });
-      // One step for both: the deadlines and the CAP % apply to Operation and Key Account.
+      await api('PUT', `/api/admin/cycle/${ws}/${period}/settings`, { deadlines: s.deadlines });
+      // One step for both: the deadlines apply to Operation and Key Account.
       const other: Workspace = ws === 'ops' ? 'ka' : 'ops';
-      await api('PUT', `/api/admin/cycle/${other}/${period}/settings`, { deadlines: s.deadlines, capPct: s.capPct });
+      await api('PUT', `/api/admin/cycle/${other}/${period}/settings`, { deadlines: s.deadlines });
       onSaved();
     } catch (x) {
       setErr(errText(x));
@@ -194,19 +194,13 @@ function SettingsStep({ ws, period, cycle, exists, onSaved }: { ws: Workspace; p
         <span class="cy-step-n">{exists ? '✓' : 1}</span>
         <div><b>{tc('step1Both')}</b><p class="muted small">{tc('step1Help', { period, pago: pagoOf(period), yago: `${Number(period.slice(0, 4)) - 1}${period.slice(4)}` })} {tc('step1BothHelp')}</p></div>
         <span class="spacer" />
-        {cycle.settings.capPct !== null && exists && <span class="pill ok">{tc('capIs', { n: cycle.settings.capPct })}</span>}
       </div>
       <div class="cy-grid">
         {dl('head', tc('dlHead'))}
         {dl('manager', tc('dlManager'))}
         {dl('supervisor', tc('dlSupervisor'))}
-        <label class="field">
-          <span>{tc('capPct')}</span>
-          <input type="number" min={0} max={100} step="0.5" value={s.capPct ?? ''} placeholder={tc('capPlaceholder')} data-testid="cap-pct"
-            onInput={(e) => { const v = e.currentTarget.value; setS({ ...s, capPct: v === '' ? null : Math.min(100, Math.max(0, Number(v))) }); }} />
-        </label>
       </div>
-      <p class="muted small">{tc('capHelp')}</p>
+      <p class="muted small">{tc('capInSetup')} <a href="/admin/cycle-setup">{tc('navSetup')}</a></p>
       <div class="actions">
         <button type="button" class="btn primary" disabled={busy} onClick={() => void save()}>{exists ? tc('save') : tc('openCycle')}</button>
       </div>

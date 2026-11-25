@@ -458,8 +458,8 @@ export const CY = {
   urDeleted: ["{u} was deleted. Their places in the hierarchy are open again.", "تم حذف {u}. أماكنه في الهيكل أصبحت شاغرة."],
   splitByPrev: ["Split by previous targets", "التوزيع حسب الأهداف السابقة"],
   splitHowPrev: ["Split by each department's and channel's share of the previous targets of {months} (packs with no previous target use the average sales).", "التوزيع حسب حصة كل قسم وقناة من الأهداف السابقة في {months} (العبوات بلا هدف سابق تستخدم متوسط المبيعات)."],
-  step1Both: ["1. Cycle, deadlines and CAP (Operation and Key Account)", "1. الدورة والمواعيد ونسبة الحد (العمليات والحسابات الرئيسية)"],
-  step1BothHelp: ["Saving applies the deadlines and the CAP % to both Operation and Key Account for this month.", "الحفظ يطبق المواعيد ونسبة الحد على العمليات والحسابات الرئيسية لهذا الشهر."],
+  step1Both: ["1. Cycle and deadlines (Operation and Key Account)", "1. الدورة والمواعيد (العمليات والحسابات الرئيسية)"],
+  step1BothHelp: ["Saving applies the deadlines to both Operation and Key Account for this month.", "الحفظ يطبق المواعيد على العمليات والحسابات الرئيسية لهذا الشهر."],
   ntModeAop: ["From the AOP of the month", "من الخطة السنوية للشهر"],
   ntModeOps: ["From the Operation target (MT, Non Retail) + uplift", "من هدف العمليات (MT والقطاع غير التجزئة) + زيادة"],
   step2AopHelp: ["The AOP cases of {period} by pack become the new target. Change, remove or add packs, then use it. It then goes to the next step (the Commercial Director) as usual.", "كراتين الخطة السنوية لشهر {period} حسب العبوة تصبح الهدف الجديد. عدّل أو احذف أو أضف عبوات ثم اعتمده. ينتقل بعدها للخطوة التالية (المدير التجاري) كالمعتاد."],
@@ -730,6 +730,7 @@ export const CY = {
   excPick: ["Choose a Head or manager", "اختر رئيس قسم أو مدير"],
   excHeads: ["Heads of Department", "رؤساء الأقسام"],
   excManagers: ["Managers", "المدراء"],
+  capInSetup: ["The cap (on/off, % per level and exceptions) is set in", "يتم ضبط الحد (تفعيل/إيقاف، النسبة لكل مستوى والاستثناءات) في"],
   // Admin › Hierarchy (v16)
   hzIntro: ['Add, move, rename or delete here, or upload the whole hierarchy in one file. Every Channel Head is the top of one department.', 'أضف أو انقل أو أعد التسمية أو احذف هنا، أو ارفع الهيكل كاملًا في ملف واحد. كل رئيس قناة هو أعلى قسم واحد.'],
   hzAdd: ['Add', 'إضافة'],
