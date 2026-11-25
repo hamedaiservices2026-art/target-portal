@@ -721,6 +721,8 @@ export const CY = {
   dashAopHelp: ["Compared with the AOP of {period} (the target month).", "مقارنة بخطة {period} (شهر الهدف)."],
   dashAopTotalOnly: ["There is no AOP by department for this month (upload the AOP by pack and department), so only the total is compared.", "لا توجد خطة حسب القسم لهذا الشهر (ارفع الخطة حسب العبوة والقسم)، لذا تتم مقارنة الإجمالي فقط."],
   dashTotalGapVs: ["total target vs {x}", "إجمالي الهدف مقابل {x}"],
+  dashBy: ["Group by", "التجميع حسب"],
+  packWord: ["Pack", "العبوة"],
   // Admin › Hierarchy (v16)
   hzIntro: ['Add, move, rename or delete here, or upload the whole hierarchy in one file. Every Channel Head is the top of one department.', 'أضف أو انقل أو أعد التسمية أو احذف هنا، أو ارفع الهيكل كاملًا في ملف واحد. كل رئيس قناة هو أعلى قسم واحد.'],
   hzAdd: ['Add', 'إضافة'],

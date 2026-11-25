@@ -211,7 +211,7 @@ type DashLvl = 'head' | 'manager' | 'supervisor' | 'route';
  * department target) or by manager, supervisor or route (the route target).
  */
 export function dashboardData(l: Loaded, sales: RouteMonthData, months: string[], lvl: DashLvl = 'head', calc: Record<string, Record<string, Grid>> = {},
-  aop?: { byChannel: Record<string, Grid> | null; byPack: Grid | null }): { cat: string; rows: DashRow[] }[] {
+  aop?: { byChannel: Record<string, Grid> | null; byPack: Grid | null }, by: 'cat' | 'pack' = 'cat'): { cat: string; rows: DashRow[] }[] {
   const { org, cycle } = l;
   const cats = catMap(org);
   const ms = months.filter((m) => sales[m]);
@@ -250,7 +250,15 @@ export function dashboardData(l: Loaded, sales: RouteMonthData, months: string[]
     }
   }
   const list = [...ents.values()].sort((a, b) => a.name.localeCompare(b.name));
-  const groups = [...CATEGORIES.map((c) => ({ cat: c as string, f: (g: Grid) => sumCat(g, cats, c) })), { cat: 'Total', f: (g: Grid) => total(g) }];
+  // By category, or one group per pack (in the pack master's order) with a target or a comparison.
+  const packOrder = new Map(org.packs.map((p, i) => [p.code, i]));
+  const seen = new Set<string>();
+  for (const e of list) for (const g of [e.t, e.s]) for (const [p, v] of Object.entries(g)) if (v) seen.add(p);
+  const packs = [...seen].sort((a, b) => (packOrder.get(a) ?? 1e9) - (packOrder.get(b) ?? 1e9) || a.localeCompare(b));
+  const groups = [
+    ...(by === 'pack' ? packs.map((p) => ({ cat: p, f: (g: Grid) => g[p] ?? 0 })) : CATEGORIES.map((c) => ({ cat: c as string, f: (g: Grid) => sumCat(g, cats, c) }))),
+    { cat: 'Total', f: (g: Grid) => total(g) },
+  ];
   return groups.map(({ cat, f }) => {
     const rows = list.map((e) => {
       const target = Math.round(f(e.t));
@@ -371,6 +379,7 @@ function DashComparison({ l, n, lvl, calc, initial, onRemove }: {
   const [busy, setBusy] = useState(false);
   const [shape, setShape] = useState<DashShape>('cards');
   const [vs, setVs] = useState<'sales' | 'aop'>('sales');
+  const [by, setBy] = useState<'cat' | 'pack'>('cat');
   const aopDept = useAsync(vs === 'aop' ? () => loadMonthData<Record<string, Grid> | { byChannel: Record<string, Grid> }>(ws, 'aop_dept') : null, [ws, vs]);
   const aopPack = useAsync(vs === 'aop' ? () => loadMonthData<Record<string, { cases: number }>>(ws, 'aop') : null, [ws, vs]);
   const [st, setSt] = useState<ChartStyle>(loadStyle);
@@ -385,8 +394,8 @@ function DashComparison({ l, n, lvl, calc, initial, onRemove }: {
     const pk = aopPack.data[period];
     return { byChannel, byPack: pk ? Object.fromEntries(Object.entries(pk).map(([p, v]) => [p, v.cases])) : null };
   }, [vs, aopDept.data, aopPack.data, period]);
-  const data = useMemo(() => (vs === 'aop' ? (aop ? dashboardData(l, {}, [], lvl, calc, aop) : null) : sales.data ? dashboardData(l, sales.data, months, lvl, calc) : null),
-    [l, sales.data, lvl, calc, months.join(','), vs, aop]);
+  const data = useMemo(() => (vs === 'aop' ? (aop ? dashboardData(l, {}, [], lvl, calc, aop, by) : null) : sales.data ? dashboardData(l, sales.data, months, lvl, calc, undefined, by) : null),
+    [l, sales.data, lvl, calc, months.join(','), vs, aop, by]);
   const label = vs === 'aop' ? `AOP ${period}` : `${tc('salesWord')} ${monthsLabel(months.slice().sort())}`;
   const noAop = vs === 'aop' && aop && (lvl !== 'head' ? true : !aop.byChannel);
   return (
@@ -398,6 +407,12 @@ function DashComparison({ l, n, lvl, calc, initial, onRemove }: {
             <select value={vs} data-testid={`dash-vs-${n}`} onChange={(e) => setVs(e.currentTarget.value as 'sales' | 'aop')}>
               <option value="sales">{tc('dashVsSales')}</option>
               <option value="aop">{tc('dashVsAop')}</option>
+            </select>
+          </label>
+          <label class="small">{tc('dashBy')}{' '}
+            <select value={by} data-testid={`dash-by-${n}`} onChange={(e) => setBy(e.currentTarget.value as 'cat' | 'pack')}>
+              <option value="cat">{tc('category')}</option>
+              <option value="pack">{tc('packWord')}</option>
             </select>
           </label>
           <label class="small">{tc('cddShape')}{' '}

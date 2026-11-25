@@ -101,7 +101,8 @@ export function CdDashboard({ ws, cycle, org }: { ws: Workspace; cycle: CycleDto
   useLang();
   const period = cycle.period;
   const [lvl, setLvl] = useState<Lvl>('head');
-  const [cat, setCat] = useState<Category | 'all'>('all');
+  const [cat, setCat] = useState<string>('all');
+  const [by, setBy] = useState<'cat' | 'pack'>('cat');
   const [under, setUnder] = useState('');
   const [shape, setShape] = useState<Shape>('table');
   const [months, setMonths] = useState<string[]>(() => [addMonths(period, -3), addMonths(period, -2), addMonths(period, -1)]);
@@ -112,7 +113,7 @@ export function CdDashboard({ ws, cycle, org }: { ws: Workspace; cycle: CycleDto
   const aopPack = useAsync(() => loadMonthData<Record<string, { cases: number }>>(ws, 'aop'), [ws]);
 
   const cats = catMap(org);
-  const inCat = (p: string) => cat === 'all' || (cats.get(p) ?? 'LRB-Others') === cat;
+  const inCat = (p: string) => cat === 'all' || (by === 'pack' ? p === cat : (cats.get(p) ?? 'LRB-Others') === cat);
   const sum = (g: Grid | undefined) => Object.entries(g ?? {}).reduce((s, [p, n]) => s + (inCat(p) ? n : 0), 0);
 
   const data = useMemo(() => {
@@ -187,7 +188,7 @@ export function CdDashboard({ ws, cycle, org }: { ws: Workspace; cycle: CycleDto
     for (const k of Object.keys(out) as Lvl[]) out[k].sort((a, b) => a.under.localeCompare(b.under) || a.name.localeCompare(b.name));
     const total: Row = { key: 'total', name: tc('total'), under: '', target: out.head.reduce((s, r) => s + r.target, 0), sales: noSales ? null : out.head.reduce((s, r) => s + (r.sales ?? 0), 0), aop: aopTotal };
     return { out, total, hasRoutes };
-  }, [org, cycle, calc.data, sales.data, aopDept.data, aopPack.data, cat, months.join(',')]);
+  }, [org, cycle, calc.data, sales.data, aopDept.data, aopPack.data, cat, by, months.join(',')]);
 
   const loading = calc.loading || (months.length > 0 && sales.loading);
   const all = data.out[lvl];
@@ -215,10 +216,16 @@ export function CdDashboard({ ws, cycle, org }: { ws: Workspace; cycle: CycleDto
       </div>
       <div class="toolbar cdd-filters">
         <Tabs<Lvl> value={lvl} onChange={(v) => { setLvl(v); setUnder(''); }} items={levels.map((x) => ({ id: x, label: labels[x] }))} />
-        <label class="small">{tc('category')}{' '}
-          <select value={cat} onChange={(e) => setCat(e.currentTarget.value as Category | 'all')}>
+        <label class="small">{tc('dashBy')}{' '}
+          <select value={by} data-testid="cdd-by" onChange={(e) => { setBy(e.currentTarget.value as 'cat' | 'pack'); setCat('all'); }}>
+            <option value="cat">{tc('category')}</option>
+            <option value="pack">{tc('packWord')}</option>
+          </select>
+        </label>
+        <label class="small">{by === 'pack' ? tc('packWord') : tc('category')}{' '}
+          <select value={cat} data-testid="cdd-cat" onChange={(e) => setCat(e.currentTarget.value)}>
             <option value="all">{tc('allWord')}</option>
-            {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+            {(by === 'pack' ? org.packs.filter((p) => p.active).map((p) => p.code) : [...CATEGORIES]).map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
         </label>
         {unders.length > 1 && (
