@@ -195,45 +195,53 @@ export function ByCategory({ ws, codes, info, totals, editable, onApply, bench }
   );
 }
 
-/** Supervisor extra: correct the salesman ID on their routes for this month. */
+/** Supervisor: assign the salesman ID of each route under them for this month (goes into the final target export). */
 export function SalesmanPanel({ ws, mid, onChanged }: { ws: Workspace; mid: string; onChanged: () => void }) {
   useLang();
+  const routes = ws.children.filter((c) => c.key.startsWith('l:'));
   const [edits, setEdits] = useState<Record<string, string>>({});
-  const [busy, setBusy] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
-  async function save(key: string) {
-    setBusy(key);
+  if (!routes.length) return null;
+  const changed = routes.filter((c) => edits[c.key] !== undefined && edits[c.key]!.trim() !== (c.sub ?? ''));
+  const missing = routes.filter((c) => !(edits[c.key] ?? c.sub ?? '').trim()).length;
+  async function saveAll() {
+    setBusy(true);
     setErr(null);
     setMsg(null);
     try {
-      await api('PUT', `/api/months/${mid}/leaves/${key.slice(2)}/salesman`, { salesmanId: edits[key] ?? '' });
+      for (const c of changed) await api('PUT', `/api/months/${mid}/leaves/${c.key.slice(2)}/salesman`, { salesmanId: edits[c.key] ?? '' });
       setMsg(tc('salesmanSaved'));
-      setEdits((e) => { const n = { ...e }; delete n[key]; return n; });
+      setEdits({});
       onChanged();
     } catch (x) {
       setErr(errText(x));
     } finally {
-      setBusy(null);
+      setBusy(false);
     }
   }
   return (
-    <details class="card cy-extra" data-testid="salesmen">
-      <summary><b>{tc('salesmenTitle')}</b> <span class="muted small">{tc('salesmenHelp')}</span></summary>
+    <section class="card cy-extra" data-testid="salesmen">
+      <div class="cy-section-head">
+        <h2>{tc('salesmenTitle')}</h2>
+        <span class="muted small">{tc('salesmenHelp')}</span>
+      </div>
+      {missing > 0 && <p class="banner warn small">{tc('salesmenMissing', { n: missing })}</p>}
       {msg && <div class="banner ok" role="status">{msg}</div>}
       {err && <div class="alert" role="alert">{err}</div>}
       <div class="tablewrap"><table class="ad-table cy-table">
-        <thead><tr><th>{tc('route')}</th><th>{tc('salesman')}</th><th /></tr></thead>
-        <tbody>{ws.children.map((c) => (
+        <thead><tr><th>{tc('route')}</th><th>{tc('salesman')}</th></tr></thead>
+        <tbody>{routes.map((c) => (
           <tr key={c.key}>
             <td><bdi>{c.label}</bdi></td>
-            <td><input value={edits[c.key] ?? c.sub} aria-label={`${tc('salesman')} ${c.label}`} onInput={(e) => setEdits({ ...edits, [c.key]: e.currentTarget.value })} /></td>
-            <td>{edits[c.key] !== undefined && edits[c.key] !== c.sub && (
-              <button type="button" class="btn" disabled={busy === c.key} onClick={() => void save(c.key)}>{tc('save')}</button>
-            )}</td>
+            <td><input value={edits[c.key] ?? c.sub ?? ''} placeholder={tc('salesmanPh')} aria-label={`${tc('salesman')} ${c.label}`} onInput={(e) => setEdits({ ...edits, [c.key]: e.currentTarget.value })} /></td>
           </tr>
         ))}</tbody>
       </table></div>
-    </details>
+      <div class="actions">
+        <button type="button" class="btn primary" data-testid="salesmen-save" disabled={busy || !changed.length} onClick={() => void saveAll()}>{tc('salesmenSave', { n: changed.length })}</button>
+      </div>
+    </section>
   );
 }

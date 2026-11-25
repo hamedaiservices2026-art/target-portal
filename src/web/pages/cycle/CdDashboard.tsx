@@ -32,12 +32,78 @@ function Bar({ v, max, cls, label }: { v: number | null; max: number; cls: strin
   );
 }
 
+type Shape = 'table' | 'columns' | 'bars';
+type Pt = { key: string; name: string; a: number | null; b: number | null };
+
+/**
+ * The percentages as a chart: blue = Target vs sales, orange = Target vs AOP,
+ * around a zero line. Columns (one group per row) or horizontal bars.
+ */
+function PctChart({ pts, shape }: { pts: Pt[]; shape: 'columns' | 'bars' }) {
+  const vals = pts.flatMap((p) => [p.a, p.b]).filter((v): v is number => v !== null);
+  if (!vals.length) return <p class="muted small">—</p>;
+  const lo = Math.min(0, ...vals), hi = Math.max(0, ...vals);
+  const pad = (hi - lo) * 0.08 || 0.1;
+  const min = lo < 0 ? lo - pad : 0, max = hi > 0 ? hi + pad : 0;
+  const ticks = [min, min / 2, 0, max / 2, max].filter((v, i, a) => a.indexOf(v) === i);
+  const hasB = pts.some((p) => p.b !== null);
+  const tip = (p: Pt) => `${p.name}\n${tc('cddVsSales')}: ${fmtPct(p.a)}${hasB ? `\n${tc('cddVsAop')}: ${fmtPct(p.b)}` : ''}`;
+  if (shape === 'bars') {
+    const rowH = hasB ? 30 : 22, labelW = 190, W = 760, plotW = W - labelW - 70, top = 24;
+    const H = top + pts.length * rowH + 8;
+    const x = (v: number) => labelW + ((v - min) / (max - min)) * plotW;
+    const bh = hasB ? 10 : 12;
+    return (
+      <div class="cdd-chart"><svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={tc('cddTitle')} style={{ width: `${W}px`, maxWidth: '100%' }}>
+        {ticks.map((t) => <g key={t}><line x1={x(t)} x2={x(t)} y1={top - 4} y2={H - 4} class={t === 0 ? 'cdd-zero' : 'cdd-grid'} /><text x={x(t)} y={14} class="cdd-axis" text-anchor="middle">{fmtPct(t)}</text></g>)}
+        {pts.map((p, i) => {
+          const y = top + i * rowH + 4;
+          const bar = (v: number | null, k: string, yy: number) => v === null ? null : (
+            <rect key={k} class={`cdd-m ${k}`} x={Math.min(x(0), x(v))} y={yy} width={Math.max(1, Math.abs(x(v) - x(0)))} height={bh} rx={3} />
+          );
+          return (
+            <g key={p.key} class="cdd-row"><title>{tip(p)}</title>
+              <rect x={0} y={y - 3} width={W} height={rowH} class="cdd-hit" />
+              <text x={labelW - 8} y={y + (hasB ? 14 : 10)} class="cdd-lbl" text-anchor="end">{p.name.length > 28 ? `${p.name.slice(0, 27)}…` : p.name}</text>
+              {bar(p.a, 'sales', y)}{hasB && bar(p.b, 'aop', y + bh + 2)}
+              <text x={W - 4} y={y + (hasB ? 14 : 10)} class="cdd-val-t" text-anchor="end">{fmtPct(p.a)}</text>
+            </g>
+          );
+        })}
+      </svg></div>
+    );
+  }
+  const colW = hasB ? 34 : 22, left = 56, H = 300, bottom = 90, top = 12, plotH = H - bottom - top;
+  const W = Math.max(560, left + pts.length * (colW + 12) + 12);
+  const y = (v: number) => top + ((max - v) / (max - min)) * plotH;
+  const bw = hasB ? 14 : 18;
+  return (
+    <div class="cdd-chart"><svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={tc('cddTitle')} style={{ width: `${W}px`, maxWidth: 'none' }}>
+      {ticks.map((t) => <g key={t}><line x1={left} x2={W - 4} y1={y(t)} y2={y(t)} class={t === 0 ? 'cdd-zero' : 'cdd-grid'} /><text x={left - 6} y={y(t) + 4} class="cdd-axis" text-anchor="end">{fmtPct(t)}</text></g>)}
+      {pts.map((p, i) => {
+        const cx = left + 8 + i * (colW + 12);
+        const col = (v: number | null, k: string, xx: number) => v === null ? null : (
+          <rect key={k} class={`cdd-m ${k}`} x={xx} y={Math.min(y(0), y(v))} width={bw} height={Math.max(1, Math.abs(y(v) - y(0)))} rx={3} />
+        );
+        return (
+          <g key={p.key} class="cdd-row"><title>{tip(p)}</title>
+            <rect x={cx - 4} y={top} width={colW + 8} height={plotH} class="cdd-hit" />
+            {col(p.a, 'sales', cx)}{hasB && col(p.b, 'aop', cx + bw + 2)}
+            <text transform={`translate(${cx + colW / 2}, ${H - bottom + 12}) rotate(-45)`} class="cdd-lbl" text-anchor="end">{p.name.length > 18 ? `${p.name.slice(0, 17)}…` : p.name}</text>
+          </g>
+        );
+      })}
+    </svg></div>
+  );
+}
+
 export function CdDashboard({ ws, cycle, org }: { ws: Workspace; cycle: CycleDto; org: OrgDto }) {
   useLang();
   const period = cycle.period;
   const [lvl, setLvl] = useState<Lvl>('head');
   const [cat, setCat] = useState<Category | 'all'>('all');
   const [under, setUnder] = useState('');
+  const [shape, setShape] = useState<Shape>('table');
   const [months, setMonths] = useState<string[]>(() => [addMonths(period, -3), addMonths(period, -2), addMonths(period, -1)]);
   const avail = useAsync(() => api<{ months: string[] }>('GET', `/api/data/${ws}/sales-months`), [ws]);
   const calc = useAsync(() => api<Record<string, Record<string, Grid>>>('GET', `/api/cycle/${ws}/${period}/calc`), [ws, period]);
@@ -130,7 +196,7 @@ export function CdDashboard({ ws, cycle, org }: { ws: Workspace; cycle: CycleDto
   const vals = list.flatMap((r) => [pct(r.target, r.sales), pct(r.target, r.aop)]).filter((v): v is number => v !== null);
   const max = Math.max(0.1, ...vals.map(Math.abs));
   const t = data.total;
-  const labels: Record<Lvl, string> = { dep: tc('lvDep'), head: tc('lvHead'), manager: ws === 'ka' ? 'KAM' : tc('lvManager'), supervisor: tc('lvSupervisor'), route: tc('route') };
+  const labels: Record<Lvl, string> = { dep: tc('lvDep'), head: tc('lvHead'), manager: ws === 'ka' ? 'KAM' : tc('lvManager'), supervisor: tc('lvSupervisor'), route: ws === 'ka' ? 'KAE' : tc('route') };
   const levels: Lvl[] = ws === 'ka' ? ['head', 'manager', 'route'] : ['dep', 'head', 'manager', 'supervisor', 'route'];
 
   return (
@@ -163,12 +229,20 @@ export function CdDashboard({ ws, cycle, org }: { ws: Workspace; cycle: CycleDto
             </select>
           </label>
         )}
+        <label class="small">{tc('cddShape')}{' '}
+          <select value={shape} onChange={(e) => setShape(e.currentTarget.value as Shape)} data-testid="cdd-shape">
+            <option value="table">{tc('cddShapeTable')}</option>
+            <option value="columns">{tc('cddShapeColumns')}</option>
+            <option value="bars">{tc('cddShapeBars')}</option>
+          </select>
+        </label>
         <span class="cdd-legend"><i class="sw sales" />{tc('cddVsSales')}<i class="sw aop" />{tc('cddVsAop')}</span>
       </div>
       {loading && <p class="muted">{tc('loading')}</p>}
       {!data.hasRoutes && (lvl === 'manager' || lvl === 'supervisor' || lvl === 'route') && <p class="banner warn small">{tc('cddNoRoutes')}</p>}
       {(lvl === 'manager' || lvl === 'supervisor' || lvl === 'route') && <p class="small muted">{tc('cddNoAopBelow')}</p>}
-      <div class="tablewrap cy-tall"><table class="ad-table cy-table cdd-table" data-testid="cd-dashboard">
+      {shape !== 'table' && <PctChart shape={shape} pts={list.map((r) => ({ key: r.key, name: r.name, a: pct(r.target, r.sales), b: pct(r.target, r.aop) }))} />}
+      {shape === 'table' && <div class="tablewrap cy-tall"><table class="ad-table cy-table cdd-table" data-testid="cd-dashboard">
         <thead><tr>
           <th>{labels[lvl]}</th>{lvl !== 'head' && <th>{tc('fsUnder')}</th>}<th class="num">{tc('newTarget')}</th>
           <th class="cdd-col">{tc('cddVsSales')}</th><th class="cdd-col">{tc('cddVsAop')}</th><th class="num">{tc('cddAopVsSales')}</th>
@@ -182,7 +256,7 @@ export function CdDashboard({ ws, cycle, org }: { ws: Workspace; cycle: CycleDto
             <td class="num small">{fmtPct(r.aop === null ? null : pct(r.aop, r.sales))}</td>
           </tr>
         ))}</tbody>
-      </table></div>
+      </table></div>}
     </Section>
   );
 }

@@ -15,7 +15,8 @@ import { avgOf, catMap, groupSales, routeIndex, sumCat, total, type Grid } from 
 import { tc } from '../../cycle/i18n';
 import { getCycle, getOrg, loadRouteData, useAsync } from '../../cycle/load';
 import type { RouteMonthData } from '../../cycle/parsers';
-import { defaultPeriod, downloadCsv, fmtGap, gapClass, Section, Tabs, useMyWorkspaces, WsPeriod } from '../../cycle/ui';
+import { api } from '../../api';
+import { defaultPeriod, downloadCsv, fmtGap, gapClass, MonthPicker, Section, Tabs, useMyWorkspaces, WsPeriod } from '../../cycle/ui';
 
 type TabId = 'flow' | 'avg' | 'summary' | 'dash' | 'cdd';
 type Loaded = { cycle: CycleDto; org: OrgDto };
@@ -71,7 +72,7 @@ function Flow({ l }: { l: Loaded }) {
 
 // ---------- sales averages ----------
 
-function Averages({ l, sales, months }: { l: Loaded; sales: RouteMonthData; months: string[] }) {
+function Averages({ l, sales, months, setMonths, available }: { l: Loaded; sales: RouteMonthData; months: string[]; setMonths: (m: string[]) => void; available: Set<string> | null }) {
   useLang();
   const { org } = l;
   const cats = catMap(org);
@@ -86,10 +87,12 @@ function Averages({ l, sales, months }: { l: Loaded; sales: RouteMonthData; mont
       const v = avgOf(byRoute, l2.routeCode, p, months);
       if (v) rows.push([org.depts.find((d) => d.id === l2.deptId)?.name ?? '', l2.routeCode, p, cats.get(p) ?? '', Math.round(v * 100) / 100]);
     }
-    downloadCsv(`sales_averages_${l.cycle.ws}_${l.cycle.period}.csv`, ['Head of Department', 'Route Code', 'Sales Target Category', 'Category', 'Average cases'], rows);
+    downloadCsv(`sales_averages_${l.cycle.ws}_${l.cycle.period}.csv`, ['Head of Department', l.cycle.ws === 'ka' ? 'KAE' : 'Route Code', 'Sales Target Category', 'Category', 'Average cases'], rows);
   }
   return (
     <Section title={tc('tabAvg')} right={<button type="button" class="btn" onClick={csv}>{tc('downloadCsv')}</button>}>
+      <MonthPicker period={l.cycle.period} months={months} onChange={setMonths} available={available} title={tc('avgPickTitle')} />
+      {!months.length && <p class="small muted">{tc('pickMonths')}</p>}
       <p class="small muted">{tc('avgOver', { months: months.join(', ') })}</p>
       <div class="tablewrap"><table class="ad-table cy-table">
         <thead><tr><th>{tc('head')}</th>{CATEGORIES.map((c) => <th key={c} class="num">{c}</th>)}<th class="num">{tc('total')}</th></tr></thead>
@@ -236,10 +239,12 @@ export function Reports({ ws: wsParam, period: periodParam }: { ws?: string; per
     return { cycle, org };
   }, [ws, period]);
   const l = loaded.data;
-  const avgMonths = l?.cycle.settings.avgMonths ?? [];
+  const [avgPick, setAvgPick] = useState<string[] | null>(null);
+  const avgMonths = avgPick ?? l?.cycle.settings.avgMonths ?? [];
+  const avail = useAsync(tab === 'avg' ? () => api<{ months: string[] }>('GET', `/api/data/${ws}/sales-months`) : null, [ws, tab]);
   const pickMonths = useMemo(() => Array.from({ length: 15 }, (_, i) => addMonths(period, -1 - i)), [period]);
   const needSales = tab === 'avg' ? avgMonths : tab === 'dash' ? [month] : null;
-  const sales = useAsync(l && needSales ? () => loadRouteData(ws, 'sales', needSales).then((r) => r.data) : null, [l, tab, month, ws]);
+  const sales = useAsync(l && needSales ? () => loadRouteData(ws, 'sales', needSales).then((r) => r.data) : null, [l, tab, month, ws, avgMonths.join(',')]);
   return (
     <section class="cycle" data-testid="reports">
       <PageHead title={tc('reportsTitle')} intro={tc('reportsIntro')} />
@@ -254,7 +259,7 @@ export function Reports({ ws: wsParam, period: periodParam }: { ws?: string; per
       {l && tab === 'cdd' && <CdDashboard ws={ws} cycle={l.cycle} org={l.org} />}
       {l && (tab === 'avg' || tab === 'dash') && sales.error && <div class="alert">{sales.error}</div>}
       {l && (tab === 'avg' || tab === 'dash') && !sales.data && !sales.error && <p class="muted">{tc('loading')}</p>}
-      {l && tab === 'avg' && sales.data && <Averages l={l} sales={sales.data} months={avgMonths} />}
+      {l && tab === 'avg' && sales.data && <Averages l={l} sales={sales.data} months={avgMonths} setMonths={setAvgPick} available={avail.data ? new Set(avail.data.months) : null} />}
       {l && tab === 'dash' && sales.data && <Dashboard l={l} sales={sales.data} month={month} setMonth={setMonth} months={pickMonths} />}
     </section>
   );

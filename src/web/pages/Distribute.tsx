@@ -477,7 +477,7 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
       <BenchControls ws={ws} b={bench} />
       <ByCategory ws={ws} codes={codes} info={info} totals={totals} editable={editable} bench={bench.fn}
         onApply={(next) => { setRaw((prev) => ({ ...prev, ...next })); touched(); }} />
-      {leafTeam && <SalesmanPanel ws={ws} mid={mid} onChanged={() => void load()} />}
+      {ws.children.some((c) => c.key.startsWith('l:')) && <SalesmanPanel ws={ws} mid={mid} onChanged={() => void load()} />}
       <h2 class="cy-step-title"><span class="n">2</span> {tc('distByPack')}</h2>
 
       <DistributionTable

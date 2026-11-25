@@ -431,3 +431,14 @@ td.bench .gsub { display: block; font-size: 11px; }
 .cdd-fill.aop { background: var(--cdd-aop); }
 .cdd-val { font-variant-numeric: tabular-nums; text-align: end; font-size: 0.85rem; }
 .cdd-na { color: var(--muted); }
+.cdd-chart { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px; }
+.cdd-chart svg { display: block; }
+.cdd-chart .cdd-grid { stroke: var(--line); stroke-width: 1; }
+.cdd-chart .cdd-zero { stroke: var(--muted); stroke-width: 1.5; }
+.cdd-chart .cdd-axis { fill: var(--muted); font-size: 11px; }
+.cdd-chart .cdd-lbl { fill: var(--ink); font-size: 11px; }
+.cdd-chart .cdd-val-t { fill: var(--ink); font-size: 11px; font-variant-numeric: tabular-nums; }
+.cdd-chart .cdd-m.sales { fill: var(--cdd-sales); }
+.cdd-chart .cdd-m.aop { fill: var(--cdd-aop); }
+.cdd-chart .cdd-hit { fill: transparent; }
+.cdd-chart .cdd-row:hover .cdd-hit { fill: var(--chip); }
