@@ -297,7 +297,7 @@ function parseSettings(body: Obj, period: string): CycleSettings {
 async function capStatements(db: D1Database, cap: number | null): Promise<D1PreparedStatement[]> {
   if (cap === null) return [];
   const rules = await getRules(db);
-  const next = { ...rules, caps: { head: cap, manager: cap, supervisor: cap } };
+  const next = { ...rules, enabled: true, caps: { head: cap, manager: cap, supervisor: cap } };
   return [
     db.prepare(`INSERT INTO settings(key, value) VALUES ('rules_json', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).bind(JSON.stringify(next)),
     db.prepare(`INSERT INTO settings(key, value) VALUES ('cap_pct', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).bind(String(cap)),

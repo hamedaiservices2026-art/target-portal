@@ -106,8 +106,8 @@ test('the admin sees the admin navigation', async ({ page }) => {
   await page.goto('/login');
   await signIn(page, { username: 'admin', password: 'admin-pass-123' });
   await page.getByTestId('nav-settings').click();
-  await expect(page).toHaveURL(/\/admin\/settings$/);
-  for (const name of ['General', 'Packs', 'Users', 'Hierarchy', 'History', 'Departments']) {
+  await expect(page).toHaveURL(/\/admin\/packs$/);
+  for (const name of ['Packs', 'Users', 'Hierarchy', 'History', 'Departments']) {
     await expect(page.getByTestId('settings-nav').getByRole('link', { name })).toBeVisible();
   }
   await page.getByRole('link', { name: 'Hierarchy' }).click();

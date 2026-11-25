@@ -27,6 +27,21 @@ function Saver({ busy, err, msg }: { busy: boolean; err: string | null; msg: str
 function RulesForm() {
   useLang();
   const res = useResource<RulesSettings>('/api/admin/rules');
+  // Heads and managers (both workspaces) to pick a cap exception from.
+  const people = useAsync(async () => {
+    const orgs = await Promise.all([api<OrgDto>('GET', '/api/data/ops/org'), api<OrgDto>('GET', '/api/data/ka/org')]);
+    const out: { name: string; role: 'head' | 'manager'; dept: string }[] = [];
+    for (const o of orgs) {
+      const dept = new Map(o.depts.map((d) => [d.id, d.name]));
+      const byId = new Map(o.nodes.map((n) => [n.id, n]));
+      for (const n of o.nodes) {
+        const parent = n.parentId === null ? undefined : byId.get(n.parentId);
+        const role = n.parentId === null ? 'head' : parent && parent.parentId === null ? 'manager' : null;
+        if (role) out.push({ name: n.name, role, dept: dept.get(n.deptId) ?? '' });
+      }
+    }
+    return out;
+  }, []);
   const [r, setR] = useState<RulesSettings | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -54,22 +69,30 @@ function RulesForm() {
   return (
     <Section title={tc('rulesTitle')}>
       <p class="muted small">{tc('rulesHelp')}</p>
-      <div class="cy-grid">
+      <label class="cy-capon"><input type="checkbox" data-testid="cap-on" checked={r.enabled !== false} onChange={(e) => setR({ ...r, enabled: e.currentTarget.checked })} /> <b>{tc('capApply')}</b></label>
+      {r.enabled === false && <p class="banner warn small">{tc('capOffHelp')}</p>}
+      <div class="cy-grid" style={r.enabled === false ? { opacity: 0.5 } : undefined}>
         {cap('head', tc('capHead'))}
         {cap('manager', tc('capManager'))}
         {cap('supervisor', tc('capSupervisor'))}
       </div>
       <label><input type="checkbox" checked disabled /> {tc('rule1On')}</label><br />
-      <label><input type="checkbox" checked={r.rule2} onChange={(e) => setR({ ...r, rule2: e.currentTarget.checked })} /> {tc('rule2On')}</label><br />
-      <label><input type="checkbox" checked={r.rule3} onChange={(e) => setR({ ...r, rule3: e.currentTarget.checked })} /> {tc('rule3On')}</label>
+      <label><input type="checkbox" disabled={r.enabled === false} checked={r.rule2} onChange={(e) => setR({ ...r, rule2: e.currentTarget.checked })} /> {tc('rule2On')}</label><br />
+      <label><input type="checkbox" disabled={r.enabled === false} checked={r.rule3} onChange={(e) => setR({ ...r, rule3: e.currentTarget.checked })} /> {tc('rule3On')}</label>
       <h3>{tc('exceptions')}</h3>
       <p class="muted small">{tc('exceptionsHelp')}</p>
       <table class="ad-table cy-table">
-        <thead><tr><th>{tc('excName')}</th><th class="num">{tc('excPct')}</th><th /></tr></thead>
+        <thead><tr><th>{tc('excName')}</th><th>{tc('excRole')}</th><th class="num">{tc('excPct')}</th><th /></tr></thead>
         <tbody>
           {r.exceptions.map((e, i) => (
             <tr key={i}>
-              <td><input value={e.name} aria-label={tc('excName')} onInput={(ev) => setR({ ...r, exceptions: r.exceptions.map((x, j) => (j === i ? { ...x, name: ev.currentTarget.value } : x)) })} /></td>
+              <td><select value={e.name} aria-label={tc('excName')} data-testid="exc-name" onChange={(ev) => setR({ ...r, exceptions: r.exceptions.map((x, j) => (j === i ? { ...x, name: ev.currentTarget.value } : x)) })}>
+                <option value="">{tc('excPick')}</option>
+                {e.name && !(people.data ?? []).some((p) => p.name.toLowerCase() === e.name.toLowerCase()) && <option value={e.name}>{e.name}</option>}
+                <optgroup label={tc('excHeads')}>{(people.data ?? []).filter((p) => p.role === 'head').map((p) => <option key={`h${p.name}`} value={p.name}>{p.name}</option>)}</optgroup>
+                <optgroup label={tc('excManagers')}>{(people.data ?? []).filter((p) => p.role === 'manager').map((p) => <option key={`m${p.name}${p.dept}`} value={p.name}>{p.name} · {p.dept}</option>)}</optgroup>
+              </select></td>
+              <td class="small muted">{(() => { const p = (people.data ?? []).find((x) => x.name.toLowerCase() === e.name.toLowerCase()); return p ? `${p.role === 'head' ? tc('lvHead') : tc('lvManager')} · ${p.dept}` : ''; })()}</td>
               <td class="num"><input type="number" min={0} max={100} value={e.pct} aria-label={tc('excPct')} onInput={(ev) => setR({ ...r, exceptions: r.exceptions.map((x, j) => (j === i ? { ...x, pct: Number(ev.currentTarget.value) } : x)) })} /></td>
               <td><button type="button" class="btn link" onClick={() => setR({ ...r, exceptions: r.exceptions.filter((_x, j) => j !== i) })}>{tc('remove')}</button></td>
             </tr>

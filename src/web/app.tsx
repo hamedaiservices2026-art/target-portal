@@ -15,7 +15,6 @@ import { History } from './pages/admin/History';
 import { MonthDetail } from './pages/admin/MonthDetail';
 import { Months } from './pages/admin/Months';
 import { Packs } from './pages/admin/Packs';
-import { Settings } from './pages/admin/Settings';
 import { Users } from './pages/admin/Users';
 import { Admin, NotAllowed, NotFound } from './pages/Placeholders';
 import { AdminCycle } from './pages/cycle/AdminCycle';
@@ -36,7 +35,8 @@ function adminOnly<P extends object>(Page: (props: P) => preact.JSX.Element): (p
 const AdminUsers = adminOnly(Users);
 const AdminDepartments = adminOnly(Departments);
 const AdminPacks = adminOnly(Packs);
-const AdminSettings = adminOnly(Settings);
+// The old General tab (the single cap %) is gone: the cap is set in Cycle setup.
+const AdminSettings = AdminPacks;
 const AdminHierarchy = adminOnly(Hierarchy);
 const AdminMonths = adminOnly(Months);
 const AdminMonthDetail = adminOnly(MonthDetail);

@@ -394,7 +394,7 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
         </div>
         <div class="card">
           <div class="k">{t('dsCap')}</div>
-          <div class="v"><bdi>{ws.capPct}%</bdi> <small>{t('dsCapSub')}</small></div>
+          <div class="v">{ws.rules.capOn === false ? <small data-testid="cap-off">{tc('capOffShort')}</small> : <><bdi>{ws.capPct}%</bdi> <small>{t('dsCapSub')}</small></>}</div>
         </div>
         <div class="card">
           <div class="k">{t('dsPassing')}</div>

@@ -7,14 +7,16 @@ import { bad, writeBatch, type Obj } from './masters';
 
 export type Level = 'head' | 'manager' | 'supervisor';
 export type RulesSettings = {
+  /** false = the cap is not applied at all (rules 2 and 3 off); rule 1 (packs add up) always applies. */
+  enabled: boolean;
   caps: Record<Level, number>;
   rule2: boolean;
   rule3: boolean;
-  /** `name` = a node name or a route code (case-insensitive). */
+  /** `name` = a Head, manager or supervisor name, or a route code (case-insensitive): their own cap %. */
   exceptions: { name: string; pct: number }[];
 };
 
-export const DEFAULT_RULES: RulesSettings = { caps: { head: 5, manager: 5, supervisor: 5 }, rule2: true, rule3: true, exceptions: [] };
+export const DEFAULT_RULES: RulesSettings = { enabled: true, caps: { head: 5, manager: 5, supervisor: 5 }, rule2: true, rule3: true, exceptions: [] };
 
 function pct(v: unknown, field: string): number {
   if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > 100) throw bad(`${field} must be a number from 0 to 100`);
@@ -26,6 +28,7 @@ export function parseRules(raw: string | null | undefined, legacyCap?: number): 
   try {
     const o = JSON.parse(raw) as Partial<RulesSettings>;
     return {
+      enabled: o.enabled ?? true,
       caps: { ...DEFAULT_RULES.caps, ...(o.caps ?? {}) },
       rule2: o.rule2 ?? true,
       rule3: o.rule3 ?? true,
@@ -57,6 +60,7 @@ export async function setRules(db: D1Database, actorId: number, body: Obj): Prom
   if (!c || typeof c !== 'object') throw bad('caps must be an object with head, manager and supervisor');
   if (typeof body.rule2 !== 'boolean' || typeof body.rule3 !== 'boolean') throw bad('rule2 and rule3 must be true or false');
   if (!Array.isArray(body.exceptions)) throw bad('exceptions must be a list');
+  if (body.enabled !== undefined && typeof body.enabled !== 'boolean') throw bad('enabled must be true or false');
   const seen = new Set<string>();
   const exceptions = body.exceptions.map((e, i) => {
     const o = e as Obj;
@@ -67,6 +71,7 @@ export async function setRules(db: D1Database, actorId: number, body: Obj): Prom
     return { name: o.name.trim().slice(0, 200), pct: pct(o.pct, `exception ${o.name} %`) };
   });
   const rules: RulesSettings = {
+    enabled: body.enabled === undefined ? true : body.enabled,
     caps: { head: pct(c.head, 'head cap'), manager: pct(c.manager, 'manager cap'), supervisor: pct(c.supervisor, 'supervisor cap') },
     rule2: body.rule2, rule3: body.rule3, exceptions,
   };

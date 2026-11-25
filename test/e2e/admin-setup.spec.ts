@@ -68,22 +68,6 @@ test('admin sets up a manager, a department, a two-level tree, a route mapping, 
   await expect(page.getByText(/with all the people and 1 routes under it/)).toBeVisible();
   await page.getByRole('button', { name: 'Cancel' }).click();
 
-  // --- Settings: cap 4 (restored in finally so other specs keep the default).
-  try {
-    await page.getByRole('link', { name: 'Settings' }).click();
-    await expect(page.getByText('5% of 1,000 = 50 cases')).toBeVisible();
-    await page.getByLabel('Cap (%)').fill('4');
-    await page.getByRole('button', { name: 'Save cap' }).click();
-    await expect(page.getByTestId('settings-saved')).toBeVisible();
-    await page.reload();
-    await expect(page.getByLabel('Cap (%)')).toHaveValue('4');
-    expect(((await (await page.request.get('/api/admin/settings')).json()) as { capPct: number }).capPct).toBe(4);
-    await page.getByLabel('Cap (%)').fill('0');
-    await expect(page.getByRole('button', { name: 'Save cap' })).toBeDisabled();
-  } finally {
-    await page.request.put('/api/admin/settings', { data: { capPct: 5 } });
-  }
-
   // --- Packs: the group dropdown offers exactly the three groups.
   await page.getByRole('link', { name: 'Packs' }).click();
   await expect(page.getByTestId('pack-row').first()).toBeVisible();

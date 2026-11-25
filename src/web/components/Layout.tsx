@@ -8,7 +8,6 @@ import { LangToggle } from './LangToggle';
 
 /** The admin pages grouped under the one "Settings" tab, shown as sub-tabs. */
 export const ADMIN_NAV: { path: string; label: TextKey }[] = [
-  { path: '/admin/settings', label: 'navGeneral' },
   { path: '/admin/packs', label: 'navPacks' },
   { path: '/admin/users', label: 'navUsers' },
   { path: '/admin/hierarchy', label: 'navHierarchy' },
@@ -16,7 +15,7 @@ export const ADMIN_NAV: { path: string; label: TextKey }[] = [
   { path: '/admin/departments', label: 'navDepartments' },
 ];
 // The month board (opened from the target cycle) stays under Settings without its own tab.
-const inSettings = (path: string) => path.startsWith('/admin/months') || ADMIN_NAV.some((n) => path === n.path || path.startsWith(`${n.path}/`));
+const inSettings = (path: string) => path.startsWith('/admin/months') || path === '/admin/settings' || ADMIN_NAV.some((n) => path === n.path || path.startsWith(`${n.path}/`));
 
 export function Layout({ children }: { children?: ComponentChildren }) {
   useLang();
@@ -59,7 +58,7 @@ export function Layout({ children }: { children?: ComponentChildren }) {
           <a class={`tab${path === '/' ? ' on' : ''}`} href="/">{t('navHome')}</a>
           {cycleNav.map((n) => tab(n.path, n.label))}
           {isAdmin && (
-            <a class={`tab${inSettings(path) ? ' on' : ''}`} href="/admin/settings" data-testid="nav-settings">{t('navSettings')}</a>
+            <a class={`tab${inSettings(path) ? ' on' : ''}`} href="/admin/packs" data-testid="nav-settings">{t('navSettings')}</a>
           )}
         </nav>
       )}

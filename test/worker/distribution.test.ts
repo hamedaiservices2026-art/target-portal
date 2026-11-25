@@ -221,7 +221,7 @@ describe('workspace', () => {
       month: { id: month, period: '2026-10', deadline: '2026-10-25' },
       node: { id: head, name: 'Head', status: 'in_progress', deptCode: 'TT', deptId: expect.any(Number), level: 'head', workspace: 'ops' },
       capPct: 5,
-      rules: { rule2: true, rule3: true, personCapPct: [null] },
+      rules: { rule2: true, rule3: true, personCapPct: [null], capOn: true },
       packs: [
         { code: PET, grp: 'CSD', sort: 0 }, { code: CAN, grp: 'CSD', sort: 1 },
         { code: WATER, grp: 'Water', sort: 2 }, { code: JUICE, grp: 'LRB-Others', sort: 3 },
