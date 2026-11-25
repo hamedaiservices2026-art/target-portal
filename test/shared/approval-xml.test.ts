@@ -52,3 +52,25 @@ describe('approval workbook xml', () => {
     expect(tops(s1).filter((x) => x === 'conditionalFormatting').length).toBeGreaterThan(0);
   });
 });
+
+describe('rows in the order of the AOP by department file', () => {
+  const layout = [
+    { p: 'CSD_PET1000' }, { p: 'CSD_PET2000+' }, { t: 'Total MSPET', of: ['CSD_PET1000', 'CSD_PET2000+'] },
+    { t: 'Total ABC', of: ['CSD_PET1000', 'CSD_PET2000+'] },
+    { p: 'GATORADE' }, { p: 'Propel' }, { t: 'Total Gatorade', of: ['GATORADE', 'Propel'] },
+    { p: 'Rockstar_185' }, { p: 'Rockstar_250' }, { t: 'Total ROCKSTAR', of: ['Rockstar_185', 'Rockstar_250'] },
+    { t: 'Total LRB-Others', of: ['GATORADE', 'Propel', 'Rockstar_185', 'Rockstar_250'] },
+    { t: 'Total LRB ', of: ['CSD_PET1000', 'CSD_PET2000+', 'GATORADE', 'Propel', 'Rockstar_185', 'Rockstar_250'] },
+  ];
+  it('keeps the file order and puts a pack missing from the file before its category total', async () => {
+    const { approvalLines } = await import('../../src/web/cycle/approval');
+    const cat = (p: string) => (p.startsWith('CSD') ? 'CSD' : 'LRB-Others');
+    const lines = approvalLines(layout, ['CSD_PET1000', 'CSD_PET2000+', 'GATORADE', 'Propel', 'Rockstar_185', 'Rockstar_250', 'CSD_NEW'], cat);
+    const labels = lines.map((l) => l.label.trim());
+    expect(labels.indexOf('Propel')).toBe(labels.indexOf('GATORADE') + 1);
+    expect(labels.indexOf('CSD_PET2000+')).toBeLessThan(labels.indexOf('Total MSPET'));
+    expect(labels.indexOf('CSD_NEW')).toBe(labels.indexOf('Total ABC') - 1);
+    expect(lines.find((l) => l.label === 'Total ABC')!.of).toContain('CSD_NEW');
+    expect(lines.find((l) => l.label.trim() === 'Total LRB')!.of).toContain('CSD_NEW');
+  });
+});

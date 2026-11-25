@@ -27,6 +27,7 @@ import { getCycle, getOrg, loadMonthData, loadRouteData, useAsync } from '../../
 import { packIndex, type FileRow, type RouteMonthData } from '../../cycle/parsers';
 import { packKey } from '../../../shared/calc/packs';
 import { CdByCategory } from './CdByCategory';
+import { approvalLines } from '../../cycle/approval';
 import { defaultPeriod, rowColour, fmtGap, gapClass, MonthPicker, monthsLabel, NumCell, Section, Tabs, useMyWorkspaces, writeWorkbook, WsPeriod } from '../../cycle/ui';
 
 type TabId = 'gm' | 'dept';
@@ -36,6 +37,8 @@ type Bench = {
   upload: { mode: 'pack' | 'dept' | 'leaf'; byPack: Grid; byChannel?: Record<string, Grid>; layout?: FileRow[] } | null;
   yagoSales: Grid; pagoSales: Grid; aopNow: Grid; uploaded: Grid;
   available: Set<string>;
+  /** Pack order and Total rows of the uploaded file (master pack codes): the New Target by department, else the AOP by pack and department. */
+  layout: FileRow[];
 };
 
 type Loaded = { cycle: CycleDto; org: OrgDto; bench: Bench };
@@ -58,23 +61,44 @@ async function loadAll(ws: Workspace, period: string): Promise<Loaded> {
   const pm = pagoOf(period);
   const ym = yagoOf(period);
   const months = [...new Set([...pickableMonths(period), pm, ym])].filter((m) => available.has(m));
-  const [sales, dc, aop, nt] = await Promise.all([
+  const [sales, dc, aop, nt, aopDept] = await Promise.all([
     loadRouteData(ws, 'sales', months),
     loadMonthData<Record<string, Grid>>(ws, 'dept_channel'),
     loadMonthData<Record<string, { cases: number; nr: number | null }>>(ws, 'aop'),
     loadMonthData<{ mode: 'pack' | 'dept' | 'leaf'; byPack: Grid; byChannel?: Record<string, Grid>; layout?: FileRow[] }>(ws, 'new_target'),
+    loadMonthData<{ layout?: FileRow[] }>(ws, 'aop_dept').catch(() => ({} as Record<string, { layout?: FileRow[] }>)),
   ]);
   const aopNow = Object.fromEntries(Object.entries(aop[period] ?? {}).map(([p, v]) => [p, v.cases]));
   const upload = nt[period] ?? null;
+  // The file's order: the New Target file, else the AOP by pack and department of this month, else of the latest month.
+  const aopMonths = [period, ...Object.keys(aopDept).sort().reverse()];
+  const rawLayout = upload?.layout?.length ? upload.layout : aopMonths.map((m) => aopDept[m]?.layout).find((x) => Array.isArray(x) && x.length) ?? [];
+  const pidx = packIndex(org.packs.map((p) => p.code));
+  const code = (n: string) => pidx.get(packKey(n)) ?? n;
+  const layout = rawLayout.map((x): FileRow => ('p' in x ? { p: code(x.p) } : { t: x.t, of: [...new Set(x.of.map(code))] }));
   return {
     cycle, org,
     bench: {
       sales: sales.data, deptChannel: dc, upload,
       yagoSales: companyMonth(sales.data, ym), pagoSales: companyMonth(sales.data, pm), aopNow,
       uploaded: upload ? Object.fromEntries(Object.entries(upload.byPack).map(([p, n]) => [p, Math.round(n)])) : { ...(cycle.cd?.nt ?? {}) },
-      available,
+      available, layout,
     },
   };
+}
+
+/**
+ * Table rows in the order of the uploaded file (its packs and Total rows); packs
+ * missing from the file go before their category's Total. Without a file: by category.
+ */
+function fileOrderRows(layout: FileRow[], packs: string[], cats: Map<string, Category>): { rows: CdRow[]; file: boolean } {
+  if (!layout.length) return { rows: cdRows(packs, cats), file: false };
+  const lines = approvalLines(layout, packs, (p) => cats.get(p) ?? 'LRB-Others');
+  const has = new Set(packs);
+  const rows = lines.flatMap((x): CdRow[] => (x.pack
+    ? (has.has(x.pack) ? [{ kind: 'pack', pack: x.pack }] : [])
+    : [{ kind: 'sub', label: x.label.trim(), packs: [...new Set(x.of)], level: 2 }]));
+  return { rows, file: true };
 }
 
 /** The months the CD's split averages: the CD's own pick, else the cycle's. */
@@ -189,7 +213,7 @@ function GmTab({ work, edit, l, setWork, onApproved }: { work: CdWork; edit: boo
   const cats = catMap(l.org);
   const { bench } = l;
   const packs = Object.keys(work.nt);
-  const rows = cdRows(packs, cats);
+  const { rows, file } = fileOrderRows(bench.layout, packs, cats);
   const sum = (g: Grid, list: string[]) => list.reduce((s, p) => s + (g[p] ?? 0), 0);
   const editable = edit && !work.ntOk;
   // The CAP % is not applied to the Commercial Director.
@@ -255,7 +279,7 @@ function GmTab({ work, edit, l, setWork, onApproved }: { work: CdWork; edit: boo
             if (r.kind === 'sub') {
               const nt = sum(work.nt, r.packs);
               return (
-                <tr key={r.label} class={`sub l${r.level}`}>
+                <tr key={r.label} class={`sub l${r.level}${file ? ' cd-file' : ''}`} style={file ? rowColour(r.label) : undefined}>
                   <td>{r.label}</td><td class="num">{fmtNum(nt)}</td>
                   <td class="num">{fmtNum(Math.round(sum(bench.yagoSales, r.packs)))}</td><td class="num"><Gap v={gap(nt, sum(bench.yagoSales, r.packs))} /></td>
                   <td class="num">{fmtNum(Math.round(sum(bench.pagoSales, r.packs)))}</td><td class="num"><Gap v={gap(nt, sum(bench.pagoSales, r.packs))} /></td>
@@ -267,7 +291,7 @@ function GmTab({ work, edit, l, setWork, onApproved }: { work: CdWork; edit: boo
             const p = r.pack;
             const nt = work.nt[p] ?? 0;
             return (
-              <tr key={p} class={over.has(p) ? 'bad' : ''}>
+              <tr key={p} class={`${over.has(p) ? 'bad' : ''}${file ? ' cd-file' : ''}`} style={file ? rowColour(p) : undefined}>
                 <td><bdi>{p}</bdi></td>
                 <td class="num">{editable
                   ? <NumCell value={nt} invalid={over.has(p)} label={`${tc('newTarget')} ${p}`} onChange={(n) => setWork({ ...work, nt: { ...work.nt, [p]: n } })} />
@@ -310,15 +334,9 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
   const { flat, heads } = deptColumns(cols, (name) => tc('totalOf', { name }));
   const packs = Object.keys(work.nt);
   const hasSplit = Object.keys(work.dm).length > 0;
-  // A target uploaded by pack and department keeps the file's order, Total rows and colours.
-  const layout = bench.upload?.mode === 'dept' ? bench.upload.layout ?? [] : [];
-  const pidx = packIndex(org.packs.map((p) => p.code));
-  const code = (n: string) => pidx.get(packKey(n)) ?? n;
-  const fileRows: CdRow[] = layout.map((x) => ('p' in x ? { kind: 'pack' as const, pack: code(x.p) } : { kind: 'sub' as const, label: x.t, packs: [...new Set(x.of.map(code))], level: 2 as const }));
-  const inLayout = new Set(fileRows.flatMap((x) => (x.kind === 'pack' ? [x.pack] : [])));
-  const baseRows: CdRow[] = layout.length
-    ? [...fileRows.filter((x) => x.kind === 'sub' || packs.includes(x.pack)), ...cdRows(packs.filter((p) => !inLayout.has(p)), cats).filter((x) => x.kind === 'pack')]
-    : cdRows(packs, cats);
+  // The file's order, Total rows and colours (the New Target or the AOP by pack and department file).
+  const layout = bench.layout;
+  const baseRows = fileOrderRows(layout, packs, cats).rows;
   const rows = baseRows.filter((r) => !hideZero || r.kind === 'sub' || (work.nt[r.pack] ?? 0) !== 0);
   const subOf = subMap(org.packs);
   const avgOf = (h: { id: string; chans: string[] }, p: string, ms: string[]) => (ms.length ? ms.reduce((s, m) => s + h.chans.reduce((t, c) => t + (byChan[m]?.[`${h.id}\u0000${c}`]?.[p] ?? 0), 0), 0) / ms.length : 0);
@@ -519,14 +537,7 @@ function downloadWorkbook(work: CdWork, l: Loaded) {
 export async function downloadApprovalOf(work: CdWork, l: Loaded): Promise<void> {
   const { org, bench, cycle } = l;
   const final = cdReconcile(work);
-  let layout = bench.upload?.layout ?? [];
-  if (!layout.length) {
-    // The pack order and Total rows of the AOP by pack and department file (this month, else the latest).
-    const ad = await loadMonthData<{ layout?: FileRow[] } | Record<string, Grid>>(cycle.ws, 'aop_dept').catch(() => ({} as Record<string, { layout?: FileRow[] }>));
-    const months = Object.keys(ad).sort().reverse();
-    const pick = [cycle.period, ...months].map((m) => (ad[m] as { layout?: FileRow[] } | undefined)?.layout).find((x) => x && x.length);
-    layout = pick ?? [];
-  }
+  const layout = bench.layout;
   const cats = catMap(org);
   const { downloadApproval } = await import('../../cycle/approval');
   await downloadApproval({

@@ -77,7 +77,8 @@ export function approvalLines(layout: FileRow[], packs: string[], catOf: (p: str
   const known = new Set(lines.filter((l) => l.pack).map((l) => l.pack!));
   for (const p of packs.filter((x) => !known.has(x))) {
     const c = catOf(p).toLowerCase();
-    let at = lines.findIndex((l) => !l.pack && l.label.trim().toLowerCase() === `total ${c}`);
+    const names = c === 'csd' ? ['total csd', 'total abc'] : [`total ${c}`];
+    let at = lines.findIndex((l) => !l.pack && names.includes(l.label.trim().toLowerCase()));
     if (at < 0) at = lines.findIndex((l) => !l.pack && isLrb(l.label));
     if (at < 0) at = lines.length;
     if (lines[at]) lines[at]!.of.push(p);
@@ -172,7 +173,8 @@ export const PRINT_FEATURE = {
 /** The two sheets for write-excel-file. */
 export function approvalSheets(inp: ApprovalInput): unknown[] {
   const packs = Object.keys(inp.target).filter((p) => (inp.target[p] ?? 0) !== 0 || inp.layout.some((r) => 'p' in r && r.p === p));
-  const lines = approvalLines(inp.layout, packs, inp.catOf);
+  // The AOP file calls the CSD total "Total ABC"; the template calls it "Total CSD".
+  const lines = approvalLines(inp.layout, packs, inp.catOf).map((l) => (!l.pack && /^total\s+abc$/i.test(l.label.trim()) ? { ...l, label: 'Total CSD' } : l));
   const month = MONTHS[Number(inp.period.slice(5)) - 1] ?? inp.period;
 
   // ----- sheet 1: target vs YAGO, PAGO and PLAN -----
