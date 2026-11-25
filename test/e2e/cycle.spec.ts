@@ -33,6 +33,7 @@ test('admin opens a cycle, saves the rules, and reads the reports', async ({ pag
 
   await page.goto(`/reports/ops/${PERIOD}`);
   await expect(page.getByTestId('reports')).toBeVisible();
+  await page.getByRole('tab', { name: 'Workflow' }).click();
   await expect(page.getByText('Cycle opened')).toBeVisible();
   await page.getByRole('tab', { name: 'Summary' }).click();
   await expect(page.getByText('There is no department target for this month yet.')).toBeVisible();

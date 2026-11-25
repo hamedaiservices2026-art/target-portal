@@ -4,7 +4,7 @@
 import { useLocation } from 'preact-iso';
 import { useMemo, useState } from 'preact/hooks';
 import { CATEGORIES } from '../../../shared/calc/packs';
-import { addMonths, pago as pagoOf, yago as yagoOf } from '../../../shared/calc/periods';
+import { pago as pagoOf, yago as yagoOf } from '../../../shared/calc/periods';
 import type { Workspace } from '../../../worker/auth';
 import type { CycleDto } from '../../../worker/services/cycle';
 import type { OrgDto } from '../../../worker/services/cycleData';
@@ -161,9 +161,9 @@ function Summary({ l }: { l: Loaded }) {
   const { org, cycle } = l;
   const cats = catMap(org);
   const dept = cycle.dept ?? {};
-  // Two comparisons to start (PAGO and YAGO); more can be added.
+  // One comparison to start (PAGO); more can be added.
   const [cmps, setCmps] = useState<{ id: number; months: string[] }[]>(() => [
-    { id: 1, months: [pagoOf(cycle.period)] }, { id: 2, months: [yagoOf(cycle.period)] },
+    { id: 1, months: [pagoOf(cycle.period)] },
   ]);
   function csv() {
     const rows: (string | number)[][] = [];
@@ -195,7 +195,7 @@ function Summary({ l }: { l: Loaded }) {
       <Comparison key={c.id} l={l} n={k + 1} initial={c.months} onRemove={cmps.length > 1 ? () => setCmps(cmps.filter((x) => x.id !== c.id)) : undefined} />
     ))}
     {cycle.dept && (
-      <div class="actions"><button type="button" class="btn" data-testid="ts-add-cmp" onClick={() => setCmps([...cmps, { id: Date.now(), months: [addMonths(cycle.period, -1)] }])}>{tc('tsCmpAdd')}</button></div>
+      <div class="actions"><button type="button" class="btn" data-testid="ts-add-cmp" onClick={() => setCmps([...cmps, { id: Date.now(), months: [yagoOf(cycle.period)] }])}>{tc('tsCmpAdd')}</button></div>
     )}
     </>
   );
@@ -500,7 +500,7 @@ export function Reports({ ws: wsParam, period: periodParam }: { ws?: string; per
   const allowed = useMyWorkspaces();
   const ws: Workspace = wsParam === 'ka' ? 'ka' : wsParam === 'ops' ? 'ops' : allowed.includes('ops') || !allowed.length ? 'ops' : allowed[0]!;
   const period = periodParam && /^\d{4}-\d{2}$/.test(periodParam) ? periodParam : defaultPeriod();
-  const [tab, setTab] = useState<TabId>('flow');
+  const [tab, setTab] = useState<TabId>('dash');
   const loaded = useAsync<Loaded>(async () => {
     const [cycle, org] = await Promise.all([getCycle(ws, period), getOrg(ws)]);
     return { cycle, org };
@@ -516,7 +516,7 @@ export function Reports({ ws: wsParam, period: periodParam }: { ws?: string; per
       <PageHead title={tc('reportsTitle')} intro={tc('reportsIntro')} />
       <WsPeriod ws={ws} period={period} allowed={allowed} onChange={(w, p) => route(`/reports/${w}/${p}`)} />
       <Tabs<TabId> value={tab} onChange={setTab} items={[
-        { id: 'flow', label: tc('tabFlow') }, { id: 'avg', label: tc('tabAvg') }, { id: 'summary', label: tc('tabSummary') }, { id: 'dash', label: tc('tabDash') }, { id: 'cdd', label: tc('cddTab') },
+        { id: 'dash', label: tc('tabDash') }, { id: 'cdd', label: tc('cddTab') }, { id: 'summary', label: tc('tabSummary') }, { id: 'avg', label: tc('tabAvg') }, { id: 'flow', label: tc('tabFlow') },
       ]} />
       {loaded.error && <div class="alert" role="alert">{loaded.error}</div>}
       {!l && !loaded.error && <p class="muted">{tc('loading')}</p>}
