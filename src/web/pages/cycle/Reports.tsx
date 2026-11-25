@@ -258,7 +258,7 @@ export function dashboardData(l: Loaded, sales: RouteMonthData, months: string[]
   });
 }
 
-async function downloadPptx(l: Loaded, data: { cat: string; rows: DashRow[] }[], label: string) {
+async function downloadPptx(l: Loaded, data: { cat: string; rows: DashRow[] }[], label: string, st: ChartStyle = DEFAULT_STYLE) {
   const { default: PptxGenJS } = await import('pptxgenjs');
   const pptx = new PptxGenJS();
   pptx.layout = 'LAYOUT_WIDE';
@@ -267,12 +267,14 @@ async function downloadPptx(l: Loaded, data: { cat: string; rows: DashRow[] }[],
   title.addText(`Compared with sales of ${label}`, { x: 0.6, y: 3.6, w: 12, h: 0.6, fontSize: 18, color: '555555' });
   for (const g of data) {
     const s = pptx.addSlide();
-    s.addText(`${g.cat}: target vs ${label} sales`, { x: 0.5, y: 0.3, w: 12, h: 0.6, fontSize: 24, bold: true });
+    s.addText(`${st.titles[g.cat] || g.cat}: target vs ${label} sales`, { x: 0.5, y: 0.3, w: 12, h: 0.6, fontSize: 24, bold: true });
     const body = g.rows.filter((r) => r.dept !== 'Total').slice(0, 30);
     s.addChart(pptx.ChartType.bar, [
       { name: 'Target', labels: body.map((r) => r.dept), values: body.map((r) => r.target) },
       { name: `Sales ${label}`, labels: body.map((r) => r.dept), values: body.map((r) => r.sales) },
-    ], { x: 0.5, y: 1.1, w: 7.2, h: 5.6, barDir: 'col', showLegend: true, legendPos: 'b', chartColors: ['1F6FB2', 'A0A7B4'], valAxisLabelFormatCode: '#,##0' });
+    ], { x: 0.5, y: 1.1, w: 7.2, h: 5.6, barDir: 'col', showLegend: true, legendPos: 'b', chartColors: [st.tColor.slice(1).toUpperCase(), st.sColor.slice(1).toUpperCase()], valAxisLabelFormatCode: '#,##0',
+      valGridLine: { style: 'none' }, valAxisHidden: true, showValue: st.showVals, dataLabelFormatCode: '#,##0', dataLabelFontSize: 9 });
+    if (st.note) s.addText(st.note, { x: 0.5, y: 6.8, w: 12, h: 0.4, fontSize: 12, color: '555555' });
     s.addTable([
       [{ text: 'Name', options: { bold: true } }, { text: 'Target', options: { bold: true } }, { text: 'Sales', options: { bold: true } }, { text: 'Gap', options: { bold: true } }],
       ...g.rows.slice(-31).map((r) => [r.dept, r.target.toLocaleString('en-US'), r.sales.toLocaleString('en-US'), r.gap === null ? '—' : `${r.gap >= 0 ? '+' : ''}${(r.gap * 100).toFixed(1)}%`].map((text) => ({ text }))),
@@ -283,34 +285,71 @@ async function downloadPptx(l: Loaded, data: { cat: string; rows: DashRow[] }[],
 
 type DashShape = 'cards' | 'chart' | 'table';
 
-/** Target vs sales per row as grouped columns (blue = target, grey = sales), like the PowerPoint. */
-function TargetSalesChart({ title, rows, salesLabel }: { title: string; rows: DashRow[]; salesLabel: string }) {
+/** How the column charts look: colours, labels, titles and a note (saved in this browser). */
+export type ChartStyle = { tColor: string; sColor: string; showPct: boolean; showVals: boolean; showNames: boolean; titles: Record<string, string>; note: string };
+export const DEFAULT_STYLE: ChartStyle = { tColor: '#1f6fb2', sColor: '#a0a7b4', showPct: true, showVals: false, showNames: true, titles: {}, note: '' };
+const STYLE_KEY = 'tp.dashChartStyle';
+function loadStyle(): ChartStyle {
+  try { const raw = localStorage.getItem(STYLE_KEY); return raw ? { ...DEFAULT_STYLE, ...(JSON.parse(raw) as Partial<ChartStyle>) } : DEFAULT_STYLE; } catch { return DEFAULT_STYLE; }
+}
+function saveStyle(st: ChartStyle) {
+  try { localStorage.setItem(STYLE_KEY, JSON.stringify(st)); } catch { /* private window: keep it for this visit only */ }
+}
+const short = (n: number) => (Math.abs(n) >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : Math.abs(n) >= 1e4 ? `${Math.round(n / 1e3)}K` : fmtNum(n));
+
+/** The chart settings, like formatting a chart in PowerPoint. */
+function ChartEditor({ st, set, cats }: { st: ChartStyle; set: (s: ChartStyle) => void; cats: string[] }) {
+  useLang();
+  return (
+    <details class="dash-editor" data-testid="chart-editor">
+      <summary>{tc('chartEdit')}</summary>
+      <div class="dash-editor-body">
+        <label>{tc('chartTargetColor')} <input type="color" value={st.tColor} onInput={(e) => set({ ...st, tColor: e.currentTarget.value })} /></label>
+        <label>{tc('chartSalesColor')} <input type="color" value={st.sColor} onInput={(e) => set({ ...st, sColor: e.currentTarget.value })} /></label>
+        <label><input type="checkbox" checked={st.showPct} onChange={(e) => set({ ...st, showPct: e.currentTarget.checked })} /> {tc('chartShowPct')}</label>
+        <label><input type="checkbox" checked={st.showVals} onChange={(e) => set({ ...st, showVals: e.currentTarget.checked })} /> {tc('chartShowVals')}</label>
+        <label><input type="checkbox" checked={st.showNames} onChange={(e) => set({ ...st, showNames: e.currentTarget.checked })} /> {tc('chartShowNames')}</label>
+        {cats.map((c) => (
+          <label key={c}>{tc('chartTitleOf', { c })} <input value={st.titles[c] ?? ''} placeholder={c} onInput={(e) => set({ ...st, titles: { ...st.titles, [c]: e.currentTarget.value } })} /></label>
+        ))}
+        <label class="wide">{tc('chartNote')} <input value={st.note} placeholder={tc('chartNotePh')} onInput={(e) => set({ ...st, note: e.currentTarget.value })} /></label>
+        <button type="button" class="btn link" onClick={() => set(DEFAULT_STYLE)}>{tc('chartReset')}</button>
+      </div>
+    </details>
+  );
+}
+
+/** Target vs sales per row as grouped columns, with the % of the target vs sales on top (no grid, no axis numbers). */
+function TargetSalesChart({ title, rows, salesLabel, st }: { title: string; rows: DashRow[]; salesLabel: string; st: ChartStyle }) {
   const body = rows.filter((r) => r.dept !== 'Total');
   const max = Math.max(1, ...body.flatMap((r) => [r.target, r.sales]));
-  const step = 10 ** Math.floor(Math.log10(max));
-  const top = Math.max(4, Math.ceil(max / step) * step);
-  const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => f * top);
-  const left = 70, H = 280, bottom = 70, plotH = H - bottom - 16, gw = 54;
-  const W = Math.max(420, left + body.length * (gw + 14) + 10);
-  const y = (v: number) => 16 + plotH - (v / top) * plotH;
+  const H = 280, bottom = st.showNames ? 70 : 16, topPad = 40, plotH = H - bottom - topPad, gw = 58, left = 12;
+  const W = Math.max(420, left + body.length * (gw + 18) + 10);
+  const y = (v: number) => topPad + plotH - (v / max) * plotH;
+  const tot = rows[rows.length - 1]!;
   return (
     <section class="card cy-card dash-chart">
-      <h3>{title}</h3>
+      <h3>{st.titles[title] || title}</h3>
       <div class="cdd-chart"><svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`${title}: target vs sales`} style={{ width: `${W}px`, maxWidth: 'none' }}>
-        {ticks.map((t) => <g key={t}><line x1={left} x2={W - 4} y1={y(t)} y2={y(t)} class={t === 0 ? 'cdd-zero' : 'cdd-grid'} /><text x={left - 6} y={y(t) + 4} class="cdd-axis" text-anchor="end">{fmtNum(Math.round(t))}</text></g>)}
+        <line x1={left} x2={W - 4} y1={y(0)} y2={y(0)} class="cdd-zero" />
         {body.map((r, i) => {
-          const x = left + 10 + i * (gw + 14);
+          const x = left + 10 + i * (gw + 18);
+          const bw = gw / 2 - 1;
           return (
             <g key={r.dept} class="cdd-row"><title>{`${r.dept}\nTarget: ${fmtNum(r.target)}\n${tc('salesWord')} ${salesLabel}: ${fmtNum(r.sales)}\n${fmtGap(r.gap)}`}</title>
-              <rect x={x - 4} y={16} width={gw + 8} height={plotH} class="cdd-hit" />
-              <rect x={x} y={y(r.target)} width={gw / 2 - 1} height={Math.max(0, y(0) - y(r.target))} class="dash-m t" rx={3} />
-              <rect x={x + gw / 2 + 1} y={y(r.sales)} width={gw / 2 - 1} height={Math.max(0, y(0) - y(r.sales))} class="dash-m s" rx={3} />
-              <text transform={`translate(${x + gw / 2}, ${H - bottom + 12}) rotate(-35)`} class="cdd-lbl" text-anchor="end">{r.dept.length > 16 ? `${r.dept.slice(0, 15)}…` : r.dept}</text>
+              <rect x={x - 4} y={topPad - 30} width={gw + 8} height={plotH + 30} class="cdd-hit" />
+              <rect x={x} y={y(r.target)} width={bw} height={Math.max(0, y(0) - y(r.target))} fill={st.tColor} rx={3} />
+              <rect x={x + bw + 2} y={y(r.sales)} width={bw} height={Math.max(0, y(0) - y(r.sales))} fill={st.sColor} rx={3} />
+              {st.showVals && <text x={x + bw / 2} y={y(r.target) - 4} class="dash-v" text-anchor="middle">{short(r.target)}</text>}
+              {st.showVals && <text x={x + bw * 1.5 + 2} y={y(r.sales) - 4} class="dash-v" text-anchor="middle">{short(r.sales)}</text>}
+              {st.showPct && <text x={x + gw / 2} y={Math.min(y(r.target), y(r.sales)) - (st.showVals ? 18 : 6)} class={`dash-pct ${r.gap === null ? '' : r.gap >= 0 ? 'up' : 'down'}`} text-anchor="middle">{fmtGap(r.gap)}</text>}
+              {st.showNames && <text transform={`translate(${x + gw / 2}, ${H - bottom + 14}) rotate(-35)`} class="cdd-lbl" text-anchor="end">{r.dept.length > 16 ? `${r.dept.slice(0, 15)}…` : r.dept}</text>}
             </g>
           );
         })}
       </svg></div>
-      <p class="small"><span class={gapClass(rows[rows.length - 1]!.gap)}>{fmtGap(rows[rows.length - 1]!.gap)}</span> {tc('dashTotalGap')}</p>
+      <p class="small"><span class={gapClass(tot.gap)}>{fmtGap(tot.gap)}</span> {tc('dashTotalGap')}</p>
+      {st.note && <p class="small muted">{st.note}</p>}
     </section>
   );
 }
@@ -324,6 +363,8 @@ function DashComparison({ l, n, lvl, calc, initial, onRemove }: {
   const [months, setMonths] = useState<string[]>(initial);
   const [busy, setBusy] = useState(false);
   const [shape, setShape] = useState<DashShape>('cards');
+  const [st, setSt] = useState<ChartStyle>(loadStyle);
+  const setStyle = (x: ChartStyle) => { setSt(x); saveStyle(x); };
   const avail = useAsync(() => api<{ months: string[] }>('GET', `/api/data/${ws}/sales-months`), [ws]);
   const sales = useAsync(months.length ? () => loadRouteData(ws, 'sales', months).then((r) => r.data) : null, [ws, months.join(',')]);
   const data = useMemo(() => (sales.data ? dashboardData(l, sales.data, months, lvl, calc) : null), [l, sales.data, lvl, calc, months.join(',')]);
@@ -340,7 +381,7 @@ function DashComparison({ l, n, lvl, calc, initial, onRemove }: {
               <option value="table">{tc('dashShapeTable')}</option>
             </select>
           </label>
-          <button type="button" class="btn" disabled={busy || !data} onClick={() => { if (!data) return; setBusy(true); void downloadPptx(l, data, label).finally(() => setBusy(false)); }}>{tc('downloadPptx')}</button>
+          <button type="button" class="btn" disabled={busy || !data} onClick={() => { if (!data) return; setBusy(true); void downloadPptx(l, data, label, st).finally(() => setBusy(false)); }}>{tc('downloadPptx')}</button>
           {onRemove && <button type="button" class="btn link" onClick={onRemove}>{tc('tsCmpRemove')}</button>}
         </div>
       </div>
@@ -350,8 +391,9 @@ function DashComparison({ l, n, lvl, calc, initial, onRemove }: {
       {months.length > 0 && !data && <p class="muted">{tc('loading')}</p>}
       {data && shape === 'chart' && (
         <>
-          <p class="small cdd-legend"><i class="sw dash-t" />{tc('newTarget')}<i class="sw dash-s" />{tc('salesWord')} {label}</p>
-          <div class="dash-charts">{data.map((g) => <TargetSalesChart key={g.cat} title={g.cat} rows={g.rows} salesLabel={label} />)}</div>
+          <ChartEditor st={st} set={setStyle} cats={data.map((g) => g.cat)} />
+          <p class="small cdd-legend"><i class="sw" style={{ background: st.tColor }} />{tc('newTarget')}<i class="sw" style={{ background: st.sColor }} />{tc('salesWord')} {label}</p>
+          <div class="dash-charts">{data.map((g) => <TargetSalesChart key={g.cat} title={g.cat} rows={g.rows} salesLabel={label} st={st} />)}</div>
         </>
       )}
       {data && shape === 'table' && (
