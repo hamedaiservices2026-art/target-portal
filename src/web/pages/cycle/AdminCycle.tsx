@@ -443,14 +443,8 @@ function AopDeptStep({ ws, period, org, saved, modePicker, onSaved }: {
     try {
       const byPack: Grid = {};
       for (const g of Object.values(mine)) for (const [p, n] of Object.entries(g)) byPack[p] = (byPack[p] ?? 0) + n;
+      // Goes to the CD like every AOP option; the CD sees the AOP split by department.
       await uploadMonths(ws, 'new_target', { [period]: { mode: 'dept', byPack, byChannel: mine, file: `AOP by department ${period}` } });
-      const dept: Record<string, Grid> = {};
-      for (const d of org.depts) {
-        const t: Grid = {};
-        for (const c of d.channels) for (const [p, n] of Object.entries(mine[c.channel] ?? {})) t[p] = (t[p] ?? 0) + n;
-        dept[String(d.id)] = t;
-      }
-      await api('PUT', `/api/admin/cycle/${ws}/${period}/dept-target`, { dept });
       onSaved(tc('aopDeptUsed', { period, total: fmtNum(total(byPack)) }));
     } catch (x) {
       setErr(errText(x));
@@ -485,7 +479,7 @@ function AopDeptStep({ ws, period, org, saved, modePicker, onSaved }: {
 // ---------- step 2 by department: the uploaded target, editable ----------
 
 /** The target uploaded by pack and department, as uploaded (CD columns), editable before the next steps. */
-function DeptUploadTable({ ws, period, org, nt, onSaved }: { ws: Workspace; period: string; org: OrgDto; nt: NtUpload; onSaved: (msg: string) => void }) {
+function DeptUploadTable({ ws, period, org, nt, cdStep, onSaved }: { ws: Workspace; period: string; org: OrgDto; nt: NtUpload; cdStep: boolean; onSaved: (msg: string) => void }) {
   useLang();
   const [g, setG] = useState<Record<string, Grid>>(() => JSON.parse(JSON.stringify(nt.byChannel ?? {})) as Record<string, Grid>);
   const [busy, setBusy] = useState(false);
@@ -509,8 +503,8 @@ function DeptUploadTable({ ws, period, org, nt, onSaved }: { ws: Workspace; peri
         for (const c of d.channels) for (const [p, n] of Object.entries(g[c.channel] ?? {})) t[p] = (t[p] ?? 0) + n;
         dept[String(d.id)] = t;
       }
-      await api('PUT', `/api/admin/cycle/${ws}/${period}/dept-target`, { dept });
-      onSaved(tc('duSaved'));
+      if (!cdStep) await api('PUT', `/api/admin/cycle/${ws}/${period}/dept-target`, { dept });
+      onSaved(cdStep ? tc('duSavedCd') : tc('duSaved'));
     } catch (x) {
       setErr(errText(x));
     } finally {
@@ -933,7 +927,7 @@ function StartTab({ ws, period, l, reload }: { ws: Workspace; period: string; l:
             </UploadStep>
           )}
           {(mode === 'dept' || (mode === 'aop' && cycle.settings.aopBy === 'dept')) && !ka && nt?.mode === 'dept' && nt.byChannel && (
-            <DeptUploadTable key={`${cycle.version}`} ws={ws} period={period} org={org} nt={nt} onSaved={(m) => { after(m); ntData.reload(); }} />
+            <DeptUploadTable key={`${cycle.version}`} ws={ws} period={period} org={org} nt={nt} cdStep={cycle.settings.cdStep} onSaved={(m) => { after(m); ntData.reload(); }} />
           )}
           {mode === 'leaf' && ka && (
             <UploadStep ws={ws} clearKind={{ table: 'months', kind: 'new_target' }} n={2} title={tc('step2', { period })} help={tc('step2cHelp')} template={() => T.newTargetByLeaf(org, period)} done={done[1]!} locked={locked} loaded={loadedText}

@@ -306,12 +306,12 @@ async function capStatements(db: D1Database, cap: number | null): Promise<D1Prep
 
 /**
  * Whether the cycle goes to the Commercial Director: Operation with a target
- * uploaded by pack or from the AOP does (the CD splits it by department); a
- * target uploaded by department is already split, so it skips the CD. Key
- * Accounts never go to the CD.
+ * uploaded by pack or from the AOP (by pack, or by pack and department) does;
+ * only a target uploaded by pack and department skips the CD. Key Accounts
+ * never go to the CD.
  */
 export function cdStepOf(ws: Workspace, s: Pick<CycleSettings, 'ntMode' | 'aopBy'>): boolean {
-  return ws !== 'ka' && s.ntMode !== 'dept' && !(s.ntMode === 'aop' && s.aopBy === 'dept');
+  return ws !== 'ka' && s.ntMode !== 'dept';
 }
 
 export async function saveSettings(db: D1Database, actorId: number, ws: Workspace, periodRaw: string, body: Obj): Promise<CycleSettings> {

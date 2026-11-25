@@ -198,9 +198,9 @@ describe('target cycle (handover flow)', () => {
     expect(kamNode?.u).not.toBeNull();
   });
 
-  it('AOP by pack and department skips the CD; data can be cleared before an upload', async () => {
+  it('every AOP option goes to the CD; data can be cleared before an upload', async () => {
     await api('PUT', `/admin/cycle/ops/${P}/settings`, admin, { ntMode: 'aop', aopBy: 'dept' });
-    expect((await json(await api('GET', `/cycle/ops/${P}`, admin))).settings.cdStep).toBe(false);
+    expect((await json(await api('GET', `/cycle/ops/${P}`, admin))).settings.cdStep).toBe(true);
     await api('PUT', `/admin/cycle/ops/${P}/settings`, admin, { aopBy: 'pack' });
     expect((await json(await api('GET', `/cycle/ops/${P}`, admin))).settings.cdStep).toBe(true);
     for (const m of ['2027-01', '2027-02']) {
