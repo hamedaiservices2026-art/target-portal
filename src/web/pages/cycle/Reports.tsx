@@ -281,6 +281,40 @@ async function downloadPptx(l: Loaded, data: { cat: string; rows: DashRow[] }[],
   await pptx.writeFile({ fileName: `dashboard_${l.cycle.ws}_${l.cycle.period}.pptx` });
 }
 
+type DashShape = 'cards' | 'chart' | 'table';
+
+/** Target vs sales per row as grouped columns (blue = target, grey = sales), like the PowerPoint. */
+function TargetSalesChart({ title, rows, salesLabel }: { title: string; rows: DashRow[]; salesLabel: string }) {
+  const body = rows.filter((r) => r.dept !== 'Total');
+  const max = Math.max(1, ...body.flatMap((r) => [r.target, r.sales]));
+  const step = 10 ** Math.floor(Math.log10(max));
+  const top = Math.max(4, Math.ceil(max / step) * step);
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => f * top);
+  const left = 70, H = 280, bottom = 70, plotH = H - bottom - 16, gw = 54;
+  const W = Math.max(420, left + body.length * (gw + 14) + 10);
+  const y = (v: number) => 16 + plotH - (v / top) * plotH;
+  return (
+    <section class="card cy-card dash-chart">
+      <h3>{title}</h3>
+      <div class="cdd-chart"><svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`${title}: target vs sales`} style={{ width: `${W}px`, maxWidth: 'none' }}>
+        {ticks.map((t) => <g key={t}><line x1={left} x2={W - 4} y1={y(t)} y2={y(t)} class={t === 0 ? 'cdd-zero' : 'cdd-grid'} /><text x={left - 6} y={y(t) + 4} class="cdd-axis" text-anchor="end">{fmtNum(Math.round(t))}</text></g>)}
+        {body.map((r, i) => {
+          const x = left + 10 + i * (gw + 14);
+          return (
+            <g key={r.dept} class="cdd-row"><title>{`${r.dept}\nTarget: ${fmtNum(r.target)}\n${tc('salesWord')} ${salesLabel}: ${fmtNum(r.sales)}\n${fmtGap(r.gap)}`}</title>
+              <rect x={x - 4} y={16} width={gw + 8} height={plotH} class="cdd-hit" />
+              <rect x={x} y={y(r.target)} width={gw / 2 - 1} height={Math.max(0, y(0) - y(r.target))} class="dash-m t" rx={3} />
+              <rect x={x + gw / 2 + 1} y={y(r.sales)} width={gw / 2 - 1} height={Math.max(0, y(0) - y(r.sales))} class="dash-m s" rx={3} />
+              <text transform={`translate(${x + gw / 2}, ${H - bottom + 12}) rotate(-35)`} class="cdd-lbl" text-anchor="end">{r.dept.length > 16 ? `${r.dept.slice(0, 15)}…` : r.dept}</text>
+            </g>
+          );
+        })}
+      </svg></div>
+      <p class="small"><span class={gapClass(rows[rows.length - 1]!.gap)}>{fmtGap(rows[rows.length - 1]!.gap)}</span> {tc('dashTotalGap')}</p>
+    </section>
+  );
+}
+
 /** One comparison of the dashboard: its own sales months (ticked, averaged). */
 function DashComparison({ l, n, lvl, calc, initial, onRemove }: {
   l: Loaded; n: number; lvl: DashLvl; calc: Record<string, Record<string, Grid>>; initial: string[]; onRemove?: () => void;
@@ -289,6 +323,7 @@ function DashComparison({ l, n, lvl, calc, initial, onRemove }: {
   const ws = l.cycle.ws;
   const [months, setMonths] = useState<string[]>(initial);
   const [busy, setBusy] = useState(false);
+  const [shape, setShape] = useState<DashShape>('cards');
   const avail = useAsync(() => api<{ months: string[] }>('GET', `/api/data/${ws}/sales-months`), [ws]);
   const sales = useAsync(months.length ? () => loadRouteData(ws, 'sales', months).then((r) => r.data) : null, [ws, months.join(',')]);
   const data = useMemo(() => (sales.data ? dashboardData(l, sales.data, months, lvl, calc) : null), [l, sales.data, lvl, calc, months.join(',')]);
@@ -298,6 +333,13 @@ function DashComparison({ l, n, lvl, calc, initial, onRemove }: {
       <div class="cy-section-head">
         <h2>{tc('dashCmpTitle', { n })}</h2>
         <div class="toolbar">
+          <label class="small">{tc('cddShape')}{' '}
+            <select value={shape} data-testid={`dash-shape-${n}`} onChange={(e) => setShape(e.currentTarget.value as DashShape)}>
+              <option value="cards">{tc('dashShapeCards')}</option>
+              <option value="chart">{tc('cddShapeColumns')}</option>
+              <option value="table">{tc('dashShapeTable')}</option>
+            </select>
+          </label>
           <button type="button" class="btn" disabled={busy || !data} onClick={() => { if (!data) return; setBusy(true); void downloadPptx(l, data, label).finally(() => setBusy(false)); }}>{tc('downloadPptx')}</button>
           {onRemove && <button type="button" class="btn link" onClick={onRemove}>{tc('tsCmpRemove')}</button>}
         </div>
@@ -306,7 +348,30 @@ function DashComparison({ l, n, lvl, calc, initial, onRemove }: {
       {!months.length && <p class="small muted">{tc('pickMonths')}</p>}
       {sales.error && <div class="alert">{sales.error}</div>}
       {months.length > 0 && !data && <p class="muted">{tc('loading')}</p>}
-      {data && (
+      {data && shape === 'chart' && (
+        <>
+          <p class="small cdd-legend"><i class="sw dash-t" />{tc('newTarget')}<i class="sw dash-s" />{tc('salesWord')} {label}</p>
+          <div class="dash-charts">{data.map((g) => <TargetSalesChart key={g.cat} title={g.cat} rows={g.rows} salesLabel={label} />)}</div>
+        </>
+      )}
+      {data && shape === 'table' && (
+        <div class="tablewrap cy-tall"><table class="ad-table cy-table" data-testid={`dash-table-${n}`}>
+          <thead>
+            <tr><th rowSpan={2}>{tc('nameWord')}</th>{data.map((g) => <th key={g.cat} colSpan={3} class="grp">{g.cat}</th>)}</tr>
+            <tr>{data.map((g) => [<th key={`${g.cat}t`} class="num">{tc('newTarget')}</th>, <th key={`${g.cat}s`} class="num">{tc('salesWord')}</th>, <th key={`${g.cat}g`} class="num">%</th>])}</tr>
+          </thead>
+          <tbody>{data[data.length - 1]!.rows.map((row, i) => (
+            <tr key={row.dept} class={row.dept === 'Total' ? 'sub l1' : ''}>
+              <td><bdi>{row.dept === 'Total' ? tc('total') : row.dept}</bdi></td>
+              {data.map((g) => {
+                const x = g.rows.find((y) => y.dept === row.dept) ?? { target: 0, sales: 0, gap: null };
+                return [<td key={`${g.cat}t${i}`} class="num">{fmtNum(x.target)}</td>, <td key={`${g.cat}s${i}`} class="num">{fmtNum(x.sales)}</td>, <td key={`${g.cat}g${i}`} class="num"><span class={gapClass(x.gap)}>{fmtGap(x.gap)}</span></td>];
+              })}
+            </tr>
+          ))}</tbody>
+        </table></div>
+      )}
+      {data && shape === 'cards' && (
         <div class="cy-cards">
           {data.map((g) => {
             const t = g.rows[g.rows.length - 1]!;

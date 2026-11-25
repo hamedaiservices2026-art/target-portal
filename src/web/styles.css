@@ -443,3 +443,10 @@ td.bench .gsub { display: block; font-size: 11px; }
 .cdd-chart .cdd-hit { fill: transparent; }
 .cdd-chart .cdd-row:hover .cdd-hit { fill: var(--chip); }
 .cy-mini-wrap { max-block-size: 260px; overflow-y: auto; }
+.dash-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 12px; }
+.dash-chart .cdd-chart { border: 0; padding: 0; }
+.dash-m.t { fill: var(--cdd-sales); }
+.dash-m.s { fill: #a0a7b4; }
+.cdd-legend .sw.dash-t { background: var(--cdd-sales); }
+.cdd-legend .sw.dash-s { background: #a0a7b4; }
+@media (max-width: 520px) { .dash-charts { grid-template-columns: 1fr; } }
