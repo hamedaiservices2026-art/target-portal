@@ -278,3 +278,37 @@ export async function setEmployeeId(db: D1Database, actorId: number, id: number,
   ]);
   return { employeeId: emp };
 }
+
+const IDS_AS_LOGIN = 'usernames_from_ids_v1';
+
+/**
+ * The employee ID is the login: every account with an ID (not the admin) signs
+ * in with it. Passwords stay. An ID another account already uses as its login is skipped.
+ */
+export async function usernamesFromIds(db: D1Database, actorId: number | null): Promise<{ changed: number; skipped: string[] }> {
+  const users = await all<{ id: number; username: string; role: Role; employee_id: string | null }>(db,
+    `SELECT id, username, role, employee_id FROM users WHERE deleted_at IS NULL`);
+  const taken = new Map((await all<{ id: number; username: string }>(db, `SELECT id, username FROM users`)).map((u) => [u.username, u.id]));
+  const stmts: D1PreparedStatement[] = [];
+  const skipped: string[] = [];
+  for (const u of users) {
+    if (u.role === 'admin' || !u.employee_id) continue;
+    const want = u.employee_id.trim().toLowerCase().replace(/\s+/g, '');
+    if (!want || want === u.username) continue;
+    const owner = taken.get(want);
+    if (owner !== undefined && owner !== u.id) { skipped.push(u.employee_id); continue; }
+    taken.delete(u.username);
+    taken.set(want, u.id);
+    stmts.push(db.prepare(`UPDATE users SET username = ? WHERE id = ?`).bind(want, u.id));
+    if (actorId !== null) stmts.push(auditStatement(db, actorId, 'user.username', {}, { id: u.id, from: u.username, to: want }));
+  }
+  stmts.push(db.prepare(`INSERT INTO settings(key, value) VALUES (?, '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value`).bind(IDS_AS_LOGIN));
+  await batch(db, stmts);
+  return { changed: actorId === null ? stmts.length - 1 : (stmts.length - 1) / 2, skipped };
+}
+
+/** Once after this change: the accounts that already have an ID sign in with it. */
+export async function usernamesFromIdsOnce(db: D1Database, actorId: number): Promise<void> {
+  if (await one(db, `SELECT 1 AS x FROM settings WHERE key = ?`, IDS_AS_LOGIN)) return;
+  await usernamesFromIds(db, actorId);
+}

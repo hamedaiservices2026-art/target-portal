@@ -5,7 +5,7 @@ import { requireAdmin, requireUser, type AppEnv } from '../auth';
 import { h, p } from './handler';
 import { backupIndex, backupPage, listAudit } from '../services/export';
 import importRoutes from './imports';
-import { deleteUser, getPositions, listAccounts, listKaLinks, setEmployeeId, setEmployeeIds, setKaLink, setPositions, syncNextAccount, unlockUser } from '../services/accounts';
+import { deleteUser, getPositions, listAccounts, listKaLinks, setEmployeeId, setEmployeeIds, setKaLink, setPositions, syncNextAccount, unlockUser, usernamesFromIds, usernamesFromIdsOnce } from '../services/accounts';
 import { applyHierarchySync, deleteHead, deleteHierarchy, listPeople, previewHierarchySync, removeKaFromOps } from '../services/hierarchySync';
 import monthRoutes from './months';
 import {
@@ -29,14 +29,15 @@ admin.post('/api/admin/users/:id/password', h(async (c, db, me, body) => {
   const r = await setUserPassword(db, me, parseId(p(c, 'id')), await body());
   return c.json({ ok: true, ...r });
 }));
-admin.get('/api/admin/accounts', h(async (c, db) => c.json(await listAccounts(db))));
+admin.get('/api/admin/accounts', h(async (c, db, me) => { await usernamesFromIdsOnce(db, me); return c.json(await listAccounts(db)); }));
 admin.post('/api/admin/users/:id/unlock', h(async (c, db, me) => c.json(await unlockUser(db, me, parseId(p(c, 'id'))))));
 admin.post('/api/admin/accounts/sync', h(async (c, db, me) => c.json(await syncNextAccount(db, me))));
 admin.delete('/api/admin/users/:id', h(async (c, db, me) => c.json(await deleteUser(db, me, parseId(p(c, 'id'))))));
 admin.get('/api/admin/positions', h(async (c, db) => c.json({ positions: await getPositions(db) })));
 admin.put('/api/admin/positions', h(async (c, db, me, body) => c.json(await setPositions(db, me, await body()))));
-admin.post('/api/admin/employee-ids', h(async (c, db, me, body) => c.json(await setEmployeeIds(db, me, await body()))));
-admin.put('/api/admin/users/:id/employee-id', h(async (c, db, me, body) => c.json(await setEmployeeId(db, me, parseId(p(c, 'id')), await body()))));
+// The employee ID is the login: setting IDs also sets the usernames.
+admin.post('/api/admin/employee-ids', h(async (c, db, me, body) => { const r = await setEmployeeIds(db, me, await body()); const u = await usernamesFromIds(db, me); return c.json({ ...r, logins: u }); }));
+admin.put('/api/admin/users/:id/employee-id', h(async (c, db, me, body) => { const r = await setEmployeeId(db, me, parseId(p(c, 'id')), await body()); const u = await usernamesFromIds(db, me); return c.json({ ...r, logins: u }); }));
 admin.get('/api/admin/ka-links', h(async (c, db) => c.json({ links: await listKaLinks(db) })));
 admin.put('/api/admin/ka-links/:id', h(async (c, db, me, body) => c.json(await setKaLink(db, me, parseId(p(c, 'id')), await body()))));
 

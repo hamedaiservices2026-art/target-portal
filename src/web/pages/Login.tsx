@@ -51,7 +51,7 @@ export function Login() {
       <form class="card login-card" onSubmit={onSubmit} noValidate>
         <h1>{t('loginTitle')}</h1>
         <p class="muted">{t('loginIntro')}</p>
-        <label for="username">{t('username')}</label>
+        <label for="username">{t('loginName')}</label>
         <input
           id="username" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck={false}
           required value={username} onInput={(e) => setUsername((e.target as HTMLInputElement).value)}

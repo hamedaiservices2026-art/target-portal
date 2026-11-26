@@ -15,6 +15,7 @@ export const ar: Record<TextKey, string> = {
   loginTitle: 'تسجيل الدخول',
   loginIntro: 'استخدم اسم المستخدم وكلمة المرور اللذين زوّدك بهما المسؤول.',
   username: 'اسم المستخدم',
+  loginName: 'اسم المستخدم (الرقم الوظيفي)',
   password: 'كلمة المرور',
   signIn: 'تسجيل الدخول',
   signingIn: 'جارٍ تسجيل الدخول…',

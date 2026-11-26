@@ -13,6 +13,7 @@ export const en = {
   loginTitle: 'Sign in',
   loginIntro: 'Use the username and password given to you by the administrator.',
   username: 'Username',
+  loginName: 'Username (employee ID)',
   password: 'Password',
   signIn: 'Sign in',
   signingIn: 'Signing in…',

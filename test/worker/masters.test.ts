@@ -409,3 +409,21 @@ describe('logAudit', () => {
     expect(rows[1]).toMatchObject({ user_id: null, month_id: null, node_id: null, detail_json: null });
   });
 });
+
+describe('employee ID is the login', () => {
+  it('setting an ID makes it the username; the password stays; the admin and taken IDs are left', async () => {
+    const ali = await addUser('ali.hassan', 'ali-password');
+    const sam = await addUser('sam', 'sam-password');
+    const res = await call('PUT', `/users/${ali}/employee-id`, { employeeId: ' 41419 ' });
+    expect(res.status).toBe(200);
+    expect((await json(res)).logins.changed).toBe(1);
+    expect(await one(env.DB, `SELECT username, employee_id FROM users WHERE id = ?`, ali)).toEqual({ username: '41419', employee_id: '41419' });
+    await sidFor('41419', 'ali-password');
+    // An ID another account already signs in with is skipped.
+    const r2 = await json(await call('PUT', `/users/${sam}/employee-id`, { employeeId: '41419' }));
+    expect(r2.logins.skipped).toEqual(['41419']);
+    expect(await one(env.DB, `SELECT username FROM users WHERE id = ?`, sam)).toEqual({ username: 'sam' });
+    await call('PUT', `/users/${adminId}/employee-id`, { employeeId: '1' });
+    expect(await one(env.DB, `SELECT username FROM users WHERE id = ?`, adminId)).toEqual({ username: 'boss' });
+  });
+});
