@@ -174,7 +174,8 @@ export function CdByCategory({ work, heads, cats, subOf, bench, editable, setWor
             row(c, label, list, 'sub l1', true),
             ...(isOpen ? subs.map((s) => row(`${c}/${s}`, <span style={{ paddingInlineStart: '18px' }}>{s}</span>, list.filter((p) => subOf(p) === s), '')) : []),
           ];
-        })}</tbody>
+        })}
+        {packs.length > 0 && row('all', <b>{tc('total')}</b>, packs, 'sub l1 cd-cat-total', true)}</tbody>
       </table></div>
     </section>
   );

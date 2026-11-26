@@ -102,6 +102,8 @@ test('the whole cycle: CD splits and submits, Admin calculates and sends, the He
   await expect(cd.getByTestId('cd-page')).toBeVisible();
   await expect(cd.getByTestId('submit-reason')).toContainText('the New Target is not approved');
   await expect(cd.getByTestId('gm-table')).toContainText('CSD_CANS150');
+  // Nothing changed yet: back to the uploaded target has nothing to do.
+  await expect(cd.getByTestId('reset-to-uploaded')).toBeDisabled();
   await cd.getByTestId('approve-nt').click();
   await expect(cd.getByTestId('dept-table')).toContainText('CSD_CANS150');
   await expect(cd.getByTestId('month-picker')).toBeVisible();
@@ -123,6 +125,8 @@ test('the whole cycle: CD splits and submits, Admin calculates and sends, the He
   await expect(cd.getByTestId('uplift-reset')).toBeDisabled();
   await cd.getByTestId('cat-reset-CSD').click();
   await expect(cell).toHaveValue(/^30$/);
+  // The Total row of all categories.
+  await expect(cd.getByTestId('cd-by-category').locator('tr.cd-cat-total')).toContainText('Total');
   await cell.fill('500');
   await cell.press('Tab');
   await cd.getByTestId('uplift-pct').fill('10');

@@ -460,3 +460,6 @@ td.bench .gsub { display: block; font-size: 11px; }
 .dash-chart .dash-pct { fill: var(--ink); font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .dash-chart .dash-pct.up { fill: var(--ok); }
 .dash-chart .dash-pct.down { fill: var(--bad); }
+/* CD Distribute by category: the grand Total row (as Total LRB in the template). */
+.cy-table tr.cd-cat-total td { background: #0000FF; color: #fff; font-weight: 700; border-top: 2px solid #000; }
+.cy-table tr.cd-cat-total td .btn.link { color: #fff; }

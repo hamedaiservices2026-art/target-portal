@@ -816,6 +816,9 @@ export const CY = {
   tplNone: ["No template: the built-in one is used.", "لا يوجد قالب: يُستخدم القالب المدمج."],
   tplCurrent: ["In use: {name}", "المستخدم: {name}"],
   tplBad: ["Choose an Excel file (.xlsx or .xlsm) of at most 1.4 MB.", "اختر ملف Excel (.xlsx أو .xlsm) بحجم 1.4 ميجابايت كحد أقصى."],
+  resetUploaded: ["Reset to uploaded target", "إعادة إلى الهدف المرفوع"],
+  resetUploadedHelp: ["Every pack back to the uploaded target (the Uploaded column). Approve the New Target again to update the split.", "كل العبوات تعود إلى الهدف المرفوع (عمود المرفوع). اعتمد الهدف الجديد مرة أخرى لتحديث التوزيع."],
+  catTotal: ["Total", "الإجمالي"],
   // Admin › Hierarchy (v16)
   hzIntro: ['Add, move, rename or delete here, or upload the whole hierarchy in one file. Every Channel Head is the top of one department.', 'أضف أو انقل أو أعد التسمية أو احذف هنا، أو ارفع الهيكل كاملًا في ملف واحد. كل رئيس قناة هو أعلى قسم واحد.'],
   hzAdd: ['Add', 'إضافة'],

@@ -101,7 +101,8 @@ function fileOrderRows(layout: FileRow[], packs: string[], cats: Map<string, Cat
   const has = new Set(packs);
   const rows = lines.flatMap((x): CdRow[] => (x.pack
     ? (has.has(x.pack) ? [{ kind: 'pack', pack: x.pack }] : [])
-    : [{ kind: 'sub', label: x.label.trim(), packs: [...new Set(x.of)], level: 2 }]));
+    // The AOP file names the CSD total after its sheet ("Total ABC"): it is the CSD total.
+    : [{ kind: 'sub', label: /^total\s+abc$/i.test(x.label.trim()) ? 'Total CSD' : x.label.trim(), packs: [...new Set(x.of)], level: 2 }]));
   return { rows, file: true };
 }
 
@@ -248,6 +249,13 @@ function GmTab({ work, edit, l, setWork, onApproved }: { work: CdWork; edit: boo
     onApproved();
   }
 
+  // Back to the uploaded target (the file Admin sent): the New Target is reopened, and approving it again redoes the split of the packs that changed.
+  const fromFile = Object.keys(bench.uploaded).length > 0;
+  const differs = [...new Set([...packs, ...Object.keys(bench.uploaded)])].some((p) => (work.nt[p] ?? 0) !== (bench.uploaded[p] ?? 0));
+  const resetBtn = fromFile && (
+    <button type="button" class="btn" data-testid="reset-to-uploaded" disabled={!differs} title={tc('resetUploadedHelp')}
+      onClick={() => setWork({ ...work, ntOk: false, nt: Object.fromEntries([...new Set([...packs, ...Object.keys(bench.uploaded)])].map((p) => [p, bench.uploaded[p] ?? 0])) })}>{tc('resetUploaded')}</button>
+  );
   const cards = cdDashboard(work, l);
   return (
     <>
@@ -266,8 +274,8 @@ function GmTab({ work, edit, l, setWork, onApproved }: { work: CdWork; edit: boo
       </div>
       <Section title={tc('gmTitle', { period: l.cycle.period })} right={edit && (
         work.ntOk
-          ? <button type="button" class="btn" onClick={() => setWork({ ...work, ntOk: false })}>{tc('reopenNt')}</button>
-          : <button type="button" class="btn primary" data-testid="approve-nt" disabled={over.size > 0} onClick={approve}>{tc('approveNt')}</button>
+          ? <div class="toolbar">{resetBtn}<button type="button" class="btn" onClick={() => setWork({ ...work, ntOk: false })}>{tc('reopenNt')}</button></div>
+          : <div class="toolbar">{resetBtn}<button type="button" class="btn primary" data-testid="approve-nt" disabled={over.size > 0} onClick={approve}>{tc('approveNt')}</button></div>
       )}>
         <p class="muted small">{work.ntOk ? tc('ntApproved') : tc('ntHelp')}{cap !== null && <> {tc('capRule', { n: cap })}</>}</p>
         {over.size > 0 && <div class="banner bad" role="alert">{tc('overCapPacks', { n: over.size, cap: cap ?? 0, list: [...over].slice(0, 8).join(', ') })}</div>}
