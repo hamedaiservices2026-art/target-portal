@@ -19,6 +19,7 @@ import { listNotifications, markRead } from '../services/notify';
 import { getRules, setRules } from '../services/rulesSettings';
 import { getBrand, setBrand } from '../services/brand';
 import { getPackPlace, setPackPlace } from '../services/packPlace';
+import { syncPackSort, syncPackSortOnce } from '../services/packOrder';
 import { mailStatus, setMailOn, setUserEmails } from '../services/mailSettings';
 
 const cycle = new Hono<AppEnv>();
@@ -43,7 +44,7 @@ cycle.put('/api/admin/rules', h(async (c, db, me, body) => c.json(await setRules
 cycle.get('/api/admin/mail', h(async (c, db) => c.json(await mailStatus(db, c.env))));
 cycle.put('/api/admin/mail', h(async (c, db, me, body) => c.json(await setMailOn(db, me, await body()))));
 cycle.post('/api/admin/user-emails', h(async (c, db, me, body) => c.json(await setUserEmails(db, me, await body()))));
-cycle.put('/api/admin/pack-place', h(async (c, db, me, body) => c.json(await setPackPlace(db, me, await body()))));
+cycle.put('/api/admin/pack-place', h(async (c, db, me, body) => { const r = await setPackPlace(db, me, await body()); await syncPackSort(db); return c.json(r); }));
 cycle.put('/api/admin/approval-brand', h(async (c, db, me, body) => c.json(await setBrand(db, me, await body()))));
 
 cycle.put('/api/admin/departments/:id/workspace', h(async (c, db, me, body) => {
@@ -68,7 +69,13 @@ cycle.post('/api/admin/data/:ws/log', h(async (c, db, me, body) => {
   await logUpload(db, me, ws(c), await body());
   return c.json({ ok: true });
 }));
-cycle.post('/api/admin/data/:ws/months', h(async (c, db, me, body) => c.json(await saveMonthData(db, me, ws(c), await body()))));
+cycle.post('/api/admin/data/:ws/months', h(async (c, db, me, body) => {
+  const b = await body();
+  const r = await saveMonthData(db, me, ws(c), b);
+  // A target file with its own order: the packs follow it everywhere.
+  if (['new_target', 'target_upload', 'aop_dept'].includes(String(b.kind))) await syncPackSort(db);
+  return c.json(r);
+}));
 
 cycle.put('/api/admin/cycle/:ws/:period/settings', h(async (c, db, me, body) => c.json({ settings: await saveSettings(db, me, ws(c), per(c), await body()) })));
 cycle.post('/api/admin/cycle/:ws/:period/cd/send', h(async (c, db, me, body) => {
@@ -104,7 +111,7 @@ cycle.use('/api/data/*', requireUser);
 cycle.get('/api/data/:ws/status', h(async (c, db) => { adminOrCd(c); return c.json({ status: await dataStatus(db, ws(c)) }); }));
 cycle.get('/api/data/:ws/routes', h(async (c, db) => { adminOrCd(c); return raw(c, await readRouteRows(db, ws(c), c.req.query('kind'), c.req.query('month'))); }));
 cycle.get('/api/data/:ws/months', h(async (c, db) => { adminOrCd(c); return raw(c, await readMonthData(db, ws(c), c.req.query('kind'))); }));
-cycle.get('/api/data/:ws/org', h(async (c, db) => { adminOrCd(c); return c.json(await readOrg(db, ws(c))); }));
+cycle.get('/api/data/:ws/org', h(async (c, db) => { adminOrCd(c); await syncPackSortOnce(db); return c.json(await readOrg(db, ws(c))); }));
 cycle.get('/api/data/:ws/pack-place', h(async (c, db) => { adminOrCd(c); return c.json({ place: await getPackPlace(db) }); }));
 cycle.get('/api/data/:ws/approval-brand', h(async (c, db) => { adminOrCd(c); return c.json(await getBrand(db)); }));
 cycle.get('/api/data/packs-sub', h(async (c, db) => c.json(await packSubs(db))));

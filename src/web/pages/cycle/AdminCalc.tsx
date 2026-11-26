@@ -15,7 +15,7 @@ import { api } from '../../api';
 import { errText } from '../../components/AdminBits';
 import { fmtDateTime } from '../../format';
 import { fmtNum, useLang } from '../../i18n';
-import { calculate, catMap, deptTree, routeAverages, subMap, sumCat, total, type Grid } from '../../cycle/compute';
+import { calculate, catMap, inPackOrder, deptTree, routeAverages, subMap, sumCat, total, type Grid } from '../../cycle/compute';
 import { tc } from '../../cycle/i18n';
 import { loadMonthData, loadRouteData, useAsync } from '../../cycle/load';
 import { Checks, fmtPct, MonthPicker, monthsLabel, NumCell, Section, Tabs, writeWorkbook } from '../../cycle/ui';
@@ -366,7 +366,7 @@ export function CalcTab({ ws, period, l, reload, onNext }: { ws: Workspace; peri
   }
   function exportRoutes() {
     const byId = new Map(org.nodes.map((n) => [n.id, n]));
-    const packs = [...new Set(deptIds.flatMap((d) => Object.keys(deptT[d] ?? {})))].sort();
+    const packs = inPackOrder(deptIds.flatMap((d) => Object.keys(deptT[d] ?? {})), org.packs.map((p) => p.code));
     const list: (string | number | null)[][] = [];
     const matrix: (string | number | null)[][] = [];
     for (const x of org.leaves) {

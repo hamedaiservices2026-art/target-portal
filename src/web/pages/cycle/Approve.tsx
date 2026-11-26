@@ -2,6 +2,7 @@
 // Admin sent, as a summary by manager (open a manager to see the supervisors)
 // and by pack; approve (the distribution to managers opens) or return with a
 // comment.
+import { inPackOrder } from '../../cycle/compute';
 import { useMemo, useState } from 'preact/hooks';
 import { CATEGORIES, subCategoryByName, subsOf, type Category } from '../../../shared/calc/packs';
 import type { Workspace } from '../../../worker/auth';
@@ -97,7 +98,7 @@ function HeadSummary({ a, meta }: { a: Approval; meta: PackMeta }) {
         <div class="tablewrap cy-tall"><table class="ad-table cy-table">
           <thead><tr><th>{tc('pack')}</th><th class="num">{tc('target')}</th>{managers.map((m) => <th key={m} class="num">{agg.names.get(m)}</th>)}</tr></thead>
           <tbody>{CATEGORIES.flatMap((c) => {
-            const inCat = packs.filter((p) => catOf(p) === c).sort();
+            const inCat = inPackOrder(packs.filter((p) => catOf(p) === c), Object.keys(meta));
             if (!inCat.length) return [];
             return [
               <tr key={c} class="sub l1"><td>{c}</td><td class="num">{fmtNum(catSum(rootSum, c))}</td>{managers.map((m) => <td key={m} class="num">{fmtNum(catSum(agg.sums.get(m), c))}</td>)}</tr>,

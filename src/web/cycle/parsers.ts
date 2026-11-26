@@ -529,7 +529,8 @@ export const TEMPLATES: Record<string, { file: string; columns: string[]; sample
  * Total is the check: channels must add up to it. Values are rounded to whole cases.
  */
 /** The rows of a target file in its own order: packs, and the file's Total rows with the packs each one sums. */
-export type FileRow = { p: string } | { t: string; of: string[] };
+export type { FileRow } from '../../shared/calc/packOrder';
+import type { FileRow } from '../../shared/calc/packOrder';
 
 /**
  * The file's layout from one sheet (the ABC / total sheet): packs in order and

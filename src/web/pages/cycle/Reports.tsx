@@ -11,7 +11,7 @@ import type { OrgDto } from '../../../worker/services/cycleData';
 import { PageHead } from '../../components/AdminBits';
 import { CdDashboard } from './CdDashboard';
 import { fmtNum, useLang } from '../../i18n';
-import { avgOf, catMap, groupSales, routeIndex, sumCat, total, type Grid } from '../../cycle/compute';
+import { avgOf, catMap, inPackOrder, groupSales, routeIndex, sumCat, total, type Grid } from '../../cycle/compute';
 import { tc } from '../../cycle/i18n';
 import { getCycle, getOrg, loadMonthData, loadRouteData, useAsync } from '../../cycle/load';
 import type { RouteMonthData } from '../../cycle/parsers';
@@ -79,7 +79,7 @@ function Averages({ l, sales, months, setMonths, available }: { l: Loaded; sales
   const idx = routeIndex(org);
   const byDept = groupSales(sales, (r) => { const i = idx.get(r); return i ? String(i.deptId) : null; });
   const byRoute = groupSales(sales, (r) => r);
-  const packs = [...new Set(months.flatMap((m) => Object.values(sales[m] ?? {}).flatMap((g) => Object.keys(g))))].sort();
+  const packs = inPackOrder(months.flatMap((m) => Object.values(sales[m] ?? {}).flatMap((g) => Object.keys(g))), org.packs.map((p) => p.code));
   const deptAvg = (d: string): Grid => Object.fromEntries(packs.map((p) => [p, avgOf(byDept, d, p, months)]));
   function csv() {
     const rows: (string | number)[][] = [];
@@ -251,10 +251,9 @@ export function dashboardData(l: Loaded, sales: RouteMonthData, months: string[]
   }
   const list = [...ents.values()].sort((a, b) => a.name.localeCompare(b.name));
   // By category, or one group per pack (in the pack master's order) with a target or a comparison.
-  const packOrder = new Map(org.packs.map((p, i) => [p.code, i]));
   const seen = new Set<string>();
   for (const e of list) for (const g of [e.t, e.s]) for (const [p, v] of Object.entries(g)) if (v) seen.add(p);
-  const packs = [...seen].sort((a, b) => (packOrder.get(a) ?? 1e9) - (packOrder.get(b) ?? 1e9) || a.localeCompare(b));
+  const packs = inPackOrder(seen, org.packs.map((p) => p.code));
   const groups = [
     ...(by === 'pack' ? packs.map((p) => ({ cat: p, f: (g: Grid) => g[p] ?? 0 })) : CATEGORIES.map((c) => ({ cat: c as string, f: (g: Grid) => sumCat(g, cats, c) }))),
     { cat: 'Total', f: (g: Grid) => total(g) },

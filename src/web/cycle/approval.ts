@@ -3,7 +3,8 @@
 // PAGO and PLAN with the file's Total rows, the pack mix and the signature
 // line; sheet 2, "By Manager", has the target by pack and channel with a
 // total per Head and the grand total (ABC). Totals and % are Excel formulas.
-import { brandFamily, cdSubtotals, type Category } from '../../shared/calc/packs';
+import { approvalLines, type PackLine } from '../../shared/calc/packOrder';
+export { approvalLines };
 import type { FileRow } from './parsers';
 import type { Grid } from './compute';
 
@@ -39,7 +40,6 @@ const STYLES: Record<string, RowStyle> = {
   'total lrb': { bg: BLUE, fg: '#FFFFFF', bold: true, strong: true },
 };
 const styleOf = (label: string): RowStyle => STYLES[label.trim().toLowerCase().replace(/\s+/g, ' ')] ?? {};
-const isLrb = (label: string) => /^total\s+lrb\s*$/i.test(label.trim());
 
 /** Excel column letters (0 = A). */
 export function colName(i: number): string {
@@ -61,69 +61,7 @@ export function refList(col: string, rows: number[]): string {
   return out.join(',');
 }
 
-type Line = { label: string; pack: string | null; of: string[] };
-
-/**
- * The rows of the workbook: the layout, with packs of the target that are not
- * in it added before their category's Total (and counted in it and in Total LRB).
- */
-export function approvalLines(layout: FileRow[], packs: string[], catOf: (p: string) => string, under: Record<string, string> = {}): Line[] {
-  let lines: Line[] = layout.map((r) => ('p' in r ? { label: r.p, pack: r.p, of: [r.p] } : { label: r.t, pack: null, of: [...r.of] }));
-  if (!lines.length) {
-    // No file layout: packs by category, a Total per category, then Total LRB.
-    const cats = [...new Set(packs.map(catOf))];
-    for (const c of cats) {
-      const ps = packs.filter((p) => catOf(p) === c);
-      lines.push(...ps.map((p) => ({ label: p, pack: p, of: [p] })), { label: `Total ${c}`, pack: null, of: ps });
-    }
-    lines.push({ label: 'Total LRB', pack: null, of: [...packs] });
-    return lines;
-  }
-  const known = new Set(lines.filter((l) => l.pack).map((l) => l.pack!));
-  // The pack's groups, most specific first: CANS / SSNR / MSPET 2.0+ / MSPET for CSD, the brand for LRB-Others.
-  const groups = (p: string): string[] => {
-    const c = catOf(p);
-    if (c === 'CSD') return cdSubtotals(p, new Map([[p, 'CSD' as Category]])).filter((x) => x !== 'CSD' && x !== 'LRB').map((x) => `CSD:${x}`);
-    return c === 'LRB-Others' ? [`LRB:${brandFamily(p).toLowerCase()}`] : [];
-  };
-  const norm = (x: string) => x.trim().toLowerCase().replace(/\s+/g, ' ');
-  for (const p of packs.filter((x) => !known.has(x))) {
-    // The Total the admin chose for this pack (Admin › Packs): last row above it, counted in it and in every Total around it.
-    const want = under[p] ? norm(under[p]!) : '';
-    const tAt = want ? lines.findIndex((l) => !l.pack && norm(l.label) === want) : -1;
-    if (tAt >= 0) {
-      const inner = new Set(lines[tAt]!.of);
-      for (const l of lines) if (!l.pack && (l === lines[tAt] || (inner.size > 0 && [...inner].every((x) => l.of.includes(x))))) l.of.push(p);
-      lines.splice(tAt, 0, { label: p, pack: p, of: [p] });
-      known.add(p);
-      continue;
-    }
-    // After the last pack of its group in the file, and counted in every Total that pack is in.
-    let sib = -1;
-    for (const g of groups(p)) {
-      lines.forEach((l, i) => { if (l.pack && known.has(l.pack) && groups(l.pack).includes(g)) sib = i; });
-      if (sib >= 0) break;
-    }
-    if (sib >= 0) {
-      const q = lines[sib]!.pack!;
-      for (const l of lines) if (!l.pack && l.of.includes(q) && !l.of.includes(p)) l.of.push(p);
-      lines.splice(sib + 1, 0, { label: p, pack: p, of: [p] });
-      known.add(p);
-      continue;
-    }
-    const c = catOf(p).toLowerCase();
-    const names = c === 'csd' ? ['total csd', 'total abc'] : [`total ${c}`];
-    let at = lines.findIndex((l) => !l.pack && names.includes(l.label.trim().toLowerCase()));
-    if (at < 0) at = lines.findIndex((l) => !l.pack && isLrb(l.label));
-    if (at < 0) at = lines.length;
-    if (lines[at]) lines[at]!.of.push(p);
-    lines.splice(at, 0, { label: p, pack: p, of: [p] });
-  }
-  const lrb = lines.find((l) => !l.pack && isLrb(l.label));
-  if (lrb) lrb.of = [...new Set([...lrb.of, ...packs])];
-  else lines = [...lines, { label: 'Total LRB', pack: null, of: lines.filter((l) => l.pack).map((l) => l.pack!) }];
-  return lines;
-}
+type Line = PackLine;
 
 const n = (v: number | undefined) => (v ? v : null);
 

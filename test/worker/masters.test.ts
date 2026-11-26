@@ -303,7 +303,7 @@ describe('departments', () => {
 });
 
 describe('packs', () => {
-  it('create, list, patch round-trip; code keeps its case; list sorted by sort then code', async () => {
+  it('create, list, patch round-trip; code keeps its case; list in the file order (CSD, Water, LRB-Others)', async () => {
     const created = await call('POST', '/packs', { code: ' Pep330 ', grp: 'CSD', sort: 20 });
     expect(created.status).toBe(201);
     expect((await json(created)).pack).toEqual({ code: 'Pep330', grp: 'CSD', active: true, sort: 20 });
@@ -312,9 +312,9 @@ describe('packs', () => {
 
     const list = (await json(await call('GET', '/packs'))).packs;
     expect(list).toEqual([
-      { code: 'pep330', grp: 'LRB-Others', active: true, sort: 0 },
-      { code: 'Aqua', grp: 'Water', active: false, sort: 10 },
-      { code: 'Pep330', grp: 'CSD', active: true, sort: 20 },
+      { code: 'Pep330', grp: 'CSD', active: true, sort: 10 },
+      { code: 'Aqua', grp: 'Water', active: false, sort: 20 },
+      { code: 'pep330', grp: 'LRB-Others', active: true, sort: 30 },
     ]);
 
     const patched = await call('PATCH', '/packs/Pep330', { grp: 'Water', active: false, sort: 5 });
@@ -355,7 +355,7 @@ describe('packs', () => {
     await call('POST', '/packs', { code: 'P1', grp: 'CSD' });
     const res = await call('PATCH', '/packs/P1', { code: 'P2', sort: 4 });
     expect(res.status).toBe(400);
-    expect(await one(env.DB, `SELECT code, sort FROM packs`)).toEqual({ code: 'P1', sort: 0 });
+    expect(await one(env.DB, `SELECT code, sort FROM packs`)).toEqual({ code: 'P1', sort: 10 });
     // Repeating the same code is harmless.
     expect((await call('PATCH', '/packs/P1', { code: 'P1', sort: 4 })).status).toBe(200);
   });

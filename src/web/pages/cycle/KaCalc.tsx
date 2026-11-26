@@ -11,7 +11,7 @@ import { CATEGORIES } from '../../../shared/calc/packs';
 import { api } from '../../api';
 import { errText } from '../../components/AdminBits';
 import { fmtNum, useLang } from '../../i18n';
-import { calculate, catMap, sumCat, total, type Grid } from '../../cycle/compute';
+import { calculate, catMap, inPackOrder, sumCat, total, type Grid } from '../../cycle/compute';
 import { achievement, upliftPct } from '../../cycle/kaUplift';
 import { tc } from '../../cycle/i18n';
 import { loadMonthData, loadRouteData, useAsync } from '../../cycle/load';
@@ -187,7 +187,7 @@ export function KaCalcTab({ period, l, reload, onNext }: { period: string; l: Lo
   }
 
   function exportIt() {
-    const packs = [...new Set(lines.flatMap((x) => Object.keys(x.base)))].sort();
+    const packs = inPackOrder(lines.flatMap((x) => Object.keys(x.base)), org.packs.map((p) => p.code));
     void writeWorkbook(`key_account_target_${period}.xlsx`, [
       {
         name: 'By KAM and KAE',
@@ -206,7 +206,7 @@ export function KaCalcTab({ period, l, reload, onNext }: { period: string; l: Lo
   }
 
   const depts = lines.filter((x) => x.level === 'dept');
-  const packRows = shown ? Object.keys({ ...shown.base, ...shown.target }).sort((a, b) => (cats.get(a) ?? '').localeCompare(cats.get(b) ?? '') || a.localeCompare(b)) : [];
+  const packRows = shown ? inPackOrder(Object.keys({ ...shown.base, ...shown.target }), org.packs.map((p) => p.code)) : [];
 
   return (
     <>

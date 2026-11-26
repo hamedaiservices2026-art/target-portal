@@ -75,6 +75,6 @@ describe('department template and tables follow the department file', () => {
     const cats = new Map(packs.map((p) => [p.code, 'CSD' as const]));
     const labels = cdRows(packs.map((p) => p.code), cats).map((r) => (r.kind === 'sub' ? r.label : r.pack));
     expect(labels.slice(0, 4)).toEqual(['CSD_CANS150', 'STING_240', 'CSD_CANS240', 'Total CANS']);
-    expect(labels).toContain('Total BIG MSPET');
+    expect(labels).toContain('Total MSPET');
   });
 });

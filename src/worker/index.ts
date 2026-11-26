@@ -60,9 +60,12 @@ app.route('/', cycleRoutes);
 // the Worker: Static Assets serves them, falling back to index.html (SPA).
 app.all('/api/*', (c) => c.json({ error: 'not_found' }, 404));
 
+import { syncPackSortOnce } from './services/packOrder';
+
 export default {
   fetch: app.fetch,
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(sendDeadlineReminders(env.DB, env, new Date()));
+    ctx.waitUntil(syncPackSortOnce(env.DB));
   },
 };

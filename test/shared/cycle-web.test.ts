@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { calculate, cdRows, defaultDeptSplit, reconciliation, routeIndex, somRows, startNewTarget, type Org } from '../../src/web/cycle/compute';
+import { calculate, cdRows, inPackOrder, defaultDeptSplit, reconciliation, routeIndex, somRows, startNewTarget, type Org } from '../../src/web/cycle/compute';
 import { packIndex, parseAop, parseChannelGrid, parseNewTargetByPack, parsePrevTargets, parseSales, sheetMonth } from '../../src/web/cycle/parsers';
 
 const idx = packIndex(['CSD_CANS150', 'CSD_PET2250', 'AquafinA_330', 'LIT_PET500']);
@@ -128,7 +128,19 @@ describe('cycle compute', () => {
   it('CD rows carry the workbook subtotals', () => {
     const cats = new Map([['CSD_CANS150', 'CSD' as const], ['CSD_PET2250', 'CSD' as const], ['AquafinA_330', 'Water' as const], ['LIT_PET500', 'LRB-Others' as const]]);
     const labels = cdRows(['CSD_CANS150', 'CSD_PET2250', 'AquafinA_330', 'LIT_PET500'], cats).map((r) => (r.kind === 'sub' ? r.label : r.pack));
-    expect(labels).toEqual(['CSD_CANS150', 'Total CANS', 'Total SSNR', 'CSD_PET2250', 'Total BIG MSPET', 'Total MSPET', 'Total CSD',
-      'AquafinA_330', 'Total Water', 'LIT_PET500', 'Total LRB-Others', 'Total LRB']);
+    expect(labels).toEqual(['CSD_CANS150', 'Total CANS', 'Total SSNR', 'CSD_PET2250', 'Total MSPET', 'Total CSD',
+      'AquafinA_330', 'Total Water', 'LIT_PET500', 'Total LIT', 'Total LRB-Others', 'Total LRB']);
+  });
+
+  it('every pack list follows the department file: Propel under GATORADE, Rockstar under Total ROCKSTAR, PET2000+ in Total MSPET', () => {
+    const packs = ['Rockstar_250', 'Propel', 'CSD_PET2000+', 'GATORADE', 'Britvic_300', 'Rockstar_185', 'CSD_PET1000', 'Sting Energy_185', 'MPLUS_NRB300', 'Pepsi Tret'];
+    const cats = new Map(packs.map((p) => [p, (p.startsWith('CSD') ? 'CSD' : 'LRB-Others') as 'CSD' | 'LRB-Others']));
+    const labels = cdRows(packs, cats).map((r) => (r.kind === 'sub' ? r.label : r.pack));
+    expect(labels).toEqual(['CSD_PET1000', 'CSD_PET2000+', 'Total MSPET', 'Total CSD', 'GATORADE', 'Propel', 'Total Gatorade', 'MPLUS_NRB300',
+      'Rockstar_185', 'Rockstar_250', 'Total ROCKSTAR', 'Sting Energy_185', 'Total Sting Energy', 'Total Energy', 'Britvic_300', 'Total Britvic',
+      'Pepsi Tret', 'Total LRB-Others', 'Total LRB']);
+    expect(inPackOrder(['Propel', 'Rockstar_185', 'GATORADE'], [])).toEqual(['GATORADE', 'Propel', 'Rockstar_185']);
+    // The pack master's order (from the uploaded file) wins.
+    expect(inPackOrder(['Propel', 'X', 'GATORADE'], ['X', 'GATORADE', 'Propel'])).toEqual(['X', 'GATORADE', 'Propel']);
   });
 });

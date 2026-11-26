@@ -18,7 +18,7 @@ import { errText, PageHead } from '../../components/AdminBits';
 import { fmtNum, useLang } from '../../i18n';
 import { useSession } from '../../session';
 import {
-  catMap, cdRows, companyMonth, subMap, defaultDeptSplit, deptPack, groupSales, NO_CHANNEL, prevTargetMonths, rescalePack, routeIndex, sumCat,
+  catMap, companyMonth, subMap, defaultDeptSplit, deptPack, groupSales, NO_CHANNEL, prevTargetMonths, rescalePack, routeIndex, sumCat,
   type CdRow, type ChannelHist, type Grid,
 } from '../../cycle/compute';
 import { deptColumns, orderedDeptCols } from '../../cycle/deptOrder';
@@ -28,6 +28,7 @@ import { packIndex, type FileRow, type RouteMonthData } from '../../cycle/parser
 import { packKey } from '../../../shared/calc/packs';
 import { CdByCategory } from './CdByCategory';
 import { approvalLines } from '../../cycle/approval';
+import { orderPacks } from '../../../shared/calc/packOrder';
 import { defaultPeriod, rowColour, fmtGap, gapClass, MonthPicker, monthsLabel, NumCell, Section, Tabs, useMyWorkspaces, writeWorkbook, WsPeriod } from '../../cycle/ui';
 
 type TabId = 'gm' | 'dept';
@@ -92,10 +93,9 @@ async function loadAll(ws: Workspace, period: string): Promise<Loaded> {
 
 /**
  * Table rows in the order of the uploaded file (its packs and Total rows); packs
- * missing from the file go before their category's Total. Without a file: by category.
+ * missing from the file go with their group. Without a file: the default layout (the department file).
  */
 function fileOrderRows(layout: FileRow[], packs: string[], cats: Map<string, Category>, under: Record<string, string> = {}): { rows: CdRow[]; file: boolean } {
-  if (!layout.length) return { rows: cdRows(packs, cats), file: false };
   const lines = approvalLines(layout, packs, (p) => cats.get(p) ?? 'LRB-Others', under);
   const has = new Set(packs);
   const rows = lines.flatMap((x): CdRow[] => (x.pack
@@ -448,7 +448,7 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
               const off = r.kind === 'pack' && abc !== nt;
               const abcBench = cols.reduce((s, d) => s + deptBench(d, list), 0);
               return (
-                <tr key={r.kind === 'sub' ? r.label : r.pack} class={`${r.kind === 'sub' ? `sub l${r.level}` : off ? 'bad' : ''}${layout.length ? ' cd-file' : ''}`} style={layout.length ? rowColour(r.kind === 'sub' ? r.label : r.pack) : undefined}>
+                <tr key={r.kind === 'sub' ? r.label : r.pack} class={`${r.kind === 'sub' ? `sub l${r.level}` : off ? 'bad' : ''} cd-file`} style={rowColour(r.kind === 'sub' ? r.label : r.pack)}>
                   <td><bdi>{r.kind === 'sub' ? r.label : r.pack}</bdi></td>
                   {flat.map((x) => (x.kind === 'cell' ? (
                     <td key={`${x.d.id}${x.c}`} class="num">
@@ -500,7 +500,7 @@ export function cdDashboard(work: CdWork, l: Loaded) {
 function downloadWorkbook(work: CdWork, l: Loaded) {
   const { org, bench, cycle } = l;
   const cats = catMap(org);
-  const packs = Object.keys(work.nt).sort();
+  const packs = orderPacks(Object.keys(work.nt), (p) => cats.get(p) ?? 'LRB-Others', bench.layout, bench.under);
   const chans = orderedDeptCols(org.depts, NO_CHANNEL).flatMap((d) => d.chans.map((c) => ({ d: d.id, c, label: c === NO_CHANNEL ? d.name : c })));
   const r = (n: number) => Math.round(n);
   void writeWorkbook(`cd_${cycle.ws}_${cycle.period}.xlsx`, [

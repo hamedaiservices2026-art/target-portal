@@ -337,7 +337,7 @@ export async function listCdRoles(db: D1Database): Promise<{ userId: number; wor
 
 /** Pack -> {grp, sub} for every signed-in user (the distribution and summary screens group by them). */
 export async function packSubs(db: D1Database): Promise<Record<string, { grp: string; sub: string | null }>> {
-  const rows = await all<{ code: string; grp: string; sub: string | null }>(db, `SELECT code, grp, sub FROM packs`);
+  const rows = await all<{ code: string; grp: string; sub: string | null }>(db, `SELECT code, grp, sub FROM packs ORDER BY sort, code`);
   return Object.fromEntries(rows.map((r) => [r.code, { grp: r.grp, sub: r.sub }]));
 }
 
