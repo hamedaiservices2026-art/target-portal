@@ -23,7 +23,7 @@ export function packIndex(codes: string[]): PackIndex {
 
 const squash = (s: unknown): string => (typeof s === 'string' ? s : s === null || s === undefined ? '' : String(s)).toLowerCase().replace(/[\s_\-./]+/g, '');
 
-function cellText(c: unknown): string {
+export function cellText(c: unknown): string {
   if (c === null || c === undefined) return '';
   if (c instanceof Date) return c.toISOString().slice(0, 10);
   return String(c).trim();
@@ -541,7 +541,7 @@ export function fileLayout(data: unknown[][], idx: PackIndex): FileRow[] {
   if (hRow < 0) return [];
   const header = data[hRow]!;
   const pCol = header.findIndex((x) => PACK_NAMES.some((n) => squash(n) === squash(x)));
-  const nCols = header.map((x, i) => (i !== pCol && (parseMonth(x) || /fy|total/i.test(String(x ?? ''))) ? i : -1)).filter((i) => i >= 0);
+  const nCols = header.map((x, i) => (i !== pCol && (parseMonth(x) || /fy|total|^\s*(cases|new target|target|abc)\s*$/i.test(String(x ?? ''))) ? i : -1)).filter((i) => i >= 0);
   const rows: { name: string; code: string | null; total: boolean; v: number[] }[] = [];
   for (const r of data.slice(hRow + 1)) {
     if (!Array.isArray(r)) continue;
@@ -662,4 +662,34 @@ export function parseAopByDept(sheets: { sheet: string; data: unknown[][] }[], c
   if (!months.length) checks.push({ level: 'error', text: 'No month was read.' });
   else checks.push({ level: 'info', text: `${months.length} month(s) read (${months[0]} to ${months[months.length - 1]}), ${Object.keys(Object.assign({}, ...Object.values(byMonth))).length} channel(s).` });
   return { byMonth, layout, checks };
+}
+
+/**
+ * The people's IDs in a sales file: HOD / Manager / Supervisor / KAM name with
+ * the ID column next to it, and the KAE IDs of a Key Account file.
+ */
+export function parsePeopleIds(rows: unknown[][]): { people: { name: string; id: string }[]; kae: string[] } {
+  const pairs: [string, string][] = [['HOD Name', 'HOD ID'], ['Manager Name', 'Manager ID'], ['Supervisor Name', 'Supervisor ID'], ['KAM Name', 'KAM ID']];
+  const spec: Record<string, string[]> = { kae: ['KAE ID'] };
+  pairs.forEach(([n, i], k) => { spec[`n${k}`] = [n]; spec[`i${k}`] = [i]; });
+  let h: ReturnType<typeof findHeader> = null;
+  for (let k = 0; k < pairs.length && !h; k++) h = findHeader(rows, spec, [`n${k}`, `i${k}`]);
+  if (!h) h = findHeader(rows, spec, ['kae']);
+  if (!h) return { people: [], kae: [] };
+  const people = new Map<string, { name: string; id: string }>();
+  const kae = new Set<string>();
+  const idText = (v: unknown) => (typeof v === 'number' ? String(Math.round(v)) : cellText(v));
+  for (const r of rows.slice(h.row + 1)) {
+    if (!Array.isArray(r)) continue;
+    pairs.forEach((_p, k) => {
+      const nc = h!.col[`n${k}`];
+      const ic = h!.col[`i${k}`];
+      if (nc === undefined || ic === undefined) return;
+      const name = cellText(r[nc]);
+      const id = idText(r[ic]);
+      if (name && id && !isSubtotal(name)) people.set(`${name.toLowerCase()}\u0000${id}`, { name, id });
+    });
+    if (h.col.kae !== undefined) { const k = idText(r[h.col.kae]); if (k) kae.add(k); }
+  }
+  return { people: [...people.values()], kae: [...kae] };
 }

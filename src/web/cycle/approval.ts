@@ -18,6 +18,8 @@ export type ApprovalInput = {
   target: Grid; yago: Grid; pago: Grid; plan: Grid;
   /** Heads with their channels (in order) and the target per channel and pack. */
   heads: { name: string; chans: { label: string; g: Grid }[] }[];
+  /** Pack -> the Total it shows under when the file does not list it (Admin › Packs). */
+  under?: Record<string, string>;
   /** The company name and logo at the top of the first sheet (set by the admin). */
   brand?: { company: string; logo: { data: ArrayBuffer | Uint8Array; type: 'image/png' | 'image/jpeg'; width: number; height: number } | null };
 };
@@ -65,7 +67,7 @@ type Line = { label: string; pack: string | null; of: string[] };
  * The rows of the workbook: the layout, with packs of the target that are not
  * in it added before their category's Total (and counted in it and in Total LRB).
  */
-export function approvalLines(layout: FileRow[], packs: string[], catOf: (p: string) => string): Line[] {
+export function approvalLines(layout: FileRow[], packs: string[], catOf: (p: string) => string, under: Record<string, string> = {}): Line[] {
   let lines: Line[] = layout.map((r) => ('p' in r ? { label: r.p, pack: r.p, of: [r.p] } : { label: r.t, pack: null, of: [...r.of] }));
   if (!lines.length) {
     // No file layout: packs by category, a Total per category, then Total LRB.
@@ -84,7 +86,18 @@ export function approvalLines(layout: FileRow[], packs: string[], catOf: (p: str
     if (c === 'CSD') return cdSubtotals(p, new Map([[p, 'CSD' as Category]])).filter((x) => x !== 'CSD' && x !== 'LRB').map((x) => `CSD:${x}`);
     return c === 'LRB-Others' ? [`LRB:${brandFamily(p).toLowerCase()}`] : [];
   };
+  const norm = (x: string) => x.trim().toLowerCase().replace(/\s+/g, ' ');
   for (const p of packs.filter((x) => !known.has(x))) {
+    // The Total the admin chose for this pack (Admin › Packs): last row above it, counted in it and in every Total around it.
+    const want = under[p] ? norm(under[p]!) : '';
+    const tAt = want ? lines.findIndex((l) => !l.pack && norm(l.label) === want) : -1;
+    if (tAt >= 0) {
+      const inner = new Set(lines[tAt]!.of);
+      for (const l of lines) if (!l.pack && (l === lines[tAt] || (inner.size > 0 && [...inner].every((x) => l.of.includes(x))))) l.of.push(p);
+      lines.splice(tAt, 0, { label: p, pack: p, of: [p] });
+      known.add(p);
+      continue;
+    }
     // After the last pack of its group in the file, and counted in every Total that pack is in.
     let sib = -1;
     for (const g of groups(p)) {
@@ -205,7 +218,7 @@ function logoImages(inp: ApprovalInput): { images?: unknown[] } {
 export function approvalSheets(inp: ApprovalInput): unknown[] {
   const packs = Object.keys(inp.target).filter((p) => (inp.target[p] ?? 0) !== 0 || inp.layout.some((r) => 'p' in r && r.p === p));
   // The AOP file calls the CSD total "Total ABC"; the template calls it "Total CSD".
-  const lines = approvalLines(inp.layout, packs, inp.catOf).map((l) => (!l.pack && /^total\s+abc$/i.test(l.label.trim()) ? { ...l, label: 'Total CSD' } : l));
+  const lines = approvalLines(inp.layout, packs, inp.catOf, inp.under).map((l) => (!l.pack && /^total\s+abc$/i.test(l.label.trim()) ? { ...l, label: 'Total CSD' } : l));
   const month = MONTHS[Number(inp.period.slice(5)) - 1] ?? inp.period;
 
   // ----- sheet 1: target vs YAGO, PAGO and PLAN -----

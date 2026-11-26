@@ -85,8 +85,8 @@ test('hierarchy from one file, then every person gets an account with a first pa
   const dl = page.waitForEvent('download');
   await page.getByTestId('dl-logins').click();
   const sheet = await readSheet(readFileSync((await (await dl).path())!));
-  expect(sheet[0]).toEqual(['Name', 'Username', 'First password', 'Roles', 'Status']);
-  expect(sheet.some((r) => r[1] === username && r[2] === first)).toBe(true);
+  expect(sheet[0]).toEqual(['ID', 'Name', 'Username', 'First password', 'Email', 'Roles', 'Status']);
+  expect(sheet.some((r) => r[2] === username && r[3] === first)).toBe(true);
 
   // The first password works (own request context: the admin stays signed in on the page).
   const login = await request.post('/api/auth/login', { data: { username, password: first } });

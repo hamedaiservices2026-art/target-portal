@@ -3,7 +3,7 @@
 // send / restart control per Head of Department, route targets and variance.
 import { createContext, type ComponentChildren } from 'preact';
 import { useLocation } from 'preact-iso';
-import { useContext, useEffect, useMemo, useState } from 'preact/hooks';
+import { useContext, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { CATEGORIES, packKey } from '../../../shared/calc/packs';
 import { PACK_GROUPS } from '../../../shared/imports';
 import { pago as pagoOf } from '../../../shared/calc/periods';
@@ -29,7 +29,7 @@ import { catMap, cdRows, defaultDeptSplit, NO_CHANNEL, prevTargetMonths, startNe
 import { tc } from '../../cycle/i18n';
 import { clearRouteCache, getCycle, getOrg, loadMonthData, loadRouteData, useAsync } from '../../cycle/load';
 import {
-  packIndex, parseAop, parseChannelGrid, parseNewTargetByLeaf, parseNewTargetByPack, parsePrevTargets, parseAopByDept, parseSales, sheetMonth,
+  fileLayout, packIndex, parseAop, parsePeopleIds, parseChannelGrid, parseNewTargetByLeaf, parseNewTargetByPack, parsePrevTargets, parseAopByDept, parseSales, sheetMonth,
   type Check, type FileRow, type RouteMonthData,
 } from '../../cycle/parsers';
 import { Checks, defaultPeriod, rowColour, PacksAdded, PacksVersion, downloadCsv, fmtCases, NumCell, Section, Tabs, writeWorkbook, WsPeriod } from '../../cycle/ui';
@@ -909,6 +909,8 @@ function StartTab({ ws, period, l, reload, part }: { ws: Workspace; period: stri
   const channels = org.depts.flatMap((d) => d.channels.map((c) => c.channel));
   const groups = Object.fromEntries(org.depts.flatMap((d) => d.channels.map((c) => [c.channel, c.grp])));
   const routes = new Set(org.leaves.map((x) => x.routeCode));
+  // The people's IDs read from the sales file (HOD / Manager / Supervisor / KAM / KAE ID), saved to the accounts with the upload.
+  const peopleIds = useRef<ReturnType<typeof parsePeopleIds> | null>(null);
   const locked = cycle.cdStatus === 'with_cd' || cycle.cdStatus === 'submitted';
   const cats = catMap(org);
   const [modeBusy, setModeBusy] = useState(false);
@@ -1023,9 +1025,10 @@ function StartTab({ ws, period, l, reload, part }: { ws: Workspace; period: stri
             <UploadStep ws={ws} clearKind={{ table: 'months', kind: 'new_target' }} n={2} title={tc('step2', { period })} help={tc('step2aHelp')} template={() => T.newTargetByPack(org, period)} done={done[1]!} locked={locked} loaded={loadedText}
               parse={({ rows }) => {
                 const r = parseNewTargetByPack(rows!, period, idx);
-                return { checks: r.checks, summary: tc('sumPacks', { n: Object.keys(r.byPack).length, total: fmtNum(total(r.byPack)) }), payload: r.byPack };
+                // The file's pack order and Total rows are kept for the CD screen and the approval template.
+                return { checks: r.checks, summary: tc('sumPacks', { n: Object.keys(r.byPack).length, total: fmtNum(total(r.byPack)) }), payload: { byPack: r.byPack, layout: fileLayout(rows!, idx) } };
               }}
-              upload={async (byPack, file) => after(tc('savedMonths', { n: await uploadMonths(ws, 'new_target', { [period]: { mode: 'pack', byPack, file } }) }))}>
+              upload={async (payload, file) => after(tc('savedMonths', { n: await uploadMonths(ws, 'new_target', { [period]: { mode: 'pack', ...(payload as { byPack: Grid; layout: FileRow[] }), file } }) }))}>
               {modePicker}
             </UploadStep>
           )}
@@ -1035,7 +1038,7 @@ function StartTab({ ws, period, l, reload, part }: { ws: Workspace; period: stri
                 const r = parseChannelGrid(rows!, channels, idx, groups);
                 const byPack: Grid = {};
                 for (const g of Object.values(r.byChannel)) for (const [p, v] of Object.entries(g)) byPack[p] = (byPack[p] ?? 0) + v;
-                return { checks: r.checks, summary: tc('sumPacks', { n: Object.keys(byPack).length, total: fmtNum(total(byPack)) }), payload: { mode: 'dept', byPack, byChannel: r.byChannel } };
+                return { checks: r.checks, summary: tc('sumPacks', { n: Object.keys(byPack).length, total: fmtNum(total(byPack)) }), payload: { mode: 'dept', byPack, byChannel: r.byChannel, layout: fileLayout(rows!, idx) } };
               }}
               upload={async (payload, file) => {
                 const n = await uploadMonths(ws, 'new_target', { [period]: { ...(payload as object), file } });
@@ -1090,9 +1093,15 @@ function StartTab({ ws, period, l, reload, part }: { ws: Workspace; period: stri
             loaded={prevLoaded(status, 'sales')}
             parse={({ rows }) => {
               const r = parseSales(rows!, idx, routes);
+              peopleIds.current = parsePeopleIds(rows!);
               return { checks: r.checks, summary: tc('sumMonths', { n: Object.keys(r.data).length }), payload: r.data };
             }}
-            upload={async (p, file, prog) => after(tc('savedRows', { n: fmtNum(await uploadRoutes(ws, 'sales', p as RouteMonthData, null, file, prog)) }))} />
+            upload={async (p, file, prog) => {
+              const n = await uploadRoutes(ws, 'sales', p as RouteMonthData, null, file, prog);
+              const ids = peopleIds.current;
+              if (ids && (ids.people.length || ids.kae.length)) await api('POST', '/api/admin/employee-ids', ids).catch(() => undefined);
+              return after(tc('savedRows', { n: fmtNum(n) }));
+            }} />
           {ka ? (
             <UploadStep ws={ws} clearKind={{ table: 'routes', kind: 'prev_target' }} n={2} title={tc('stepPrevKa')} help={tc('stepPrevKaHelp')} template={() => T.kaPrevTargets(org, period)} done={prevDone} locked={false}
               loaded={prevLoaded(status, 'prev_target')}

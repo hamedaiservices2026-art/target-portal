@@ -79,3 +79,31 @@ describe('rows in the order of the AOP by department file', () => {
     expect(lines.find((l) => l.label === 'Total ROCKSTAR')!.of).toContain('Rockstar_500');
   });
 });
+
+describe('the Total a new pack shows under', () => {
+  it('puts the pack above the chosen Total and counts it there and in the Totals around it', async () => {
+    const { approvalLines } = await import('../../src/web/cycle/approval');
+    const layout = [
+      { p: 'GATORADE' }, { p: 'Propel' }, { t: 'Total Gatorade', of: ['GATORADE', 'Propel'] },
+      { p: 'Rockstar_185' }, { t: 'Total Energy', of: ['Rockstar_185'] },
+      { t: 'Total LRB-Others', of: ['GATORADE', 'Propel', 'Rockstar_185'] },
+      { t: 'Total LRB', of: ['GATORADE', 'Propel', 'Rockstar_185'] },
+    ];
+    const lines = approvalLines(layout, ['GATORADE', 'Propel', 'Rockstar_185', 'Pepsi Tret'], () => 'LRB-Others', { 'Pepsi Tret': 'total gatorade' });
+    const labels = lines.map((l) => l.label);
+    expect(labels.indexOf('Pepsi Tret')).toBe(labels.indexOf('Total Gatorade') - 1);
+    expect(lines.find((l) => l.label === 'Total Gatorade')!.of).toContain('Pepsi Tret');
+    expect(lines.find((l) => l.label === 'Total LRB-Others')!.of).toContain('Pepsi Tret');
+    expect(lines.find((l) => l.label === 'Total Energy')!.of).not.toContain('Pepsi Tret');
+  });
+
+  it('reads the pack order and Total rows of a New Target file (Pack, Cases)', async () => {
+    const { fileLayout, packIndex } = await import('../../src/web/cycle/parsers');
+    const rows = [['Pack', 'Cases'], ['CSD_CANS150', 10], ['CSD_CANS240', 5], ['Total CANS', 15], ['GATORADE', 3], ['Total LRB', 18]];
+    const idx = packIndex(['CSD_CANS150', 'CSD_CANS240', 'GATORADE']);
+    expect(fileLayout(rows, idx)).toEqual([
+      { p: 'CSD_CANS150' }, { p: 'CSD_CANS240' }, { t: 'Total CANS', of: ['CSD_CANS150', 'CSD_CANS240'] }, { p: 'GATORADE' },
+      { t: 'Total LRB', of: ['CSD_CANS150', 'CSD_CANS240', 'GATORADE'] },
+    ]);
+  });
+});

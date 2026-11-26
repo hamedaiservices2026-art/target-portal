@@ -1,6 +1,7 @@
 // Admin: packs. Group is one of exactly three; changes save as soon as a control changes.
 import { useState } from 'preact/hooks';
 import type { PackDto } from '../../../worker/services/masters';
+import type { FileRow } from '../../cycle/parsers';
 import { api } from '../../api';
 import { ConfirmButton, errText, Field, LoadError, PageHead, useResource } from '../../components/AdminBits';
 import { tc } from '../../cycle/i18n';
@@ -14,7 +15,27 @@ function GroupOptions() {
   return <>{PACK_GROUPS.map((g) => <option value={g}>{g}</option>)}</>;
 }
 
-function PackRow({ p, added, onChanged, onError }: { p: PackDto; added: boolean; onChanged: () => void; onError: (m: string) => void }) {
+/** The Total rows of the uploaded files (AOP by department, New Target), latest first, without repeats. */
+function useTotals(): string[] {
+  const res = useResource<Record<string, { layout?: FileRow[] }>>('/api/data/ops/months?kind=aop_dept');
+  const nt = useResource<Record<string, { layout?: FileRow[] }>>('/api/data/ops/months?kind=new_target');
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const src of [nt.data, res.data]) {
+    for (const m of Object.keys(src ?? {}).sort().reverse()) {
+      for (const r of src![m]?.layout ?? []) {
+        if (!('t' in r)) continue;
+        const k = r.t.trim().toLowerCase();
+        if (!seen.has(k)) { seen.add(k); out.push(r.t.trim()); }
+      }
+    }
+  }
+  return out;
+}
+
+function PackRow({ p, added, totals, under, onUnder, onChanged, onError }: {
+  p: PackDto; added: boolean; totals: string[]; under: string; onUnder: (v: string) => void; onChanged: () => void; onError: (m: string) => void;
+}) {
   useLang();
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -52,6 +73,12 @@ function PackRow({ p, added, onChanged, onError }: { p: PackDto; added: boolean;
         </select>
       </td>
       <td class="s">
+        <select aria-label={`${tc('pkUnder')} ${p.code}`} data-testid="pack-under" value={under} onChange={(e) => onUnder(e.currentTarget.value)}>
+          <option value="">{tc('pkUnderAuto')}</option>
+          {[...new Set([...totals, ...(under ? [under] : [])])].map((x) => <option key={x} value={x}>{x}</option>)}
+        </select>
+      </td>
+      <td class="s">
         <label class="check">
           <input type="checkbox" checked={p.active} disabled={busy} onChange={(e) => patch({ active: e.currentTarget.checked })} />
           {p.active ? t('adActive') : t('adInactive')}
@@ -79,6 +106,18 @@ export function Packs() {
   useLang();
   const res = useResource<{ packs: PackDto[] }>('/api/admin/packs');
   const addedRes = useResource<{ packs: string[] }>('/api/admin/packs-added');
+  const totals = useTotals();
+  const placeRes = useResource<{ place: Record<string, string> }>('/api/data/ops/pack-place');
+  async function setUnder(code: string, under: string) {
+    setErr(null);
+    try {
+      const r = await api<{ place: Record<string, string> }>('PUT', '/api/admin/pack-place', { code, under });
+      placeRes.setData(r);
+      setFlash(tc('pkUnderSaved', { code }));
+    } catch (x) {
+      setErr(errText(x));
+    }
+  }
   const [code, setCode] = useState('');
   const [grp, setGrp] = useState<PackDto['grp']>('CSD');
   const [sort, setSort] = useState('');
@@ -137,15 +176,16 @@ export function Packs() {
       {res.data && (
         <>
           <p class="muted">{t('adPacksNote')}</p>
+          <p class="muted small">{tc('pkUnderHelp')}</p>
           <div class="tablewrap">
             <table class="ad-table">
               <thead>
-                <tr><th class="s">{t('adPackCode')}</th><th class="s">{t('adGroup')}</th><th class="s">{t('adStatus')}</th><th class="s" /></tr>
+                <tr><th class="s">{t('adPackCode')}</th><th class="s">{t('adGroup')}</th><th class="s" title={tc('pkUnderHelp')}>{tc('pkUnder')}</th><th class="s">{t('adStatus')}</th><th class="s" /></tr>
               </thead>
               <tbody>
-                {res.data.packs.length === 0 && <tr><td class="empty" colSpan={4}>{t('adPackEmpty')}</td></tr>}
+                {res.data.packs.length === 0 && <tr><td class="empty" colSpan={5}>{t('adPackEmpty')}</td></tr>}
                 {res.data.packs.map((p) => (
-                  <PackRow key={`${p.code}-${p.grp}-${p.active}`} p={p} added={(addedRes.data?.packs ?? []).includes(p.code)} onChanged={() => { res.reload(); addedRes.reload(); }} onError={setErr} />
+                  <PackRow key={`${p.code}-${p.grp}-${p.active}`} p={p} added={(addedRes.data?.packs ?? []).includes(p.code)} totals={totals} under={placeRes.data?.place[p.code] ?? ''} onUnder={(v) => void setUnder(p.code, v)} onChanged={() => { res.reload(); addedRes.reload(); }} onError={setErr} />
                 ))}
               </tbody>
             </table>

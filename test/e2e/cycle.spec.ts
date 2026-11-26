@@ -31,6 +31,13 @@ test('admin opens a cycle, saves the rules, and reads the reports', async ({ pag
   await page.getByRole('button', { name: 'Save' }).first().click();
   await expect(page.getByRole('status').first()).toContainText('Saved');
   await expect(page.getByTestId('dept-setup').first()).toBeVisible();
+  // Target emails: on by default, can be turned off and on.
+  const mail = page.getByTestId('mail-form');
+  await expect(mail.getByTestId('mail-on')).toBeChecked();
+  await mail.getByTestId('mail-on').click();
+  await expect(mail.getByTestId('mail-on')).not.toBeChecked();
+  await mail.getByTestId('mail-on').click();
+  await expect(mail.getByTestId('mail-on')).toBeChecked();
   // The company name and logo of the approval template.
   const brand = page.getByTestId('brand-form');
   await brand.getByTestId('brand-company').fill('Test Company');

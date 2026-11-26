@@ -4,7 +4,7 @@ import { requireAdmin, requireUser, type AppEnv } from '../auth';
 import { h, p } from './handler';
 import { backupIndex, backupPage, listAudit } from '../services/export';
 import importRoutes from './imports';
-import { deleteUser, getPositions, listAccounts, listKaLinks, setKaLink, setPositions, syncNextAccount, unlockUser } from '../services/accounts';
+import { deleteUser, getPositions, listAccounts, listKaLinks, setEmployeeId, setEmployeeIds, setKaLink, setPositions, syncNextAccount, unlockUser } from '../services/accounts';
 import { applyHierarchySync, deleteHead, deleteHierarchy, listPeople, previewHierarchySync, removeKaFromOps } from '../services/hierarchySync';
 import monthRoutes from './months';
 import {
@@ -34,6 +34,8 @@ admin.post('/api/admin/accounts/sync', h(async (c, db, me) => c.json(await syncN
 admin.delete('/api/admin/users/:id', h(async (c, db, me) => c.json(await deleteUser(db, me, parseId(p(c, 'id'))))));
 admin.get('/api/admin/positions', h(async (c, db) => c.json({ positions: await getPositions(db) })));
 admin.put('/api/admin/positions', h(async (c, db, me, body) => c.json(await setPositions(db, me, await body()))));
+admin.post('/api/admin/employee-ids', h(async (c, db, me, body) => c.json(await setEmployeeIds(db, me, await body()))));
+admin.put('/api/admin/users/:id/employee-id', h(async (c, db, me, body) => c.json(await setEmployeeId(db, me, parseId(p(c, 'id')), await body()))));
 admin.get('/api/admin/ka-links', h(async (c, db) => c.json({ links: await listKaLinks(db) })));
 admin.put('/api/admin/ka-links/:id', h(async (c, db, me, body) => c.json(await setKaLink(db, me, parseId(p(c, 'id')), await body()))));
 

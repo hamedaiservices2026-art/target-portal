@@ -150,6 +150,8 @@ function EditAccount({ a, taken, onDone }: { a: AccountDto; taken: Set<string>; 
   useLang();
   const [name, setName] = useState(a.name);
   const [username, setUsername] = useState(a.username);
+  const [emp, setEmp] = useState(a.employeeId ?? '');
+  const [mail, setMail] = useState(a.email ?? '');
   const [err, setErr] = useState<string | null>(null);
   async function save(e: Event) {
     e.preventDefault();
@@ -158,7 +160,8 @@ function EditAccount({ a, taken, onDone }: { a: AccountDto; taken: Set<string>; 
     if (u !== a.username && taken.has(u)) return setErr(tc('urTaken', { u }));
     setErr(null);
     try {
-      await api('PATCH', `/api/admin/users/${a.id}`, { name: name.trim(), username: u });
+      await api('PATCH', `/api/admin/users/${a.id}`, { name: name.trim(), username: u, email: mail.trim() });
+      if (emp.trim() !== (a.employeeId ?? '')) await api('PUT', `/api/admin/users/${a.id}/employee-id`, { employeeId: emp.trim() });
       onDone(tc('urEdited', { u }));
     } catch (x) {
       setErr(errText(x));
@@ -168,6 +171,8 @@ function EditAccount({ a, taken, onDone }: { a: AccountDto; taken: Set<string>; 
     <form class="toolbar" onSubmit={save} data-testid="edit-account">
       <label>{tc('ppName')} <input value={name} onInput={(e) => setName(e.currentTarget.value)} /></label>
       <label>{t('username')} <input value={username} autocapitalize="none" spellcheck={false} onInput={(e) => setUsername(e.currentTarget.value)} /></label>
+      <label>{tc('urEmpId')} <input value={emp} data-testid="edit-emp" onInput={(e) => setEmp(e.currentTarget.value)} /></label>
+      <label>{tc('urEmail')} <input type="email" value={mail} data-testid="edit-email" onInput={(e) => setMail(e.currentTarget.value)} /></label>
       <button type="submit" class="btn primary">{tc('save')}</button>
       <button type="button" class="btn" onClick={() => onDone('')}>{tc('cancel')}</button>
       {err && <div class="alert" role="alert">{err}</div>}
@@ -223,7 +228,7 @@ export function Users() {
   const accounts = res.data?.accounts ?? [];
   const shown = useMemo(() => {
     const f = q.trim().toLowerCase();
-    return accounts.filter((a) => !f || [a.name, a.username, ...a.roles.map(roleText)].join(' ').toLowerCase().includes(f));
+    return accounts.filter((a) => !f || [a.employeeId ?? '', a.name, a.username, a.email ?? '', ...a.roles.map(roleText)].join(' ').toLowerCase().includes(f));
   }, [accounts, q, lang]);
   const count = (s: AccountDto['status']) => accounts.filter((a) => a.status === s).length;
 
@@ -270,8 +275,23 @@ export function Users() {
 
   function downloadLogins() {
     const rows = accounts.filter((a) => a.status !== 'disabled' && a.roles.length)
-      .map((a) => [a.name, a.username, a.firstPw ?? tc('urChangedByUser'), a.roles.map(roleText).join('; '), statusText(a.status)]);
-    void writeXlsx('user_logins.xlsx', [tc('ppName'), t('username'), tc('urFirstPw'), tc('urRoles'), tc('status')], rows);
+      .map((a) => [a.employeeId ?? '', a.name, a.username, a.firstPw ?? tc('urChangedByUser'), a.email ?? '', a.roles.map(roleText).join('; '), statusText(a.status)]);
+    void writeXlsx('user_logins.xlsx', [tc('urEmpId'), tc('ppName'), t('username'), tc('urFirstPw'), tc('urEmail'), tc('urRoles'), tc('status')], rows);
+  }
+
+  /** IDs from a sales file (HOD / Manager / Supervisor / KAM / KAE ID columns), matched to the accounts by name. */
+  async function readIds(file: File | undefined) {
+    if (!file) return;
+    await act(async () => {
+      const { readSheets } = await import('../../excel');
+      const { parsePeopleIds } = await import('../../cycle/parsers');
+      const people: { name: string; id: string }[] = [];
+      const kae: string[] = [];
+      for (const sh of await readSheets(file)) { const r = parsePeopleIds(sh.data); people.push(...r.people); kae.push(...r.kae); }
+      if (!people.length && !kae.length) throw new Error(tc('urIdsNone'));
+      const r = await api<{ matched: number; notFound: string[] }>('POST', '/api/admin/employee-ids', { people, kae });
+      return tc('urIdsDone', { n: r.matched }) + (r.notFound.length ? ` ${tc('urIdsNotFound', { list: r.notFound.slice(0, 15).join(', ') })}` : '');
+    });
   }
 
   return (
@@ -304,13 +324,14 @@ export function Users() {
             <input type="search" aria-label={t('adUserSearch')} placeholder={tc('urSearch')} value={q} onInput={(e) => setQ(e.currentTarget.value)} style={{ flex: 1, maxWidth: '380px' }} />
             <span class="spacer" />
             <button type="button" class="btn" onClick={() => setAdding(!adding)}>{tc('urAddTitle')}</button>
+            <label class="btn" title={tc('urIdsHelp')}>{tc('urIdsRead')}<input type="file" accept=".xlsx,.xlsm" hidden data-testid="read-ids" onChange={(e) => { void readIds(e.currentTarget.files?.[0]); e.currentTarget.value = ''; }} /></label>
             <button type="button" class="btn" data-testid="dl-logins" onClick={downloadLogins}>{tc('urDownload')}</button>
           </div>
           {adding && <AddAccount taken={new Set(accounts.map((a) => a.username))} positions={posList} onPositions={setPositions} onDone={(m) => { setAdding(false); setFlash({ ok: true, text: m }); res.reload(); }} />}
           <div class="tablewrap" style={{ maxHeight: '620px' }}>
             <table class="ad-table">
               <thead><tr>
-                <th>{tc('ppName')}</th><th>{t('username')}</th><th>{tc('urRoles')}</th><th>{tc('status')}</th>
+                <th>{tc('urEmpId')}</th><th>{tc('ppName')}</th><th>{t('username')}</th><th>{tc('urEmail')}</th><th>{tc('urRoles')}</th><th>{tc('status')}</th>
                 <th>{tc('urFirstPw')}</th><th>{tc('urLastLogin')}</th><th />
               </tr></thead>
               <tbody>
@@ -319,8 +340,10 @@ export function Users() {
                   return (
                     <>
                       <tr key={a.id} data-testid="user-row">
+                        <td data-testid="emp-id">{a.employeeId ? <code>{a.employeeId}</code> : <span class="muted">—</span>}</td>
                         <td><b>{a.name}</b></td>
                         <td><code>{a.username}</code></td>
+                        <td class="small">{a.email ?? <span class="muted">—</span>}</td>
                         <td>{a.roles.length ? a.roles.map((r, i) => <span key={i} class={`status ${r.kind === 'admin' ? 'ok' : 'muted'}`} style={{ margin: '1px' }}>{roleText(r)}</span>) : a.position ? null : '—'}
                           {a.position && <span class="status muted" style={{ margin: '1px' }}>{a.position}</span>}</td>
                         <td><span class={`status ${STATUS[a.status][1]}`} data-testid="user-status">{statusText(a.status)}</span></td>
@@ -340,10 +363,10 @@ export function Users() {
                         </td>
                       </tr>
                       {editing === a.id && (
-                        <tr key={`e${a.id}`}><td colSpan={7}><EditAccount a={a} taken={new Set(accounts.map((x) => x.username))} onDone={(m) => { setEditing(null); if (m) setFlash({ ok: true, text: m }); res.reload(); }} /></td></tr>
+                        <tr key={`e${a.id}`}><td colSpan={9}><EditAccount a={a} taken={new Set(accounts.map((x) => x.username))} onDone={(m) => { setEditing(null); if (m) setFlash({ ok: true, text: m }); res.reload(); }} /></td></tr>
                       )}
                       {setting === a.id && (
-                        <tr key={`p${a.id}`}><td colSpan={7}><SetPassword a={a} onDone={(m) => { setSetting(null); if (m) setFlash({ ok: true, text: m }); res.reload(); }} /></td></tr>
+                        <tr key={`p${a.id}`}><td colSpan={9}><SetPassword a={a} onDone={(m) => { setSetting(null); if (m) setFlash({ ok: true, text: m }); res.reload(); }} /></td></tr>
                       )}
                     </>
                   );

@@ -18,14 +18,17 @@ export type AccountDto = {
   lastLogin: string | null;
   /** A position the admin gave the account (Other user, or a position they added). */
   position: string | null;
+  /** The employee ID (from the sales file's HOD / Manager / Supervisor / KAM / KAE ID columns). */
+  employeeId: string | null;
+  email: string | null;
 };
 
-type Row = { id: number; username: string; name: string; role: Role; active: number; must_change_pw: number; first_pw: string | null; last_login: string | null; position: string | null };
+type Row = { id: number; username: string; name: string; role: Role; active: number; must_change_pw: number; first_pw: string | null; last_login: string | null; position: string | null; employee_id: string | null; email: string | null };
 
 export async function listAccounts(db: D1Database): Promise<{ accounts: AccountDto[]; missing: number }> {
   const since = new Date(Date.now() - LOGIN_WINDOW_MS).toISOString();
   const [users, people, fails, wsRows] = await Promise.all([
-    all<Row>(db, `SELECT id, username, name, role, active, must_change_pw, first_pw, last_login, position FROM users WHERE deleted_at IS NULL ORDER BY name COLLATE NOCASE`),
+    all<Row>(db, `SELECT id, username, name, role, active, must_change_pw, first_pw, last_login, position, employee_id, email FROM users WHERE deleted_at IS NULL ORDER BY name COLLATE NOCASE`),
     listPeople(db),
     all<{ username: string; n: number }>(db, `SELECT username, COUNT(*) AS n FROM login_failures WHERE at > ? GROUP BY username`, since),
     all<{ code: string; workspace: 'ops' | 'ka' }>(db, `SELECT code, workspace FROM departments`),
@@ -46,7 +49,7 @@ export async function listAccounts(db: D1Database): Promise<{ accounts: AccountD
       : (failed.get(u.username) ?? 0) >= LOGIN_MAX_FAILURES ? 'locked'
       : r.length === 0 && !u.position ? 'norole'
       : u.must_change_pw === 1 ? 'pending' : 'active';
-    return { id: u.id, username: u.username, name: u.name, role: u.role, active: u.active === 1, roles: r, status, firstPw: u.must_change_pw === 1 ? u.first_pw : null, lastLogin: u.last_login, position: u.position };
+    return { id: u.id, username: u.username, name: u.name, role: u.role, active: u.active === 1, roles: r, status, firstPw: u.must_change_pw === 1 ? u.first_pw : null, lastLogin: u.last_login, position: u.position, employeeId: u.employee_id, email: u.email };
   });
   // The top of a Key Account department (MDM) has no account of its own: it is the Operation Head of Department.
   const isKaHead = (p: { position: string; dept: string | null }) => p.position === 'head' && !!p.dept && wsOf.get(p.dept) === 'ka';
@@ -221,4 +224,57 @@ export async function setKaLink(db: D1Database, actorId: number, kaDeptId: numbe
     auditStatement(db, actorId, 'dept.ka_link', {}, { kaDeptId, opsDeptId, headUserId: head }),
   ]);
   return { kaDeptId, opsDeptId };
+}
+
+/**
+ * Employee IDs from the sales file: each person's name with their ID (HOD,
+ * Manager, Supervisor, KAM), matched to accounts by name; and Key Account
+ * routes (KAE IDs), given to the KAE who manages that route's node.
+ */
+export async function setEmployeeIds(db: D1Database, actorId: number, body: Obj): Promise<{ matched: number; notFound: string[] }> {
+  const people = Array.isArray(body.people) ? body.people : [];
+  const kae = Array.isArray(body.kae) ? body.kae : [];
+  if (people.length > 5000 || kae.length > 5000) throw bad('at most 5000 names');
+  const byName = new Map<string, string>();
+  for (const p of people) {
+    const o = p as { name?: unknown; id?: unknown };
+    if (typeof o.name !== 'string' || typeof o.id !== 'string') continue;
+    const name = o.name.trim().toLowerCase().replace(/\s+/g, ' ');
+    const id = o.id.trim();
+    if (name && id && id.length <= 40) byName.set(name, id);
+  }
+  const users = await all<{ id: number; name: string; employee_id: string | null }>(db, `SELECT id, name, employee_id FROM users WHERE deleted_at IS NULL`);
+  const set = new Map<number, string>();
+  const seen = new Set<string>();
+  for (const u of users) {
+    const k = u.name.trim().toLowerCase().replace(/\s+/g, ' ');
+    const id = byName.get(k);
+    if (id) { set.set(u.id, id); seen.add(k); }
+  }
+  // KAE IDs: the account managing the Key Account node the route is under.
+  const routes = kae.filter((x): x is string => typeof x === 'string' && !!x.trim() && x.length <= 40).map((x) => x.trim());
+  if (routes.length) {
+    const rows = await all<{ route_code: string; u: number | null }>(db,
+      `SELECT l.route_code, n.manager_user_id AS u FROM leaves l JOIN nodes n ON n.id = l.node_id JOIN departments d ON d.id = l.dept_id
+       WHERE d.workspace = 'ka' AND l.route_code IN (SELECT value FROM json_each(?))`, JSON.stringify(routes));
+    for (const r of rows) if (r.u !== null && !set.has(r.u)) set.set(r.u, r.route_code);
+  }
+  const stmts = [...set.entries()].map(([id, emp]) => db.prepare(`UPDATE users SET employee_id = ? WHERE id = ?`).bind(emp, id));
+  stmts.push(auditStatement(db, actorId, 'users.employee_ids', {}, { matched: set.size }));
+  await batch(db, stmts);
+  return { matched: set.size, notFound: [...byName.keys()].filter((k) => !seen.has(k)).slice(0, 50) };
+}
+
+/** The admin types a person's employee ID (empty clears it). */
+export async function setEmployeeId(db: D1Database, actorId: number, id: number, body: Obj): Promise<{ employeeId: string | null }> {
+  const v = body.employeeId;
+  if (v !== null && v !== undefined && (typeof v !== 'string' || v.trim().length > 40)) throw bad('the ID must be a text of at most 40 characters');
+  const emp = typeof v === 'string' && v.trim() ? v.trim() : null;
+  const u = await one<{ id: number }>(db, `SELECT id FROM users WHERE id = ? AND deleted_at IS NULL`, id);
+  if (!u) throw notFound();
+  await batch(db, [
+    db.prepare(`UPDATE users SET employee_id = ? WHERE id = ?`).bind(emp, id),
+    auditStatement(db, actorId, 'user.employee_id', {}, { id, employeeId: emp }),
+  ]);
+  return { employeeId: emp };
 }

@@ -306,6 +306,68 @@ function BrandForm() {
   );
 }
 
+type MailDto = { on: boolean; configured: boolean; appUrl: boolean; withEmail: number; accounts: number };
+
+/** Target emails: on/off, whether the mail service is set up, and each person's email from an Excel file. */
+function MailForm() {
+  useLang();
+  const res = useResource<MailDto>('/api/admin/mail');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  async function toggle(on: boolean) {
+    setBusy(true); setErr(null); setMsg(null);
+    try { await api('PUT', '/api/admin/mail', { on }); res.reload(); setMsg(tc('saved')); } catch (x) { setErr(errText(x)); } finally { setBusy(false); }
+  }
+  async function readEmails(file: File | undefined) {
+    if (!file) return;
+    setBusy(true); setErr(null); setMsg(null);
+    try {
+      const { readSheets } = await import('../../excel');
+      const { findHeader, cellText } = await import('../../cycle/parsers');
+      const rows: { id?: string; name?: string; email: string }[] = [];
+      for (const sh of await readSheets(file)) {
+        const h = findHeader(sh.data, { email: ['Email', 'E-mail', 'Email Address', 'Mail'], id: ['Employee ID', 'ID', 'Emp ID', 'Staff ID'], name: ['Name', 'Employee Name', 'Full Name'] }, ['email']);
+        if (!h || (h.col.id === undefined && h.col.name === undefined)) continue;
+        for (const r of sh.data.slice(h.row + 1)) {
+          if (!Array.isArray(r)) continue;
+          const email = cellText(r[h.col.email!]);
+          const idv = h.col.id === undefined ? '' : (typeof r[h.col.id] === 'number' ? String(r[h.col.id]) : cellText(r[h.col.id]));
+          const name = h.col.name === undefined ? '' : cellText(r[h.col.name]);
+          if (email) rows.push({ ...(idv ? { id: idv } : {}), ...(name ? { name } : {}), email });
+        }
+      }
+      if (!rows.length) throw new Error(tc('mailNoCols'));
+      const r = await api<{ matched: number; notFound: string[]; invalid: string[] }>('POST', '/api/admin/user-emails', { rows });
+      setMsg(tc('mailLoaded', { n: r.matched }) + (r.notFound.length ? ` ${tc('urIdsNotFound', { list: r.notFound.slice(0, 15).join(', ') })}` : '') + (r.invalid.length ? ` ${tc('mailInvalid', { list: r.invalid.slice(0, 10).join(', ') })}` : ''));
+      res.reload();
+    } catch (x) {
+      setErr(errText(x));
+    } finally {
+      setBusy(false);
+    }
+  }
+  const m = res.data;
+  return (
+    <Section title={tc('mailTitle')}>
+      <p class="muted small">{tc('mailHelp')}</p>
+      {m && (
+        <div data-testid="mail-form">
+          <label><input type="checkbox" data-testid="mail-on" checked={m.on} disabled={busy} onChange={(e) => void toggle(e.currentTarget.checked)} /> <b>{tc('mailOn')}</b></label>
+          <ul class="small">
+            <li>{m.configured ? tc('mailReady') : <span class="bad">{tc('mailNotReady')}</span>}</li>
+            {!m.appUrl && <li class="bad">{tc('mailNoUrl')}</li>}
+            <li data-testid="mail-count">{tc('mailCount', { n: m.withEmail, of: m.accounts })}</li>
+          </ul>
+          <label class="btn">{tc('mailRead')}<input type="file" accept=".xlsx,.xlsm" hidden data-testid="mail-file" onChange={(e) => { void readEmails(e.currentTarget.files?.[0]); e.currentTarget.value = ''; }} /></label>
+          <span class="muted small"> {tc('mailReadHelp')}</span>
+        </div>
+      )}
+      <Saver busy={busy} err={err ?? res.error} msg={msg} />
+    </Section>
+  );
+}
+
 export function CycleSetup() {
   useLang();
   return (
@@ -314,6 +376,7 @@ export function CycleSetup() {
       <RulesForm />
       <DeptSetup />
       <CdRoles />
+      <MailForm />
       <BrandForm />
     </section>
   );

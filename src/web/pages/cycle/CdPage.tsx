@@ -39,6 +39,8 @@ type Bench = {
   available: Set<string>;
   /** Pack order and Total rows of the uploaded file (master pack codes): the New Target by department, else the AOP by pack and department. */
   layout: FileRow[];
+  /** Pack -> the Total it shows under when the file does not list it (Admin › Packs). */
+  under: Record<string, string>;
 };
 
 type Loaded = { cycle: CycleDto; org: OrgDto; bench: Bench };
@@ -61,12 +63,13 @@ async function loadAll(ws: Workspace, period: string): Promise<Loaded> {
   const pm = pagoOf(period);
   const ym = yagoOf(period);
   const months = [...new Set([...pickableMonths(period), pm, ym])].filter((m) => available.has(m));
-  const [sales, dc, aop, nt, aopDept] = await Promise.all([
+  const [sales, dc, aop, nt, aopDept, place] = await Promise.all([
     loadRouteData(ws, 'sales', months),
     loadMonthData<Record<string, Grid>>(ws, 'dept_channel'),
     loadMonthData<Record<string, { cases: number; nr: number | null }>>(ws, 'aop'),
     loadMonthData<{ mode: 'pack' | 'dept' | 'leaf'; byPack: Grid; byChannel?: Record<string, Grid>; layout?: FileRow[] }>(ws, 'new_target'),
     loadMonthData<{ layout?: FileRow[] }>(ws, 'aop_dept').catch(() => ({} as Record<string, { layout?: FileRow[] }>)),
+    api<{ place: Record<string, string> }>('GET', `/api/data/${ws}/pack-place`).catch(() => ({ place: {} })),
   ]);
   const aopNow = Object.fromEntries(Object.entries(aop[period] ?? {}).map(([p, v]) => [p, v.cases]));
   const upload = nt[period] ?? null;
@@ -82,7 +85,7 @@ async function loadAll(ws: Workspace, period: string): Promise<Loaded> {
       sales: sales.data, deptChannel: dc, upload,
       yagoSales: companyMonth(sales.data, ym), pagoSales: companyMonth(sales.data, pm), aopNow,
       uploaded: upload ? Object.fromEntries(Object.entries(upload.byPack).map(([p, n]) => [p, Math.round(n)])) : { ...(cycle.cd?.nt ?? {}) },
-      available, layout,
+      available, layout, under: place.place,
     },
   };
 }
@@ -91,9 +94,9 @@ async function loadAll(ws: Workspace, period: string): Promise<Loaded> {
  * Table rows in the order of the uploaded file (its packs and Total rows); packs
  * missing from the file go before their category's Total. Without a file: by category.
  */
-function fileOrderRows(layout: FileRow[], packs: string[], cats: Map<string, Category>): { rows: CdRow[]; file: boolean } {
+function fileOrderRows(layout: FileRow[], packs: string[], cats: Map<string, Category>, under: Record<string, string> = {}): { rows: CdRow[]; file: boolean } {
   if (!layout.length) return { rows: cdRows(packs, cats), file: false };
-  const lines = approvalLines(layout, packs, (p) => cats.get(p) ?? 'LRB-Others');
+  const lines = approvalLines(layout, packs, (p) => cats.get(p) ?? 'LRB-Others', under);
   const has = new Set(packs);
   const rows = lines.flatMap((x): CdRow[] => (x.pack
     ? (has.has(x.pack) ? [{ kind: 'pack', pack: x.pack }] : [])
@@ -213,7 +216,7 @@ function GmTab({ work, edit, l, setWork, onApproved }: { work: CdWork; edit: boo
   const cats = catMap(l.org);
   const { bench } = l;
   const packs = Object.keys(work.nt);
-  const { rows, file } = fileOrderRows(bench.layout, packs, cats);
+  const { rows, file } = fileOrderRows(bench.layout, packs, cats, bench.under);
   const sum = (g: Grid, list: string[]) => list.reduce((s, p) => s + (g[p] ?? 0), 0);
   const editable = edit && !work.ntOk;
   // The CAP % is not applied to the Commercial Director.
@@ -336,7 +339,7 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
   const hasSplit = Object.keys(work.dm).length > 0;
   // The file's order, Total rows and colours (the New Target or the AOP by pack and department file).
   const layout = bench.layout;
-  const baseRows = fileOrderRows(layout, packs, cats).rows;
+  const baseRows = fileOrderRows(layout, packs, cats, bench.under).rows;
   const rows = baseRows.filter((r) => !hideZero || r.kind === 'sub' || (work.nt[r.pack] ?? 0) !== 0);
   const subOf = subMap(org.packs);
   const avgOf = (h: { id: string; chans: string[] }, p: string, ms: string[]) => (ms.length ? ms.reduce((s, m) => s + h.chans.reduce((t, c) => t + (byChan[m]?.[`${h.id}\u0000${c}`]?.[p] ?? 0), 0), 0) / ms.length : 0);
@@ -549,7 +552,7 @@ export async function downloadApprovalOf(work: CdWork, l: Loaded): Promise<void>
   } : null;
   await downloadApproval({
     brand: { company: b?.company ?? '', logo },
-    period: cycle.period, layout, catOf: (p) => cats.get(p) ?? 'LRB-Others',
+    period: cycle.period, layout, under: bench.under, catOf: (p) => cats.get(p) ?? 'LRB-Others',
     target: final.nt, yago: bench.yagoSales, pago: bench.pagoSales, plan: bench.aopNow,
     heads: orderedDeptCols(org.depts, NO_CHANNEL).map((d) => ({
       // "Total TT", "Total MT": the Head's code, as in the template.

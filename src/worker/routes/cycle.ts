@@ -18,6 +18,8 @@ import { forbidden, parseId } from '../services/masters';
 import { listNotifications, markRead } from '../services/notify';
 import { getRules, setRules } from '../services/rulesSettings';
 import { getBrand, setBrand } from '../services/brand';
+import { getPackPlace, setPackPlace } from '../services/packPlace';
+import { mailStatus, setMailOn, setUserEmails } from '../services/mailSettings';
 
 const cycle = new Hono<AppEnv>();
 
@@ -38,6 +40,10 @@ function adminOrCd(c: Ctx): void {
 
 cycle.get('/api/admin/rules', h(async (c, db) => c.json(await getRules(db))));
 cycle.put('/api/admin/rules', h(async (c, db, me, body) => c.json(await setRules(db, me, await body()))));
+cycle.get('/api/admin/mail', h(async (c, db) => c.json(await mailStatus(db, c.env))));
+cycle.put('/api/admin/mail', h(async (c, db, me, body) => c.json(await setMailOn(db, me, await body()))));
+cycle.post('/api/admin/user-emails', h(async (c, db, me, body) => c.json(await setUserEmails(db, me, await body()))));
+cycle.put('/api/admin/pack-place', h(async (c, db, me, body) => c.json(await setPackPlace(db, me, await body()))));
 cycle.put('/api/admin/approval-brand', h(async (c, db, me, body) => c.json(await setBrand(db, me, await body()))));
 
 cycle.put('/api/admin/departments/:id/workspace', h(async (c, db, me, body) => {
@@ -99,6 +105,7 @@ cycle.get('/api/data/:ws/status', h(async (c, db) => { adminOrCd(c); return c.js
 cycle.get('/api/data/:ws/routes', h(async (c, db) => { adminOrCd(c); return raw(c, await readRouteRows(db, ws(c), c.req.query('kind'), c.req.query('month'))); }));
 cycle.get('/api/data/:ws/months', h(async (c, db) => { adminOrCd(c); return raw(c, await readMonthData(db, ws(c), c.req.query('kind'))); }));
 cycle.get('/api/data/:ws/org', h(async (c, db) => { adminOrCd(c); return c.json(await readOrg(db, ws(c))); }));
+cycle.get('/api/data/:ws/pack-place', h(async (c, db) => { adminOrCd(c); return c.json({ place: await getPackPlace(db) }); }));
 cycle.get('/api/data/:ws/approval-brand', h(async (c, db) => { adminOrCd(c); return c.json(await getBrand(db)); }));
 cycle.get('/api/data/packs-sub', h(async (c, db) => c.json(await packSubs(db))));
 cycle.get('/api/data/:ws/sales-months', h(async (c, db) => c.json({ months: await salesMonths(db, ws(c)) })));
