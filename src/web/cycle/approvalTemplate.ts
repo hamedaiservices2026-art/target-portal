@@ -11,8 +11,14 @@ import type { Grid } from './compute';
 export type TemplateInput = {
   period: string;
   target: Grid; yago: Grid; pago: Grid; plan: Grid;
-  /** Channel column label -> target by pack (the "By Manager" sheet). */
-  channels: { label: string; g: Grid }[];
+  /**
+   * Channel column label -> target by pack (the "By Manager" sheet). `alias`:
+   * other names of the channel (its Head's name and code, for the Mix sheet);
+   * `sales`: the channel's sales by month and pack (YAGO sheet, Mix sheet).
+   */
+  channels: { label: string; g: Grid; alias?: string[]; sales?: Record<string, Grid> }[];
+  /** Category of a pack code (CSD, Water, LRB-Others): the Mix sheet is CSD. */
+  catOf?: (code: string) => string;
   /** A row's pack name -> pack code (null: not a pack of the master). */
   codeOf: (name: string) => string | null;
 };
@@ -23,6 +29,10 @@ export type TemplateResult = {
   missing: string[];
   /** Rows of the template whose name is not a known pack (their numbers are cleared). */
   unknown: string[];
+  /** Department rows of the Mix sheet that match no channel (their numbers are cleared). */
+  unmatched: string[];
+  /** The template is a macro-enabled workbook (.xlsm). */
+  macro: boolean;
 };
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -126,6 +136,70 @@ function header(s: Sheet, shared: string[]): { at: number; pack: string; cols: M
   return null;
 }
 
+
+
+/** A cell reference outside function names (LOG10 is not a cell). */
+const REF_RE = /(?<![A-Za-z0-9_.])(\$?)([A-Z]{1,3})(\$?)(\d+)(?![\d(A-Za-z_])/g;
+
+/**
+ * Shared formulas written out in full on each cell, so a cell can be changed
+ * or copied without breaking the cells that share its formula.
+ */
+function unshare(s: Sheet) {
+  const masters = new Map<string, { f: string; col: number; row: number }>();
+  for (const row of s.rows) for (const c of row.cells) {
+    const m = /<f\b([^>]*)>([\s\S]*?)<\/f>/.exec(c.inner ?? '');
+    if (m && /\bt="shared"/.test(m[1]!) && m[2]) masters.set(/\bsi="(\d+)"/.exec(m[1]!)?.[1] ?? '', { f: unesc(m[2]), col: colIndex(c.col), row: c.row });
+  }
+  const colName = (i: number) => { let n = i + 1; let out = ''; while (n > 0) { const r = (n - 1) % 26; out = String.fromCharCode(65 + r) + out; n = Math.floor((n - 1) / 26); } return out; };
+  for (const row of s.rows) for (const c of row.cells) {
+    const m = /<f\b([^>]*?)(?:\/>|>([\s\S]*?)<\/f>)/.exec(c.inner ?? '');
+    if (!m || !/\bt="shared"/.test(m[1]!)) continue;
+    const ms = masters.get(/\bsi="(\d+)"/.exec(m[1]!)?.[1] ?? '');
+    if (!ms) continue;
+    const dr = c.row - ms.row;
+    const dc = colIndex(c.col) - ms.col;
+    const f = ms.f.replace(REF_RE, (_x, d1: string, col: string, d2: string, r: string) =>
+      `${d1}${d1 ? col : colName(colIndex(col) + dc)}${d2}${d2 ? r : Number(r) + dr}`);
+    c.inner = c.inner!.replace(m[0], `<f>${esc(f)}</f>`);
+  }
+}
+
+/** Whether a cell holds a formula. */
+const hasFormula = (c: Cell | undefined) => !!c?.inner && /<f[\s>/]/.test(c.inner);
+const formulaOf = (c: Cell | undefined) => (c?.inner ? unesc(/<f[^>]*>([\s\S]*?)<\/f>/.exec(c.inner)?.[1] ?? '') : '');
+const isEmpty = (c: Cell | undefined) => !c || !c.inner || (!/<v>/.test(c.inner) && !hasFormula(c) && !/<is>/.test(c.inner));
+
+/** Sets a cell to a formula (no saved result), keeping its style; adds the cell when the row has none. */
+function setFormula(row: Sheet['rows'][number], col: string, f: string) {
+  let c = row.cells.find((x) => x.col === col);
+  if (!c) {
+    c = { col, row: row.r, attrs: ` r="${col}${row.r}"`, inner: null };
+    const at = row.cells.findIndex((x) => colIndex(x.col) > colIndex(col));
+    if (at < 0) row.cells.push(c); else row.cells.splice(at, 0, c);
+  }
+  c.attrs = c.attrs.replace(/\s+t="[^"]*"/, '');
+  c.inner = `<f>${esc(f)}</f>`;
+}
+
+/**
+ * A formula of one sheet rewritten for another sheet of the same layout:
+ * each reference goes to the row with the same name and the column with the
+ * same header (the cell's own column follows the cell). Null when a reference
+ * has no match, refers to another sheet, or there is no reference at all.
+ */
+function translate(f: string, rowTo: (r: number) => number | null, colTo: (c: string) => string | null): string | null {
+  if (/!/.test(f) || !/[A-Z]{1,3}\$?\d/.test(f)) return null;
+  let ok = true;
+  const out = f.replace(REF_RE, (_m, d1: string, c: string, d2: string, r: string) => {
+    const nc = colTo(c);
+    const nr = rowTo(Number(r));
+    if (!nc || nr === null) { ok = false; return _m; }
+    return `${d1}${nc}${d2}${nr}`;
+  });
+  return ok ? out : null;
+}
+
 const isTotal = (name: string) => /^(total|grand total|sub ?total)\b/i.test(name.trim());
 
 function readShared(xml: string | undefined): string[] {
@@ -163,7 +237,7 @@ export function fillApprovalTemplate(file: Uint8Array, inp: TemplateInput): Temp
     const m = /^(.*?)(\d+)((?:\s*[/+]\s*\d+)+)$/.exec(name.trim());
     if (!m) return [];
     const list = [m[2]!, ...m[3]!.split(/[/+]/).map((x) => x.trim()).filter(Boolean)].map((n) => inp.codeOf(`${m[1]}${n}`));
-    return list.every(Boolean) ? (list as string[]) : [];
+    return list.every(Boolean) ? [...new Set(list as string[])] : [];
   };
   const sumOf = (g: Grid, codes: string[]) => (codes.some((c) => g[c] !== undefined) ? Math.round(codes.reduce((t, c) => t + (g[c] ?? 0), 0) * 100) / 100 : null);
 
@@ -171,10 +245,12 @@ export function fillApprovalTemplate(file: Uint8Array, inp: TemplateInput): Temp
   const s1x = text(first.path);
   if (s1x) {
     const s = parseSheet(s1x);
+    unshare(s);
     const h = header(s, shared);
     if (h) {
       const col = (names: string[]) => names.map((n) => h.cols.get(n)).find(Boolean) ?? null;
-      const cols: [string | null, Grid][] = [[col(['target', 'new target']), inp.target], [col(['yago']), inp.yago], [col(['pago']), inp.pago], [col(['plan', 'aop']), inp.plan]];
+      const cols: [string | null, Grid][] = [[col(['target', 'new target']), inp.target], [col(['yago', 'yago sales']), inp.yago],
+        [col(['pago', 'pago sales']), inp.pago], [col(['plan', 'aop', 'aop plan']), inp.plan]];
       for (const row of s.rows.slice(h.at + 1)) {
         const name = cellText(row.cells.find((c) => c.col === h.pack), shared).trim();
         if (!name || isTotal(name)) continue;
@@ -193,6 +269,7 @@ export function fillApprovalTemplate(file: Uint8Array, inp: TemplateInput): Temp
   const s2x = byMgr && byMgr !== first ? text(byMgr.path) : undefined;
   if (byMgr && s2x) {
     const s = parseSheet(s2x);
+    unshare(s);
     const h = header(s, shared);
     if (h) {
       const chanCol = inp.channels.map((c) => {
@@ -219,8 +296,158 @@ export function fillApprovalTemplate(file: Uint8Array, inp: TemplateInput): Temp
     put(byMgr.path, writeSheet(s));
   }
 
+
+  // ----- YAGO sales by channel (a sheet named "YAGO ...", same layout as By Manager) -----
+  const yagoMonth = `${Number(year) - 1}-${inp.period.slice(5)}`;
+  const yagoSheet = sheets.find((x) => x !== first && x !== byMgr && /yago/i.test(x.name));
+  const ysx = yagoSheet ? text(yagoSheet.path) : undefined;
+  if (yagoSheet && ysx) {
+    const s = parseSheet(ysx);
+    unshare(s);
+    const h = header(s, shared);
+    // Where the totals' formulas come from: By Manager (same columns), else the first sheet's target column.
+    const sources = [byMgr && byMgr !== first ? byMgr : null, first].filter(Boolean).map((x) => {
+      const src = parseSheet(text(x!.path) ?? '');
+      unshare(src);
+      return { sheet: src, h: header(src, shared), isFirst: x === first };
+    }).filter((x) => x.h);
+    if (h) {
+      const nameOfRow = (sh: Sheet, hh: { pack: string }, row: Sheet['rows'][number]) => norm(cellText(row.cells.find((c) => c.col === hh.pack), shared));
+      const myRows = new Map<string, number>();
+      for (const row of s.rows.slice(h.at + 1)) { const n = nameOfRow(s, h, row); if (n && !myRows.has(n)) myRows.set(n, row.r); }
+      const chanCol = new Map<string, { g: Record<string, Grid> | undefined }>();
+      for (const c of inp.channels) {
+        const k = squash(c.label);
+        const hit = [...h.cols.entries()].find(([n]) => squash(n) === k);
+        if (hit) chanCol.set(hit[1], { g: c.sales });
+      }
+      for (const row of s.rows.slice(h.at + 1)) {
+        const name = cellText(row.cells.find((c) => c.col === h.pack), shared).trim();
+        if (!name) continue;
+        const total = isTotal(name);
+        const codes = total ? [] : codesOf(name);
+        for (const [hn, col] of h.cols) {
+          const cell = row.cells.find((c) => c.col === col);
+          const ch = chanCol.get(col);
+          if (ch && !total) { if (!hasFormula(cell)) setNumber(row, col, codes.length ? sumOf(ch.g?.[yagoMonth] ?? {}, codes) ?? 0 : null); continue; }
+          if (!isEmpty(cell)) continue;
+          // A total row or a total column: the formula of the same cell of By Manager (or of the first sheet).
+          for (const src of sources) {
+            const sh = src.h!;
+            const srow = src.sheet.rows.slice(sh.at + 1).find((r) => nameOfRow(src.sheet, sh, r) === norm(name));
+            if (!srow) continue;
+            const scol = src.isFirst ? (sh.cols.get('new target') ?? sh.cols.get('target')) : sh.cols.get(hn);
+            if (!scol) continue;
+            const f = formulaOf(srow.cells.find((c) => c.col === scol));
+            if (!f) continue;
+            const rowTo = (r: number) => {
+              const sr = src.sheet.rows.find((x) => x.r === r);
+              const n = sr ? nameOfRow(src.sheet, sh, sr) : '';
+              return n ? myRows.get(n) ?? null : null;
+            };
+            const colTo = (c: string) => {
+              if (c === scol) return col;
+              if (src.isFirst) return null;
+              const hname = [...sh.cols.entries()].find(([, v]) => v === c)?.[0];
+              return hname ? h.cols.get(hname) ?? null : null;
+            };
+            const t = translate(f, rowTo, colTo);
+            if (t) { setFormula(row, col, t); break; }
+          }
+        }
+      }
+    }
+    dropResults(s);
+    put(yagoSheet.path, writeSheet(s));
+  }
+
+  // ----- Mix: CSD share of market (SOM %), PAGO, YAGO and target by department -----
+  const unmatched: string[] = [];
+  const mixSheet = sheets.find((x) => x !== first && /\bmix\b/i.test(x.name));
+  const msx = mixSheet ? text(mixSheet.path) : undefined;
+  if (mixSheet && msx && inp.catOf) {
+    const catOf = inp.catOf;
+    const s = parseSheet(msx);
+    unshare(s);
+    const mo = Number(inp.period.slice(5));
+    const y = Number(year);
+    const ym = (yy: number, m: number) => `${yy}-${String(m).padStart(2, '0')}`;
+    const range = (yy: number, from: number, to: number) => Array.from({ length: Math.max(0, to - from + 1) }, (_, i) => ym(yy, from + i));
+    const back = (k: number) => { const d = new Date(Date.UTC(y, mo - 1 - k, 1)); return ym(d.getUTCFullYear(), d.getUTCMonth() + 1); };
+    const pagoM = back(1);
+    const months = {
+      fy: range(y - 1, 1, 12),
+      ytd: mo > 1 ? range(y, 1, mo - 1) : [],
+      ytdLy: mo > 1 ? range(y - 1, 1, mo - 1) : [],
+      m3: [back(3), back(2), back(1)],
+    };
+    const csdOf = (g: Grid | undefined) => Object.entries(g ?? {}).reduce((t, [p, n]) => t + (catOf(p) === 'CSD' ? n : 0), 0);
+    const salesOf = (c: (typeof inp.channels)[number], ms: string[]) => ms.reduce((t, m) => t + csdOf(c.sales?.[m]), 0);
+    const all = (ms: string[]) => inp.channels.reduce((t, c) => t + salesOf(c, ms), 0);
+    const share = (v: number, tot: number) => (tot > 0 ? v / tot : null);
+    const r6 = (v: number | null) => (v === null ? null : Math.round(v * 1e6) / 1e6);
+    const keys = (c: (typeof inp.channels)[number]) => [c.label, ...(c.alias ?? [])].map(squash).filter(Boolean);
+    const match = (name: string) => {
+      const k = squash(name);
+      const k2 = squash(name.split(/\s+-\s+/)[0] ?? '');
+      return inp.channels.find((c) => keys(c).includes(k)) ?? inp.channels.find((c) => keys(c).includes(k2)) ?? null;
+    };
+    // The category totals under "CSD Target", "WATER Target", ... (the cell below).
+    for (let i = 0; i < s.rows.length; i++) {
+      for (const c of s.rows[i]!.cells) {
+        const m = /^(csd|water|lrb-others|lrb others)\s+target$/i.exec(cellText(c, shared).trim());
+        if (!m) continue;
+        const cat = m[1]!.toLowerCase().startsWith('csd') ? 'CSD' : m[1]!.toLowerCase().startsWith('water') ? 'Water' : 'LRB-Others';
+        const below = s.rows.find((r) => r.r === s.rows[i]!.r + 1);
+        const v = Object.entries(inp.target).reduce((t, [p, n]) => t + (catOf(p) === cat ? n : 0), 0);
+        if (below && !hasFormula(below.cells.find((x) => x.col === c.col))) setNumber(below, c.col, Math.round(v));
+      }
+    }
+    // The department table: the header row with "DEPARTMENT", rows down to "Grand Total".
+    const hi = s.rows.findIndex((r) => r.cells.some((c) => norm(cellText(c, shared)) === 'department') && r.cells.length > 2);
+    if (hi >= 0) {
+      const hrow = s.rows[hi]!;
+      const dcol = hrow.cells.find((c) => norm(cellText(c, shared)) === 'department')!.col;
+      const colsBy = hrow.cells.filter((c) => c.col !== dcol).map((c) => ({ col: c.col, name: norm(cellText(c, shared)) }));
+      for (const row of s.rows.slice(hi + 1)) {
+        const name = cellText(row.cells.find((c) => c.col === dcol), shared).trim();
+        if (!name) break;
+        if (/^grand total$/i.test(name)) break;
+        const ch = match(name);
+        const valueCells = colsBy.filter((x) => !hasFormula(row.cells.find((c) => c.col === x.col)));
+        // A total row: its name, or more formulas than numbers.
+        if (isTotal(name) || valueCells.length * 2 < colsBy.length) continue;
+        if (!ch) { unmatched.push(name); for (const x of valueCells) setNumber(row, x.col, null); continue; }
+        for (const x of valueCells) {
+          const n = x.name;
+          let v: number | null | undefined;
+          if (/^fy\s*\d{4}/.test(n)) v = r6(share(salesOf(ch, months.fy), all(months.fy)));
+          else if (/^ytd sales$/.test(n)) v = r6(share(salesOf(ch, months.ytd), all(months.ytd)));
+          else if (/^3\s*months?/.test(n)) v = r6(share(salesOf(ch, months.m3), all(months.m3)));
+          else if (/^pago sales$/.test(n)) v = Math.round(salesOf(ch, [pagoM]) * 100) / 100;
+          else if (/^yago sales$/.test(n)) v = Math.round(salesOf(ch, [yagoMonth]) * 100) / 100;
+          else if (/target$/.test(n)) v = Math.round(csdOf(ch.g));
+          else if (/^ytd.*growth/.test(n)) { const a = salesOf(ch, months.ytd); const b = salesOf(ch, months.ytdLy); v = b > 0 ? r6(a / b - 1) : null; }
+          if (v !== undefined) setNumber(row, x.col, v);
+        }
+      }
+    }
+    dropResults(s);
+    put(mixSheet.path, writeSheet(s));
+  }
+
   // ----- the month: titles (text boxes, shared strings) and the first sheet's name -----
-  const retitle = (s: string) => s.replace(MONTH_RE, (_m, _mo, sp: string, _y, rest: string) => `${month}${sp}${year}${rest}`);
+  const short = (i: number) => MONTHS[(i + 12) % 12]!.slice(0, 3);
+  const mIdx = Number(inp.period.slice(5)) - 1;
+  const caseLike = (like: string, v: string) => (like === like.toUpperCase() ? v.toUpperCase() : v);
+  // Mix headers: "DEC SOM", "DEC Target", "YTD Nov Growth %", "FY 2025 Sales".
+  const MON = '(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)';
+  const reheader = (t: string) => t
+    .replace(new RegExp(`^${MON}(\\s+(?:SOM|Target))$`, 'i'), (_m, mo: string, rest: string) => caseLike(mo, short(mIdx)) + rest)
+    .replace(new RegExp(`^(YTD\\s+)${MON}(\\s+Growth\\s*%)$`, 'i'), (_m, a: string, mo: string, z: string) => a + caseLike(mo, short(mIdx - 1)) + z)
+    .replace(/^(FY\s+)\d{4}(\s+Sales)$/i, (_m, a: string, z: string) => `${a}${Number(year) - 1}${z}`);
+  const retitle = (s: string) => s.replace(MONTH_RE, (_m, _mo, sp: string, _y, rest: string) => `${month}${sp}${year}${rest}`)
+    .replace(/(<t(?:\s[^>]*)?>)([^<]*)(<\/t>)/g, (m, a: string, t: string, z: string) => { const r = reheader(unesc(t)); return r === unesc(t) ? m : a + esc(r) + z; });
   for (const p of Object.keys(zip)) {
     if (/^xl\/drawings\/drawing\d+\.xml$/.test(p) || p === 'xl/sharedStrings.xml') put(p, retitle(text(p)!));
   }
@@ -244,5 +471,6 @@ export function fillApprovalTemplate(file: Uint8Array, inp: TemplateInput): Temp
   }
 
   const missing = Object.keys(inp.target).filter((p) => (inp.target[p] ?? 0) !== 0 && !used.has(p));
-  return { data: zipSync(zip, { level: 6 }), missing, unknown };
+  const macro = /macroEnabled/i.test(text('[Content_Types].xml') ?? '');
+  return { data: zipSync(zip, { level: 6 }), missing, unknown, unmatched, macro };
 }

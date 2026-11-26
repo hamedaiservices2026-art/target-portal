@@ -556,14 +556,24 @@ export async function downloadApprovalOf(work: CdWork, l: Loaded): Promise<strin
   if (tpl?.data) {
     const { fillApprovalTemplate } = await import('../../cycle/approvalTemplate');
     const pidx = packIndex(org.packs.map((p) => p.code));
+    const idx = routeIndex(org);
+    const byChan = groupSales(bench.sales, (rc) => { const i = idx.get(rc); return i ? `${i.deptId}\u0000${i.channel}` : null; });
+    const salesOf = (key: string) => Object.fromEntries(Object.entries(byChan).map(([m, k]) => [m, k[key] ?? {}]));
     const r = fillApprovalTemplate(Uint8Array.from(atob(tpl.data), (ch) => ch.charCodeAt(0)), {
       period: cycle.period, target: final.nt, yago: bench.yagoSales, pago: bench.pagoSales, plan: bench.aopNow,
-      channels: orderedDeptCols(org.depts, NO_CHANNEL).flatMap((d) => d.chans.map((c) => ({
-        label: c === NO_CHANNEL ? org.depts.find((x) => String(x.id) === d.id)?.name ?? c : c, g: final.dm[d.id]?.[c] ?? {},
-      }))),
+      channels: orderedDeptCols(org.depts, NO_CHANNEL).flatMap((d) => {
+        const dept = org.depts.find((x) => String(x.id) === d.id);
+        return d.chans.map((c) => ({
+          label: c === NO_CHANNEL ? dept?.name ?? c : c, g: final.dm[d.id]?.[c] ?? {},
+          // A Head with one channel: the Mix sheet may name the Head instead of the channel.
+          alias: d.chans.length === 1 ? [dept?.name ?? '', dept?.code ?? ''] : [],
+          sales: salesOf(`${d.id}\u0000${c}`),
+        }));
+      }),
+      catOf: (p) => cats.get(p) ?? 'LRB-Others',
       codeOf: (n) => pidx.get(packKey(n)) ?? null,
     });
-    const ext = /\.xlsm$/i.test(tpl.name) ? 'xlsm' : 'xlsx';
+    const ext = r.macro ? 'xlsm' : 'xlsx';
     const blob = new Blob([r.data as Uint8Array<ArrayBuffer>], { type: ext === 'xlsm' ? 'application/vnd.ms-excel.sheet.macroEnabled.12' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -576,6 +586,7 @@ export async function downloadApprovalOf(work: CdWork, l: Loaded): Promise<strin
     const notes = [
       r.missing.length ? tc('tplMissing', { packs: r.missing.join(', ') }) : '',
       r.unknown.length ? tc('tplUnknown', { packs: r.unknown.join(', ') }) : '',
+      r.unmatched.length ? tc('tplUnmatched', { names: r.unmatched.join(', ') }) : '',
     ].filter(Boolean);
     return notes.length ? notes.join(' ') : null;
   }

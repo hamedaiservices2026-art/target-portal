@@ -67,3 +67,70 @@ describe('approval from the admin template', () => {
     expect(strFromU8(z['[Content_Types].xml']!)).not.toContain('calcChain');
   });
 });
+
+describe('approval template v2: YAGO by channel and the Mix sheet', () => {
+  const str = ['Pack', 'New TARGET', 'YAGO Sales', 'PAGO Sales', 'AOP', 'CSD_CANS150', 'Water_500', 'Total CSD', 'TT DMM', 'MT', 'Total', 'DEPARTMENT',
+    'FY 2025 Sales', 'PAGO Sales', 'YAGO Sales', 'DEC Target', 'YTD Nov Growth %', 'TT DMM - Ali', 'Other', 'Grand Total', 'CSD Target', 'DEC SOM'];
+  const s = (i: number) => `t="s"><v>${i}</v>`;
+  const ws = (rows: string) => `<?xml version="1.0"?><worksheet xmlns="x"><sheetData>${rows}</sheetData></worksheet>`;
+  const month = ws(`<row r="1"><c r="B1" ${s(0)}</c><c r="C1" ${s(1)}</c><c r="D1" ${s(2)}</c><c r="E1" ${s(3)}</c><c r="F1" ${s(4)}</c></row>`
+    + `<row r="2"><c r="B2" ${s(5)}</c></row><row r="3"><c r="B3" ${s(6)}</c></row>`
+    + `<row r="4"><c r="B4" ${s(7)}</c><c r="C4"><f>SUM(C2:C2)</f></c></row>`);
+  // By Manager: the total column shares its formula (only the first cell holds the text).
+  const byMgr = ws(`<row r="1"><c r="B1" ${s(0)}</c><c r="C1" ${s(8)}</c><c r="D1" ${s(9)}</c><c r="E1" ${s(10)}</c></row>`
+    + `<row r="2"><c r="B2" ${s(5)}</c><c r="C2"><v>1</v></c><c r="D2"><v>2</v></c><c r="E2"><f t="shared" ref="E2:E3" si="0">SUM(C2:D2)</f><v>3</v></c></row>`
+    + `<row r="3"><c r="B3" ${s(7)}</c><c r="C3"><f>SUM(C2:C2)</f></c><c r="D3"><f>SUM(D2:D2)</f></c><c r="E3"><f t="shared" si="0"/><v>3</v></c></row>`);
+  const yago = ws(`<row r="5"><c r="B5" ${s(0)}</c><c r="C5" ${s(8)}</c><c r="D5" ${s(9)}</c><c r="E5" ${s(10)}</c></row>`
+    + `<row r="6"><c r="B6" ${s(5)}</c><c r="C6" s="1"/><c r="D6" s="1"/><c r="E6" s="1"/></row><row r="7"><c r="B7" ${s(7)}</c><c r="C7" s="2"/></row>`);
+  const mix = ws(`<row r="1"><c r="A1" ${s(20)}</c></row><row r="2"><c r="A2"><v>1</v></c></row>`
+    + `<row r="5"><c r="A5" ${s(11)}</c><c r="B5" ${s(12)}</c><c r="C5" ${s(21)}</c><c r="D5" ${s(13)}</c><c r="E5" ${s(14)}</c><c r="F5" ${s(15)}</c><c r="G5" ${s(16)}</c></row>`
+    + `<row r="6"><c r="A6" ${s(17)}</c><c r="B6"><v>0.5</v></c><c r="C6"><f>F6/F9</f></c><c r="D6"><v>9</v></c><c r="E6"><v>9</v></c><c r="F6"><v>9</v></c><c r="G6"><v>9</v></c></row>`
+    + `<row r="7"><c r="A7" ${s(9)}</c><c r="B7"><v>0.5</v></c><c r="C7"><f>F7/F9</f></c><c r="D7"><v>9</v></c></row>`
+    + `<row r="8"><c r="A8" ${s(18)}</c><c r="B8"><v>0.5</v></c><c r="C8"><f>F8/F9</f></c><c r="D8"><v>9</v></c></row>`
+    + `<row r="9"><c r="A9" ${s(19)}</c><c r="B9"><f>SUM(B6:B8)</f></c></row>`);
+  const files = { month, byMgr, yago, mix };
+  const tpl = zipSync({
+    '[Content_Types].xml': strToU8('<Types/>'),
+    'xl/workbook.xml': strToU8(`<workbook xmlns:r="r"><sheets>${Object.keys(files).map((k, i) => `<sheet name="${['December', 'By Manager', 'YAGO CSD Sales', 'Mix'][i]}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets></workbook>`),
+    'xl/_rels/workbook.xml.rels': strToU8(`<Relationships>${Object.keys(files).map((k, i) => `<Relationship Id="rId${i + 1}" Target="worksheets/${k}.xml"/>`).join('')}</Relationships>`),
+    'xl/sharedStrings.xml': strToU8(`<sst>${str.map((t) => `<si><t>${t}</t></si>`).join('')}</sst>`),
+    ...Object.fromEntries(Object.entries(files).map(([k, v]) => [`xl/worksheets/${k}.xml`, strToU8(v)])),
+  });
+
+  it('fills YAGO / PAGO / AOP, the YAGO sheet by channel with its totals, and the Mix sheet', () => {
+    const codes = new Map([['CSD_CANS150', 'CSD_CANS150'], ['Water_500', 'Water_500']]);
+    const sales = (n: number) => ({ '2026-12': { CSD_CANS150: n }, '2026-11': { CSD_CANS150: 2 * n }, '2026-01': { CSD_CANS150: n }, '2025-01': { CSD_CANS150: n / 2 }, '2025-06': { CSD_CANS150: n } });
+    const r = fillApprovalTemplate(tpl, {
+      period: '2027-12', target: { CSD_CANS150: 100, Water_500: 50 }, yago: { CSD_CANS150: 90 }, pago: { CSD_CANS150: 80 }, plan: { CSD_CANS150: 70 },
+      channels: [{ label: 'TT DMM', g: { CSD_CANS150: 60, Water_500: 50 }, sales: sales(30) }, { label: 'MT', g: { CSD_CANS150: 40 }, sales: sales(10) }],
+      catOf: (p) => (p.startsWith('CSD') ? 'CSD' : 'Water'),
+      codeOf: (n) => codes.get(n) ?? null,
+    });
+    const z = unzipSync(r.data);
+    const sh = (k: string) => strFromU8(z[`xl/worksheets/${k}.xml`]!);
+    expect(sh('month')).toContain('<c r="D2"><v>90</v></c>');
+    expect(sh('month')).toContain('<c r="E2"><v>80</v></c>');
+    expect(sh('month')).toContain('<c r="F2"><v>70</v></c>');
+    // Shared formulas are written out on each cell.
+    expect(sh('byMgr')).toContain('<c r="E3"><f>SUM(C3:D3)</f></c>');
+    // YAGO of the target month a year before (2026-12), per channel; totals from By Manager's formulas.
+    const y = sh('yago');
+    expect(y).toContain('<c r="C6" s="1"><v>30</v></c>');
+    expect(y).toContain('<c r="D6" s="1"><v>10</v></c>');
+    expect(y).toContain('<c r="E6" s="1"><f>SUM(C6:D6)</f></c>');
+    expect(y).toContain('<c r="C7" s="2"><f>SUM(C6:C6)</f></c>');
+    // Mix: CSD only; "TT DMM - Ali" is the channel TT DMM; FY 2026 share, PAGO (2027-11: none), YAGO, target, YTD growth.
+    const m = sh('mix');
+    expect(m).toContain('<c r="A2"><v>100</v></c>');
+    expect(m).toContain('<c r="B6"><v>0.75</v></c>');
+    expect(m).toContain('<c r="C6"><f>F6/F9</f></c>');
+    expect(m).toContain('<c r="D6"><v>0</v></c>');
+    expect(m).toContain('<c r="E6"><v>30</v></c>');
+    expect(m).toContain('<c r="F6"><v>60</v></c>');
+    expect(m).toContain('<c r="B7"><v>0.25</v></c>');
+    expect(m).toContain('<c r="D8"/>');
+    expect(r.unmatched).toEqual(['Other']);
+    // Headers follow the month: DEC stays DEC, FY 2025 -> FY 2026, YTD Nov stays Nov.
+    expect(strFromU8(z['xl/sharedStrings.xml']!)).toContain('<t>FY 2026 Sales</t>');
+  });
+});

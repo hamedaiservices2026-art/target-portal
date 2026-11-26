@@ -836,6 +836,7 @@ export const CY = {
   upFound: ["{n} route(s) / KAE(s) in {d} department(s).", "{n} مسار / KAE في {d} إدارة."],
   exportMtfl: ["Export target (MTFL)", "تصدير الهدف (MTFL)"],
   exportMdd: ["Export target (MDD)", "تصدير الهدف (MDD)"],
+  tplUnmatched: ["Mix sheet: these departments match no channel and were left empty: {names}. Name them as the channel (or the Head) in the template.", "ورقة Mix: هذه الإدارات لا تطابق أي قناة وتُركت فارغة: {names}. سمّها باسم القناة (أو رئيس الإدارة) في القالب."],
   // Admin › Hierarchy (v16)
   hzIntro: ['Add, move, rename or delete here, or upload the whole hierarchy in one file. Every Channel Head is the top of one department.', 'أضف أو انقل أو أعد التسمية أو احذف هنا، أو ارفع الهيكل كاملًا في ملف واحد. كل رئيس قناة هو أعلى قسم واحد.'],
   hzAdd: ['Add', 'إضافة'],
