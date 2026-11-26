@@ -152,6 +152,12 @@ test('the whole cycle: CD splits and submits, Admin calculates and sends, the He
   await expect(cd.getByTestId('cd-status')).toHaveText('Submitted by the Commercial Director');
   // After the approval: the approval template for signing.
   await expect(cd.getByTestId('approval-banner')).toBeVisible();
+  // PAGO is not closed yet: the forecast closing (sales by day x remaining days) is offered before the download.
+  await expect(cd.getByTestId('pago-forecast')).toBeVisible();
+  await cd.getByTestId('pago-fc-on').check();
+  await cd.getByTestId('pago-fc-done').fill('21');
+  await cd.getByTestId('pago-fc-left').fill('4');
+  await expect(cd.getByTestId('pago-fc-table')).toBeVisible();
   const [dl] = await Promise.all([cd.waitForEvent('download'), cd.getByTestId('approval-download-banner').click()]);
   const xlsx = testInfo.outputPath('approval.xlsx');
   await dl.saveAs(xlsx);

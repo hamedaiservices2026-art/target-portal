@@ -151,7 +151,7 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
   }, [ws]);
   const members = useMemo<Member[]>(() => (ws ? ws.children.map((c) => {
     const leaf = c.key.startsWith('l:');
-    const title = leaf ? `${t('dsRoute')} ${c.label}` : c.label;
+    const title = leaf ? `${ws.node.workspace === 'ka' ? 'KAE' : t('dsRoute')} ${c.label}` : c.label;
     const sub = leaf ? (c.sub ? `${t('dsSalesman')} ${c.sub}` : '') : c.sub;
     return { key: c.key, title, sub, aria: sub ? `${title} · ${sub}` : title };
   }) : []), [ws, lang]);

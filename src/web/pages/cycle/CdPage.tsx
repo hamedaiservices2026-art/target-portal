@@ -8,6 +8,7 @@ import { useLocation } from 'preact-iso';
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import { capFor } from '../../../shared/rules';
 import { cdReconcile, cdSubmitProblems, type CdWork } from '../../../shared/calc/cd';
+import { fcFactor, PagoForecast, usePagoFc, type PagoFc } from './PagoForecast';
 import { CATEGORIES, type Category } from '../../../shared/calc/packs';
 import { addMonths, pago as pagoOf, yago as yagoOf } from '../../../shared/calc/periods';
 import type { Workspace } from '../../../worker/auth';
@@ -546,7 +547,19 @@ function downloadWorkbook(work: CdWork, l: Loaded) {
 // ---------- the approval workbook for signing ----------
 
 /** The approval workbook of the CD's final target (Template For Approval layout). */
-export async function downloadApprovalOf(work: CdWork, l: Loaded): Promise<string | null> {
+export async function downloadApprovalOf(work: CdWork, l0: Loaded, fc?: PagoFc | null): Promise<string | null> {
+  // PAGO forecast closing: the PAGO month's actual sales grow by sales by day x remaining days.
+  const k = fcFactor(fc);
+  const pmo = pagoOf(l0.cycle.period);
+  const scale = (g: Grid) => Object.fromEntries(Object.entries(g).map(([p, n]) => [p, n * k]));
+  const l: Loaded = k === 1 ? l0 : {
+    ...l0,
+    bench: {
+      ...l0.bench,
+      pagoSales: scale(l0.bench.pagoSales),
+      sales: { ...l0.bench.sales, ...(l0.bench.sales[pmo] ? { [pmo]: Object.fromEntries(Object.entries(l0.bench.sales[pmo]!).map(([r, g]) => [r, scale(g)])) } : {}) },
+    },
+  };
   const { org, bench, cycle } = l;
   const final = cdReconcile(work);
   const layout = bench.layout;
@@ -612,10 +625,10 @@ export async function downloadApprovalOf(work: CdWork, l: Loaded): Promise<strin
 }
 
 /** For the Admin: loads what the CD screen loads, then the approval workbook. */
-export async function downloadApprovalFor(ws: Workspace, period: string): Promise<string | null> {
+export async function downloadApprovalFor(ws: Workspace, period: string, fc?: PagoFc | null): Promise<string | null> {
   const l = await loadAll(ws, period);
   if (!l.cycle.cd) throw new Error('No target from the Commercial Director yet.');
-  return downloadApprovalOf(l.cycle.cd, l);
+  return downloadApprovalOf(l.cycle.cd, l, fc);
 }
 
 // ---------- page ----------
@@ -639,6 +652,7 @@ export function CdPage({ ws: wsParam, period: periodParam }: { ws?: string; peri
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [comment, setComment] = useState('');
+  const [fc, setFc] = usePagoFc(ws, period);
   const l = loaded.data;
   const isCd = !!user?.cd?.includes(ws);
 
@@ -738,7 +752,7 @@ export function CdPage({ ws: wsParam, period: periodParam }: { ws?: string; peri
             {dirty && <span class="pill warn">{tc('unsaved')}</span>}
             <span class="spacer" />
             <button type="button" class="btn" onClick={() => downloadWorkbook(work, l)}>{tc('downloadExcel')}</button>
-            <button type="button" class="btn" data-testid="approval-download" onClick={() => void downloadApprovalOf(work, l).then((m) => { if (m) setErr(m); }).catch((x) => setErr(errText(x)))}>{tc('approvalDownload')}</button>
+            <button type="button" class="btn" data-testid="approval-download" onClick={() => void downloadApprovalOf(work, l, fc).then((m) => { if (m) setErr(m); }).catch((x) => setErr(errText(x)))}>{tc('approvalDownload')}</button>
             {edit && <button type="button" class="btn" disabled={busy || !dirty} onClick={() => void save()}>{tc('save')}</button>}
             {edit && <button type="button" class="btn primary" disabled={busy || problems.length > 0} title={problems.join('; ')} onClick={() => void submit()}>{tc('approveReturnAdmin')}</button>}
           </div>
@@ -747,7 +761,8 @@ export function CdPage({ ws: wsParam, period: periodParam }: { ws?: string; peri
           {l.cycle.cdStatus === 'submitted' && (
             <div class="banner ok cy-approval" data-testid="approval-banner">
               <b>{tc('approvalReady')}</b> {tc('approvalReadyHelp')}{' '}
-              <button type="button" class="btn primary" data-testid="approval-download-banner" onClick={() => void downloadApprovalOf(work, l).then((m) => { if (m) setErr(m); }).catch((x) => setErr(errText(x)))}>{tc('approvalDownload')}</button>
+              <PagoForecast ws={ws} period={period} fc={fc} onChange={setFc} />
+              <button type="button" class="btn primary" data-testid="approval-download-banner" onClick={() => void downloadApprovalOf(work, l, fc).then((m) => { if (m) setErr(m); }).catch((x) => setErr(errText(x)))}>{tc('approvalDownload')}</button>
             </div>
           )}
           {err && <div class="alert" role="alert">{err}</div>}

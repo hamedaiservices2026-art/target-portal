@@ -9,6 +9,7 @@ import { PACK_GROUPS } from '../../../shared/imports';
 import { pago as pagoOf } from '../../../shared/calc/periods';
 import { CalcTab } from './AdminCalc';
 import { downloadApprovalFor } from './CdPage';
+import { PagoForecast, usePagoFc } from './PagoForecast';
 import { WorkflowTab } from './AdminWorkflow';
 import * as T from '../../cycle/templates';
 import type { Workspace } from '../../../worker/auth';
@@ -250,6 +251,7 @@ function SendStep({ ws, period, l, onDone, missing }: { ws: Workspace; period: s
   useLang();
   const { cycle, org } = l;
   const [preview, setPreview] = useState<{ nt: Grid; source: NtSource; upload: NtUpload | null; split?: Record<string, Grid> | null; splitBasis?: string } | null>(null);
+  const [fc, setFc] = usePagoFc(ws, period);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [deptChecks, setDeptChecks] = useState<Check[]>([]);
@@ -445,7 +447,8 @@ function SendStep({ ws, period, l, onDone, missing }: { ws: Workspace; period: s
           {cycle.cdStatus === 'submitted' && (
             <div class="banner ok cy-approval" data-testid="admin-approval">
               <b>{tc('approvalAdmin')}</b>{' '}
-              <button type="button" class="btn primary" data-testid="admin-approval-download" onClick={() => void downloadApprovalFor(ws, period).then((m) => { if (m) setErr(m); }).catch((x) => setErr(errText(x)))}>{tc('approvalDownload')}</button>
+              <PagoForecast ws={ws} period={period} fc={fc} onChange={setFc} />
+              <button type="button" class="btn primary" data-testid="admin-approval-download" onClick={() => void downloadApprovalFor(ws, period, fc).then((m) => { if (m) setErr(m); }).catch((x) => setErr(errText(x)))}>{tc('approvalDownload')}</button>
             </div>
           )}
           {(cycle.cdStatus === 'with_cd' || cycle.cdStatus === 'submitted') && (
@@ -1395,7 +1398,7 @@ function RoutesTab({ ws, period, l }: { ws: Workspace; period: string; l: Loaded
     });
     void writeWorkbook(`new_target_${ws}_${period}.xlsx`, [{
       name: 'New target',
-      columns: ['Period', 'Delivery System', 'Route Code', 'Salesman ID', 'Sales Target Category', 'Cases', 'Format', 'Head of Department', 'Manager', 'Supervisor', 'Category', 'Sub category'],
+      columns: ['Period', 'Delivery System', ws === 'ka' ? 'KAE' : 'Route Code', 'Salesman ID', 'Sales Target Category', 'Cases', 'Format', 'Head of Department', 'Manager', 'Supervisor', 'Category', 'Sub category'],
       rows: list,
     }]);
   }
@@ -1415,7 +1418,7 @@ function RoutesTab({ ws, period, l }: { ws: Workspace; period: string; l: Loaded
       <Section title={tc('routeTargets')} right={
         <div class="toolbar">
           <button type="button" class="btn primary" data-testid="export-final" onClick={() => exportFinal()}>{tc('exportFinal')}</button>
-          <button type="button" class="btn" onClick={() => downloadCsv(`route_targets_${ws}_${period}.csv`, [...exp.columns, 'Format'], rows.map((r) => [...r, 'Cases']))}>{tc('downloadCsv')}</button>
+          <button type="button" class="btn" onClick={() => downloadCsv(`route_targets_${ws}_${period}.csv`, [...exp.columns.map((c) => (ws === 'ka' && /^route code$/i.test(c) ? 'KAE' : c)), 'Format'], rows.map((r) => [...r, 'Cases']))}>{tc('downloadCsv')}</button>
         </div>
       }>
         {!allFinal && <p class="banner warn small">{tc('notAllFinal')}</p>}
@@ -1425,7 +1428,7 @@ function RoutesTab({ ws, period, l }: { ws: Workspace; period: string; l: Loaded
       <Section title={tc('varianceTitle')}>
         {variance.length === 0 ? <p class="muted">{tc('noVariance')}</p> : (
           <div class="tablewrap"><table class="ad-table cy-table">
-            <thead><tr><th>{tc('route')}</th><th>{tc('pack')}</th><th class="num">{tc('sent')}</th><th class="num">{tc('finalCol')}</th><th class="num">{tc('diff')}</th></tr></thead>
+            <thead><tr><th>{ws === 'ka' ? 'KAE' : tc('route')}</th><th>{tc('pack')}</th><th class="num">{tc('sent')}</th><th class="num">{tc('finalCol')}</th><th class="num">{tc('diff')}</th></tr></thead>
             <tbody>{variance.slice(0, 500).map((v, i) => (
               <tr key={i}><td><bdi>{v.route}</bdi></td><td><bdi>{v.pack}</bdi></td><td class="num">{fmtNum(v.sent)}</td><td class="num">{fmtNum(v.final)}</td><td class="num">{fmtNum(v.final - v.sent)}</td></tr>
             ))}</tbody>
@@ -1469,7 +1472,7 @@ function FinalSummary({ ws, period, org, calc, rows }: { ws: Workspace; period: 
   list.sort((a, b) => a.under.localeCompare(b.under) || a.name.localeCompare(b.name));
   const tot = list.reduce((acc, r) => ({ up: acc.up + r.up, set: acc.set + r.set }), { up: 0, set: 0 });
   const pct = (a: number, b: number) => (a ? `${(((b - a) / a) * 100).toFixed(1)}%` : '—');
-  const label: Record<Lvl, string> = { head: tc('lvHead'), manager: ws === 'ka' ? 'KAM' : tc('lvManager'), supervisor: tc('lvSupervisor'), route: tc('route') };
+  const label: Record<Lvl, string> = { head: tc('lvHead'), manager: ws === 'ka' ? 'KAM' : tc('lvManager'), supervisor: tc('lvSupervisor'), route: ws === 'ka' ? 'KAE' : tc('route') };
   const levels: Lvl[] = ws === 'ka' ? ['head', 'manager', 'route'] : ['head', 'manager', 'supervisor', 'route'];
   return (
     <Section title={tc('fsTitle')} right={

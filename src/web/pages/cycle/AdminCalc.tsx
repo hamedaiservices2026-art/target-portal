@@ -128,7 +128,7 @@ export function CalcTab({ ws, period, l, reload, onNext }: { ws: Workspace; peri
   const avgTable = (
     <Section title={tc('avgByHead')} right={<span class="muted small">{tc('avgOver', { months: monthsLabel(months) })}</span>}>
       <div class="tablewrap"><table class="ad-table cy-table">
-        <thead><tr><th>{tc('head')}</th><th class="num">{tc('routesWithSales')}</th>{CATEGORIES.map((c) => <th key={c} class="num">{tc('avgOf', { c })}</th>)}<th class="num">{tc('avgTotal')}</th></tr></thead>
+        <thead><tr><th>{tc('head')}</th><th class="num">{ws === 'ka' ? tc('kaesWithSales') : tc('routesWithSales')}</th>{CATEGORIES.map((c) => <th key={c} class="num">{tc('avgOf', { c })}</th>)}<th class="num">{tc('avgTotal')}</th></tr></thead>
         <tbody>{deptIds.map((d) => {
           const rs = routesOf(d);
           const g: Grid = {};

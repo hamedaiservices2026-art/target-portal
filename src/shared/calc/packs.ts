@@ -181,4 +181,8 @@ export function subsOf(cat: Category, packs: readonly string[], subOf: (p: strin
 export const PACK_ALIASES: Readonly<Record<string, string>> = {
   LIT_CANS320: 'LIT_CANS310',
   'LIT_CANS310+320': 'LIT_CANS310',
+  // CSD_SSPET500, CSD_SSPET400 and the combined row are one pack, CSD_SSPET400.
+  CSD_SSPET500: 'CSD_SSPET400',
+  'CSD_SSPET500/400': 'CSD_SSPET400',
+  'CSD_SSPET400/500': 'CSD_SSPET400',
 };
