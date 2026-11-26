@@ -61,11 +61,12 @@ app.route('/', cycleRoutes);
 app.all('/api/*', (c) => c.json({ error: 'not_found' }, 404));
 
 import { syncPackSortOnce } from './services/packOrder';
+import { mergePacksOnce } from './services/packMerge';
 
 export default {
   fetch: app.fetch,
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(sendDeadlineReminders(env.DB, env, new Date()));
-    ctx.waitUntil(syncPackSortOnce(env.DB));
+    ctx.waitUntil(mergePacksOnce(env.DB).then(() => syncPackSortOnce(env.DB)));
   },
 };

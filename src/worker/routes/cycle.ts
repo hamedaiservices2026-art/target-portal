@@ -20,9 +20,12 @@ import { getRules, setRules } from '../services/rulesSettings';
 import { getApprovalTemplate, getBrand, setApprovalTemplate, setBrand } from '../services/brand';
 import { getPackPlace, setPackPlace } from '../services/packPlace';
 import { syncPackSort, syncPackSortOnce } from '../services/packOrder';
+import { mergePacksOnce } from '../services/packMerge';
 import { mailStatus, setMailOn, setUserEmails } from '../services/mailSettings';
 
 const cycle = new Hono<AppEnv>();
+// Merged packs in the stored data (once): before anything is read.
+cycle.use('/api/*', async (c, next) => { if (c.req.method === 'GET') await mergePacksOnce(c.env.DB); await next(); });
 
 const ws = (c: Ctx) => workspace(c.req.param('ws'));
 const per = (c: Ctx) => p(c, 'period');
@@ -112,7 +115,7 @@ cycle.use('/api/data/*', requireUser);
 cycle.get('/api/data/:ws/status', h(async (c, db) => { adminOrCd(c); return c.json({ status: await dataStatus(db, ws(c)) }); }));
 cycle.get('/api/data/:ws/routes', h(async (c, db) => { adminOrCd(c); return raw(c, await readRouteRows(db, ws(c), c.req.query('kind'), c.req.query('month'))); }));
 cycle.get('/api/data/:ws/months', h(async (c, db) => { adminOrCd(c); return raw(c, await readMonthData(db, ws(c), c.req.query('kind'))); }));
-cycle.get('/api/data/:ws/org', h(async (c, db) => { adminOrCd(c); await syncPackSortOnce(db); return c.json(await readOrg(db, ws(c))); }));
+cycle.get('/api/data/:ws/org', h(async (c, db) => { adminOrCd(c); await mergePacksOnce(db); await syncPackSortOnce(db); return c.json(await readOrg(db, ws(c))); }));
 cycle.get('/api/data/:ws/pack-place', h(async (c, db) => { adminOrCd(c); return c.json({ place: await getPackPlace(db) }); }));
 cycle.get('/api/data/:ws/approval-brand', h(async (c, db) => { adminOrCd(c); return c.json(await getBrand(db)); }));
 cycle.get('/api/data/:ws/approval-template', h(async (c, db) => { adminOrCd(c); return c.json(await getApprovalTemplate(db)); }));

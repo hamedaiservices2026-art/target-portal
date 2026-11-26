@@ -409,14 +409,25 @@ export function fillApprovalTemplate(file: Uint8Array, inp: TemplateInput): Temp
       const hrow = s.rows[hi]!;
       const dcol = hrow.cells.find((c) => norm(cellText(c, shared)) === 'department')!.col;
       const colsBy = hrow.cells.filter((c) => c.col !== dcol).map((c) => ({ col: c.col, name: norm(cellText(c, shared)) }));
+      type DRow = { row: Sheet['rows'][number]; name: string; ch: (typeof inp.channels)[number] | null; valueCells: typeof colsBy };
+      const drows: DRow[] = [];
       for (const row of s.rows.slice(hi + 1)) {
         const name = cellText(row.cells.find((c) => c.col === dcol), shared).trim();
         if (!name) break;
         if (/^grand total$/i.test(name)) break;
-        const ch = match(name);
         const valueCells = colsBy.filter((x) => !hasFormula(row.cells.find((c) => c.col === x.col)));
         // A total row: its name, or more formulas than numbers.
         if (isTotal(name) || valueCells.length * 2 < colsBy.length) continue;
+        drows.push({ row, name, ch: match(name), valueCells });
+      }
+      // A row left over pairs with the one channel left over that starts with the same word ("MT WS" = "MT Bulk").
+      const used = new Set(drows.map((d) => d.ch).filter(Boolean));
+      for (const d of drows.filter((x) => !x.ch)) {
+        const w = squash(d.name.split(/\s+/)[0] ?? '');
+        const free = inp.channels.filter((c) => !used.has(c) && squash(c.label.split(/\s+/)[0] ?? '') === w);
+        if (free.length === 1) { d.ch = free[0]!; used.add(free[0]!); }
+      }
+      for (const { row, name, ch, valueCells } of drows) {
         if (!ch) { unmatched.push(name); for (const x of valueCells) setNumber(row, x.col, null); continue; }
         for (const x of valueCells) {
           const n = x.name;

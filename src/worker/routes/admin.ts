@@ -1,5 +1,6 @@
 // Admin-only master data API. Logic and validation live in services/masters.ts.
 import { syncPackSort, syncPackSortOnce } from '../services/packOrder';
+import { mergePacksOnce } from '../services/packMerge';
 import { Hono } from 'hono';
 import { requireAdmin, requireUser, type AppEnv } from '../auth';
 import { h, p } from './handler';
@@ -47,7 +48,7 @@ admin.post('/api/admin/departments', h(async (c, db, me, body) =>
 admin.patch('/api/admin/departments/:id', h(async (c, db, me, body) =>
   c.json({ department: await updateDepartment(db, me, parseId(p(c, 'id')), await body()) })));
 
-admin.get('/api/admin/packs', h(async (c, db) => { await syncPackSortOnce(db); return c.json({ packs: await listPacks(db) }); }));
+admin.get('/api/admin/packs', h(async (c, db) => { await mergePacksOnce(db); await syncPackSortOnce(db); return c.json({ packs: await listPacks(db) }); }));
 admin.post('/api/admin/packs', h(async (c, db, me, body) =>
   { const pack = await createPack(db, me, await body()); await syncPackSort(db); return c.json({ pack }, 201); }));
 admin.get('/api/admin/packs-added', h(async (c, db) => c.json({ packs: await listAddedPacks(db) })));
