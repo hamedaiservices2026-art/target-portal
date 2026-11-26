@@ -75,7 +75,7 @@ async function uploadRoutes(ws: Workspace, kind: 'sales' | 'prev_target', data: 
   return rows.length;
 }
 
-export async function uploadMonths(ws: Workspace, kind: 'new_target' | 'aop' | 'fy_target' | 'dept_channel' | 'aop_dept', byMonth: Record<string, unknown>): Promise<number> {
+export async function uploadMonths(ws: Workspace, kind: 'new_target' | 'aop' | 'fy_target' | 'dept_channel' | 'aop_dept' | 'target_upload', byMonth: Record<string, unknown>): Promise<number> {
   const months = Object.keys(byMonth).sort();
   for (const m of months) await api('POST', `/api/admin/data/${ws}/months`, { kind, month: m, values: byMonth[m] });
   return months.length;
@@ -470,6 +470,65 @@ function SendStep({ ws, period, l, onDone, missing }: { ws: Workspace; period: s
 // ---------- step 2, AOP by pack and department ----------
 
 /** The AOP by pack and department (all months of the year, one sheet per channel); the target month's part becomes the New Target. */
+/** The target uploaded in Uploaded files › Upload target, for one month. */
+type TargetUpload = { by: 'pack' | 'dept'; byPack: Grid; byChannel?: Record<string, Grid>; layout?: FileRow[]; file?: string };
+
+/** Start cycle › New Target from the uploaded target: by pack, or by pack and department. */
+function UploadedTargetStep({ ws, period, org, saved, by, modePicker, onSaved }: {
+  ws: Workspace; period: string; org: OrgDto; saved: NtUpload | null; by: 'pack' | 'dept'; modePicker: ComponentChildren; onSaved: (msg: string) => void;
+}) {
+  useLang();
+  const data = useAsync(() => loadMonthData<TargetUpload>(ws, 'target_upload'), [ws, period]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const up = data.data?.[period] ?? null;
+  const cats = catMap(org);
+  const canDept = !!up?.byChannel && Object.keys(up.byChannel).length > 0;
+  const used = !!saved && saved.mode === by && (saved.file ?? '') === (up?.file ?? '') && total(saved.byPack) === total(up?.byPack ?? {});
+  async function use() {
+    if (!up) return;
+    setBusy(true); setErr(null);
+    try {
+      const layout = up.layout ?? [];
+      if (by === 'dept' && up.byChannel) {
+        await uploadMonths(ws, 'new_target', { [period]: { mode: 'dept', byPack: up.byPack, byChannel: up.byChannel, layout, file: up.file ?? '' } });
+        // By department: it is the department target right away (as an upload by department always was).
+        const dept: Record<string, Grid> = {};
+        for (const d of org.depts) {
+          const t: Grid = {};
+          for (const c of d.channels) for (const [p, v] of Object.entries(up.byChannel[c.channel] ?? {})) t[p] = (t[p] ?? 0) + v;
+          dept[String(d.id)] = t;
+        }
+        await api('PUT', `/api/admin/cycle/${ws}/${period}/dept-target`, { dept }).catch(() => undefined);
+      } else {
+        await uploadMonths(ws, 'new_target', { [period]: { mode: 'pack', byPack: up.byPack, layout, file: up.file ?? '' } });
+      }
+      onSaved(tc('upTargetUsed', { period, total: fmtNum(total(up.byPack)) }));
+    } catch (x) {
+      setErr(errText(x));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <>
+      <div class="cy-step" data-testid="step-2"><div class="cy-step-head"><span class="cy-step-n">2</span><div><b>{tc('step2', { period })}</b></div></div>{modePicker}</div>
+      <div class={`cy-step${used ? ' done' : ''}`} data-testid="up-target-use">
+        <div class="cy-step-head"><span class="cy-step-n">{used ? '✓' : '•'}</span>
+          <div><b>{tc('upTargetUseTitle', { period })}</b>
+            <p class="muted small">{!up ? tc('upTargetNone', { period })
+              : by === 'dept' && !canDept ? tc('upTargetNoDept')
+              : tc('upTargetHelp', { file: up.file ?? '', how: up.by === 'dept' ? tc('byPackDept') : tc('byPackOnly'), cats: CATEGORIES.map((c) => `${c} ${fmtNum(sumCat(up.byPack, cats, c))}`).join(' · ') })}</p></div></div>
+        <div class="cy-step-body">
+          {up && by === 'dept' && canDept && !used && <FileTargetTable org={org} g={up.byChannel!} layout={up.layout ?? []} />}
+          <button type="button" class="btn primary" data-testid="up-target-use-btn" disabled={busy || !up || (by === 'dept' && !canDept)} onClick={() => void use()}>{used ? tc('aopDeptUseAgain') : tc('upTargetUse')}</button>
+          {err && <div class="alert" role="alert">{err}</div>}
+        </div>
+      </div>
+    </>
+  );
+}
+
 function AopDeptStep({ ws, period, org, saved, modePicker, onSaved }: {
   ws: Workspace; period: string; org: OrgDto; saved: NtUpload | null; modePicker: ComponentChildren; onSaved: (msg: string) => void;
 }) {
@@ -956,7 +1015,31 @@ function StartTab({ ws, period, l, reload, part }: { ws: Workspace; period: stri
   const modes: { id: NtUpload['mode'] | 'ops'; label: string }[] = ka
     ? [{ id: 'ops', label: tc('ntModeOps') }, { id: 'aop', label: tc('ntModeAop') }, { id: 'pack', label: tc('ntModePack') }, { id: 'leaf', label: tc('ntModeLeaf') }]
     : [{ id: 'aop', label: tc('ntModeAop') }, { id: 'pack', label: tc('ntModePack') }, { id: 'dept', label: tc('ntModeDept') }];
-  const modePicker = (
+  // Operation: the New Target comes from the AOP or from the uploaded target, then by pack or by pack and department.
+  const src: 'aop' | 'upload' = mode === 'aop' ? 'aop' : 'upload';
+  const ntBy: 'pack' | 'dept' = mode === 'aop' ? (cycle.settings.aopBy ?? 'pack') : mode === 'dept' ? 'dept' : 'pack';
+  async function setBy(b: 'pack' | 'dept') {
+    if (src === 'aop') {
+      setModeBusy(true);
+      try { await api('PUT', `/api/admin/cycle/${ws}/${period}/settings`, { aopBy: b }); reload(); } finally { setModeBusy(false); }
+    } else await setMode(b);
+  }
+  const opsPicker = (
+    <div class="cy-nt-source" data-testid="nt-source">
+      <div class="toolbar" role="radiogroup" aria-label={tc('ntFrom')}>
+        <b class="small">{tc('ntFrom')}</b>
+        <label class="small"><input type="radio" name="nt-src" data-testid="nt-src-aop" checked={src === 'aop'} disabled={locked || modeBusy} onChange={() => void setMode('aop')} /> {tc('ntSrcAop')}</label>
+        <label class="small"><input type="radio" name="nt-src" data-testid="nt-src-upload" checked={src === 'upload'} disabled={locked || modeBusy} onChange={() => void setMode(ntBy === 'dept' ? 'dept' : 'pack')} /> {tc('ntSrcUpload')}</label>
+      </div>
+      <div class="toolbar" role="radiogroup" aria-label={tc('ntBy')}>
+        <b class="small">{tc('ntBy')}</b>
+        {(['pack', 'dept'] as const).map((b) => (
+          <label key={b} class="small"><input type="radio" name="nt-by" data-testid={`nt-by-${b}`} checked={ntBy === b} disabled={locked || modeBusy} onChange={() => void setBy(b)} /> {b === 'pack' ? tc('byPackOnly') : tc('byPackDept')}</label>
+        ))}
+      </div>
+    </div>
+  );
+  const modePicker = !ka ? opsPicker : (
     <>
       <div class="toolbar" role="radiogroup" aria-label={tc('ntMode')} data-testid="nt-modes">
         {modes.map((m) => (
@@ -978,6 +1061,17 @@ function StartTab({ ws, period, l, reload, part }: { ws: Workspace; period: stri
     </>
   );
   const of = done.length;
+  // Uploaded files › Upload target: by pack, or by pack and department.
+  const [targetUp, setTargetUp] = useState<'pack' | 'dept'>('pack');
+  const targetChoice = (
+    <div class="toolbar" role="radiogroup" aria-label={tc('upTargetBy')} data-testid="target-upload-by">
+      <b class="small">{tc('upTargetBy')}</b>
+      {(['pack', 'dept'] as const).map((b) => (
+        <label key={b} class="small"><input type="radio" name="target-up" data-testid={`target-up-${b}`} checked={targetUp === b} onChange={() => setTargetUp(b)} /> {b === 'pack' ? tc('byPackOnly') : tc('byPackDept')}</label>
+      ))}
+    </div>
+  );
+  const tuLoaded = status.some((x) => x.kind === 'target_upload' && x.month === period);
   // Uploaded files › AOP: upload it by pack, or by pack and department.
   const [aopUp, setAopUp] = useState<'pack' | 'dept'>(cycle.settings.aopBy === 'dept' ? 'dept' : 'pack');
   const aopChoice = (
@@ -1021,7 +1115,10 @@ function StartTab({ ws, period, l, reload, part }: { ws: Workspace; period: stri
           {mode === 'aop' && !ka && cycle.settings.aopBy === 'dept' && (
             <AopDeptStep ws={ws} period={period} org={org} saved={nt} modePicker={modePicker} onSaved={(m) => { after(m); ntData.reload(); }} />
           )}
-          {mode === 'pack' && (
+          {!ka && (mode === 'pack' || mode === 'dept') && (
+            <UploadedTargetStep ws={ws} period={period} org={org} saved={nt} by={mode} modePicker={modePicker} onSaved={(m) => { after(m); }} />
+          )}
+          {mode === 'pack' && ka && (
             <UploadStep ws={ws} clearKind={{ table: 'months', kind: 'new_target' }} n={2} title={tc('step2', { period })} help={tc('step2aHelp')} template={() => T.newTargetByPack(org, period)} done={done[1]!} locked={locked} loaded={loadedText}
               parse={({ rows }) => {
                 const r = parseNewTargetByPack(rows!, period, idx);
@@ -1029,30 +1126,6 @@ function StartTab({ ws, period, l, reload, part }: { ws: Workspace; period: stri
                 return { checks: r.checks, summary: tc('sumPacks', { n: Object.keys(r.byPack).length, total: fmtNum(total(r.byPack)) }), payload: { byPack: r.byPack, layout: fileLayout(rows!, idx) } };
               }}
               upload={async (payload, file) => after(tc('savedMonths', { n: await uploadMonths(ws, 'new_target', { [period]: { mode: 'pack', ...(payload as { byPack: Grid; layout: FileRow[] }), file } }) }))}>
-              {modePicker}
-            </UploadStep>
-          )}
-          {mode === 'dept' && !ka && (
-            <UploadStep ws={ws} clearKind={{ table: 'months', kind: 'new_target' }} n={2} title={tc('step2', { period })} help={tc('step2bHelp')} template={() => T.newTargetByDept(org, period)} done={done[1]!} locked={locked} loaded={loadedText}
-              parse={({ rows }) => {
-                const r = parseChannelGrid(rows!, channels, idx, groups);
-                const byPack: Grid = {};
-                for (const g of Object.values(r.byChannel)) for (const [p, v] of Object.entries(g)) byPack[p] = (byPack[p] ?? 0) + v;
-                return { checks: r.checks, summary: tc('sumPacks', { n: Object.keys(byPack).length, total: fmtNum(total(byPack)) }), payload: { mode: 'dept', byPack, byChannel: r.byChannel, layout: fileLayout(rows!, idx) } };
-              }}
-              upload={async (payload, file) => {
-                const n = await uploadMonths(ws, 'new_target', { [period]: { ...(payload as object), file } });
-                // Uploaded by department: it is the department target right away (no CD).
-                const byChannel = (payload as { byChannel: Record<string, Grid> }).byChannel;
-                const dept: Record<string, Grid> = {};
-                for (const d of org.depts) {
-                  const t: Grid = {};
-                  for (const c of d.channels) for (const [p, v] of Object.entries(byChannel[c.channel] ?? {})) t[p] = (t[p] ?? 0) + v;
-                  dept[String(d.id)] = t;
-                }
-                await api('PUT', `/api/admin/cycle/${ws}/${period}/dept-target`, { dept }).catch(() => undefined);
-                return after(tc('savedMonths', { n }));
-              }}>
               {modePicker}
             </UploadStep>
           )}
@@ -1116,7 +1189,29 @@ function StartTab({ ws, period, l, reload, part }: { ws: Workspace; period: stri
               <KaNote period={period} cycle={cycle} onSaved={reload} />
             </UploadStep>
           ) : (
-            <UploadStep ws={ws} clearKind={{ table: 'months', kind: 'dept_channel' }} n={3} title={tc('stepPrevDept')} help={tc('stepPrevDeptHelp')} template={() => T.deptChannelTargets(org, period)} done={prevDone} locked={false} multiSheet
+            <>
+            {targetUp === 'pack' ? (
+              <UploadStep key="tu-pack" ws={ws} clearKind={{ table: 'months', kind: 'target_upload' }} n={3} title={tc('upTargetTitle')} help={tc('upTargetFileHelp')} template={() => T.newTargetByPack(org, period)} done={tuLoaded} locked={false}
+                parse={({ rows }) => {
+                  const r = parseNewTargetByPack(rows!, period, idx);
+                  return { checks: r.checks, summary: tc('sumPacks', { n: Object.keys(r.byPack).length, total: fmtNum(total(r.byPack)) }), payload: { by: 'pack', byPack: r.byPack, layout: fileLayout(rows!, idx) } };
+                }}
+                upload={async (payload, file) => after(tc('savedMonths', { n: await uploadMonths(ws, 'target_upload', { [period]: { ...(payload as object), file } }) }))}>
+                {targetChoice}
+              </UploadStep>
+            ) : (
+              <UploadStep key="tu-dept" ws={ws} clearKind={{ table: 'months', kind: 'target_upload' }} n={3} title={tc('upTargetTitle')} help={tc('upTargetFileHelp')} template={() => T.newTargetByDept(org, period)} done={tuLoaded} locked={false}
+                parse={({ rows }) => {
+                  const r = parseChannelGrid(rows!, channels, idx, groups);
+                  const byPack: Grid = {};
+                  for (const g of Object.values(r.byChannel)) for (const [p, v] of Object.entries(g)) byPack[p] = (byPack[p] ?? 0) + v;
+                  return { checks: r.checks, summary: tc('sumPacks', { n: Object.keys(byPack).length, total: fmtNum(total(byPack)) }), payload: { by: 'dept', byPack, byChannel: r.byChannel, layout: fileLayout(rows!, idx) } };
+                }}
+                upload={async (payload, file) => after(tc('savedMonths', { n: await uploadMonths(ws, 'target_upload', { [period]: { ...(payload as object), file } }) }))}>
+                {targetChoice}
+              </UploadStep>
+            )}
+            <UploadStep ws={ws} clearKind={{ table: 'months', kind: 'dept_channel' }} n={4} title={tc('stepPrevDept')} help={tc('stepPrevDeptHelp')} template={() => T.deptChannelTargets(org, period)} done={prevDone} locked={false} multiSheet
               loaded={prevLoaded(status, 'dept_channel')}
               parse={({ sheets }) => {
                 const byMonth: Record<string, Record<string, Grid>> = {};
@@ -1135,6 +1230,7 @@ function StartTab({ ws, period, l, reload, part }: { ws: Workspace; period: stri
                 return { checks, summary: tc('prevDeptSummary', { n: months.length, from: months[0] ?? '-', to: months[months.length - 1] ?? '-' }), payload: byMonth };
               }}
               upload={async (p) => after(tc('savedMonths', { n: await uploadMonths(ws, 'dept_channel', p as Record<string, unknown>) }))} />
+            </>
           )}
         </>
       )}

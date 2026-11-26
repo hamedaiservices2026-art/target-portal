@@ -41,3 +41,35 @@ test('sales upload: add new months only, then update existing months', async ({ 
   const oct2 = await api('get', '/data/ops/routes?kind=sales&month=2032-10') as { r: string; v: Record<string, number> }[];
   expect(oct2.find((x) => x.r === '314023')!.v.CSD_CANS150).toBe(99);
 });
+
+test('upload the target by pack in Uploaded files, then use it as the New Target in Start cycle', async ({ page }) => {
+  const P = '2034-02';
+  await page.goto(`/admin/cycle/ops/${P}?tab=files`);
+  await page.getByLabel('Username').fill('admin');
+  await page.getByLabel('Password').fill('admin-pass-123');
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page.getByTestId('admin-cycle')).toBeVisible();
+  const step = page.getByTestId('step-3');
+  await expect(step).toContainText('Upload target');
+  await step.getByTestId('target-up-pack').check();
+  const data = [['Pack', 'Cases'], ['CSD_CANS150', 120], ['AquafinA_330', 30]].map((r) => r.map((value) => ({ value })));
+  await step.locator('input[type=file]').setInputFiles({ name: 'target.xlsx', mimeType: XLSX, buffer: await writeXlsxFile(data as never).toBuffer() });
+  await step.getByRole('button', { name: 'Upload', exact: true }).click();
+  await expect(step.getByRole('status')).toBeVisible();
+
+  await page.goto(`/admin/cycle/ops/${P}?tab=start`);
+  await page.getByRole('button', { name: 'Open the cycle' }).click();
+  const src = page.getByTestId('nt-source');
+  await src.getByTestId('nt-src-upload').click();
+  await expect(src.getByTestId('nt-src-upload')).toBeChecked();
+  await src.getByTestId('nt-by-pack').click();
+  await expect(src.getByTestId('nt-by-pack')).toBeChecked();
+  const use = page.getByTestId('up-target-use');
+  await expect(use).toContainText('target.xlsx');
+  await use.getByTestId('up-target-use-btn').click();
+  await expect(use).toHaveClass(/done/);
+  // By pack and department needs a target uploaded by department.
+  await src.getByTestId('nt-by-dept').click();
+  await expect(src.getByTestId('nt-by-dept')).toBeChecked();
+  await expect(use).toContainText('by pack only');
+});

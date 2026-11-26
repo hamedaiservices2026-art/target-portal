@@ -12,7 +12,7 @@ import { ApiError, bad, writeBatch, type Obj } from './masters';
 
 export const ROUTE_KINDS = ['sales', 'prev_target'] as const;
 export type RouteKind = (typeof ROUTE_KINDS)[number];
-export const MONTH_KINDS = ['new_target', 'aop', 'fy_target', 'dept_channel', 'aop_dept'] as const;
+export const MONTH_KINDS = ['new_target', 'aop', 'fy_target', 'dept_channel', 'aop_dept', 'target_upload'] as const;
 export type MonthKind = (typeof MONTH_KINDS)[number];
 
 const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
