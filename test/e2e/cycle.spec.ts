@@ -127,6 +127,13 @@ test('the whole cycle: CD splits and submits, Admin calculates and sends, the He
   await expect(cell).toHaveValue(/^30$/);
   // The Total row of all categories.
   await expect(cd.getByTestId('cd-by-category').locator('tr.cd-cat-total')).toContainText('Total');
+  // Reset all categories: every pack back to the uploaded target.
+  await cell.fill('500');
+  await cell.press('Tab');
+  await expect(cd.getByTestId('reset-all-cat')).toBeEnabled();
+  await cd.getByTestId('reset-all-cat').click();
+  await expect(cell).toHaveValue(/^30$/);
+  await expect(cd.getByTestId('reset-all-cat')).toBeDisabled();
   await cell.fill('500');
   await cell.press('Tab');
   await cd.getByTestId('uplift-pct').fill('10');

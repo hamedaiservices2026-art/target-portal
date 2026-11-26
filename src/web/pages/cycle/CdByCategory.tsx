@@ -27,8 +27,8 @@ function spread(cur: Record<string, Grid>, chans: string[], p: string, v: number
   return Object.fromEntries(chans.map((c) => [c, r[c] ?? 0]));
 }
 
-export function CdByCategory({ work, heads, cats, subOf, bench, editable, setWork, baseKey }: {
-  baseKey: string; work: CdWork; heads: CdHead[]; cats: Map<string, Category>; subOf: (p: string) => string;
+export function CdByCategory({ work, heads, cats, subOf, bench, editable, setWork, baseKey, uploaded }: {
+  baseKey: string; uploaded: Grid; work: CdWork; heads: CdHead[]; cats: Map<string, Category>; subOf: (p: string) => string;
   bench: (p: string, head: CdHead) => Bench; editable: boolean; setWork: (w: CdWork) => void;
 }) {
   useLang();
@@ -107,6 +107,23 @@ export function CdByCategory({ work, heads, cats, subOf, bench, editable, setWor
     }
     setWork({ ...work, nt, splitNt: { ...nt }, dm });
   }
+  /** Every pack back to the uploaded target; each pack keeps its split by Head and channel. */
+  function resetAll() {
+    setErr(null);
+    const list = [...new Set([...Object.keys(work.nt), ...Object.keys(uploaded)])];
+    const dm = structuredClone(work.dm);
+    const nt = { ...work.nt };
+    for (const p of list) {
+      const v = Math.max(0, Math.round(uploaded[p] ?? 0));
+      if (v === (work.nt[p] ?? 0)) continue;
+      if (v > 0 && !heads.some((h) => deptPack(dm, h.id, p) > 0)) heads.forEach((h) => { const c = h.chans[0]; if (c) ((dm[h.id] ??= {})[c] ??= {})[p] = 1; });
+      rescalePack(dm, p, v);
+      nt[p] = v;
+    }
+    setPreUp(null);
+    setWork({ ...work, nt, splitNt: { ...nt }, dm });
+  }
+  const offUploaded = Object.keys(uploaded).length > 0 && [...new Set([...Object.keys(work.nt), ...Object.keys(uploaded)])].some((p) => (work.nt[p] ?? 0) !== Math.round(uploaded[p] ?? 0));
   function resetUplift() {
     if (!preUp) return;
     restore(preUp.packs, preUp.snap);
@@ -153,6 +170,7 @@ export function CdByCategory({ work, heads, cats, subOf, bench, editable, setWor
           <button type="button" class="btn primary" data-testid="uplift-apply" disabled={!upPct.trim() || !Number.isFinite(Number(upPct.replace(',', '.')))} onClick={uplift}>{tc('upliftApply')}</button>
           <button type="button" class="btn" data-testid="uplift-reset" disabled={!preUp} title={tc('upliftResetHelp')} onClick={resetUplift}>{tc('upliftReset')}</button>
           <span class="muted small">{tc('upliftHelp')}</span>
+          <button type="button" class="btn" data-testid="reset-all-cat" disabled={!offUploaded} title={tc('resetAllCatHelp')} onClick={resetAll}>{tc('resetAllCat')}</button>
         </div>
       )}
       <label class="small cy-bench-toggle">
