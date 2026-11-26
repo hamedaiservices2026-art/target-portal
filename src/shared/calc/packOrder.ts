@@ -40,6 +40,11 @@ export const DEFAULT_LAYOUT: readonly FileRow[] = [
   { t: 'Total LRB', of: [...CSD, ...WATER, ...LRB_OTHERS] },
 ];
 
+/** A file layout worth following: packs and at least two Total rows besides Total LRB. */
+export function hasLayout(layout: unknown): layout is FileRow[] {
+  return Array.isArray(layout) && layout.filter((r) => r && typeof r === 'object' && 't' in r && !/^\s*total\s+lrb\s*$/i.test(String((r as { t: unknown }).t))).length >= 2;
+}
+
 /** Pack names of a layout mapped to the pack codes given (spacing, case and merged packs ignored). */
 export function mapLayout(layout: readonly FileRow[], codes: readonly string[]): FileRow[] {
   const idx = new Map(codes.map((c) => [packKey(c), c]));

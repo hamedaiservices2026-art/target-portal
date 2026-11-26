@@ -28,7 +28,7 @@ import { packIndex, type FileRow, type RouteMonthData } from '../../cycle/parser
 import { packKey } from '../../../shared/calc/packs';
 import { CdByCategory } from './CdByCategory';
 import { approvalLines } from '../../cycle/approval';
-import { orderPacks } from '../../../shared/calc/packOrder';
+import { hasLayout, orderPacks } from '../../../shared/calc/packOrder';
 import { defaultPeriod, rowColour, fmtGap, gapClass, MonthPicker, monthsLabel, NumCell, Section, Tabs, useMyWorkspaces, writeWorkbook, WsPeriod } from '../../cycle/ui';
 
 type TabId = 'gm' | 'dept';
@@ -76,7 +76,8 @@ async function loadAll(ws: Workspace, period: string): Promise<Loaded> {
   const upload = nt[period] ?? null;
   // The file's order: the New Target file, else the AOP by pack and department of this month, else of the latest month.
   const aopMonths = [period, ...Object.keys(aopDept).sort().reverse()];
-  const rawLayout = upload?.layout?.length ? upload.layout : aopMonths.map((m) => aopDept[m]?.layout).find((x) => Array.isArray(x) && x.length) ?? [];
+  // A file counts only with its Total rows (a plain list of packs has no layout to follow: the next file, else the default one).
+  const rawLayout = [upload?.layout, ...aopMonths.map((m) => aopDept[m]?.layout)].find(hasLayout) ?? [];
   const pidx = packIndex(org.packs.map((p) => p.code));
   const code = (n: string) => pidx.get(packKey(n)) ?? n;
   const layout = rawLayout.map((x): FileRow => ('p' in x ? { p: code(x.p) } : { t: x.t, of: [...new Set(x.of.map(code))] }));

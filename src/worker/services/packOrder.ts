@@ -3,7 +3,7 @@
 // the Total picked in Admin › Packs). Without a file: the department file's
 // default order. Every list of packs reads this order.
 import { all, one } from '../db';
-import { approvalLines, mapLayout, type FileRow } from '../../shared/calc/packOrder';
+import { approvalLines, hasLayout, mapLayout, type FileRow } from '../../shared/calc/packOrder';
 import { getPackPlace } from './packPlace';
 
 const DONE = 'pack_sort_v1';
@@ -16,13 +16,17 @@ async function latestLayout(db: D1Database): Promise<FileRow[]> {
        AND json_array_length(values_json, '$.layout') > 0
      ORDER BY CASE ws WHEN 'ops' THEN 0 ELSE 1 END, month DESC,
        CASE kind WHEN 'new_target' THEN 0 WHEN 'target_upload' THEN 1 ELSE 2 END
-     LIMIT 1`);
-  try {
-    const v = rows[0] ? JSON.parse(rows[0].layout) : [];
-    return Array.isArray(v) ? (v as FileRow[]).filter((r) => r && (typeof (r as { p?: unknown }).p === 'string' || (typeof (r as { t?: unknown }).t === 'string' && Array.isArray((r as { of?: unknown }).of)))) : [];
-  } catch {
-    return [];
+     LIMIT 40`);
+  // The latest file with its Total rows (a plain list of packs is not a layout).
+  for (const row of rows) {
+    try {
+      const v = JSON.parse(row.layout) as unknown;
+      if (!Array.isArray(v)) continue;
+      const list = (v as FileRow[]).filter((r) => r && (typeof (r as { p?: unknown }).p === 'string' || (typeof (r as { t?: unknown }).t === 'string' && Array.isArray((r as { of?: unknown }).of))));
+      if (hasLayout(list)) return list;
+    } catch { /* next */ }
   }
+  return [];
 }
 
 /** Sets packs.sort (and the pack order of every month) from the file's order. */

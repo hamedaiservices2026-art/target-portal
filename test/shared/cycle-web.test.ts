@@ -144,3 +144,12 @@ describe('cycle compute', () => {
     expect(inPackOrder(['Propel', 'X', 'GATORADE'], ['X', 'GATORADE', 'Propel'])).toEqual(['X', 'GATORADE', 'Propel']);
   });
 });
+
+describe('file layouts', () => {
+  it('a plain list of packs is not a layout to follow; a file with its Total rows is', async () => {
+    const { hasLayout } = await import('../../src/shared/calc/packOrder');
+    expect(hasLayout([{ p: 'A' }, { p: 'B' }, { t: 'Total LRB', of: ['A', 'B'] }])).toBe(false);
+    expect(hasLayout([{ p: 'A' }, { t: 'Total CANS', of: ['A'] }, { p: 'B' }, { t: 'Total Water', of: ['B'] }])).toBe(true);
+    expect(hasLayout(undefined)).toBe(false);
+  });
+});

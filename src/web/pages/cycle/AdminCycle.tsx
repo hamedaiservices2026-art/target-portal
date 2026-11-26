@@ -26,6 +26,7 @@ import { readSheet, readSheets } from '../../excel';
 import { fmtDateTime } from '../../format';
 import { fmtNum, useLang } from '../../i18n';
 import { catMap, cdRows, defaultDeptSplit, NO_CHANNEL, prevTargetMonths, startNewTarget, subMap, sumCat, total, type Grid, type NtSource } from '../../cycle/compute';
+import { hasLayout } from '../../../shared/calc/packOrder';
 import { tc } from '../../cycle/i18n';
 import { clearRouteCache, getCycle, getOrg, loadMonthData, loadRouteData, useAsync } from '../../cycle/load';
 import {
@@ -618,7 +619,7 @@ function FileTargetTable({ org, g, layout: layoutRaw, base, onChange }: {
   // The file's order; packs not in the file (added later) follow, by category.
   const inFile = new Set(layout.flatMap((x) => ('p' in x ? [x.p] : [])));
   const rest = cdRows(all.filter((p) => !inFile.has(p)), cats).flatMap((x) => (x.kind === 'pack' ? [x.pack] : []));
-  const rows: FileRow[] = layout.length ? [...layout.filter((x) => 'p' in x || x.of.length), ...rest.map((p) => ({ p }))]
+  const rows: FileRow[] = hasLayout(layout) ? [...layout.filter((x) => 'p' in x || x.of.length), ...rest.map((p) => ({ p }))]
     : cdRows(all, cats).map((x) => (x.kind === 'pack' ? { p: x.pack } : { t: x.label, of: x.packs }));
   const covered = rows.some((x) => 't' in x && all.every((p) => x.of.includes(p)));
   const v = (c: string, list: string[]) => list.reduce((t, p) => t + (g[c]?.[p] ?? 0), 0);
