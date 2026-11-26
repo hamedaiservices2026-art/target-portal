@@ -306,6 +306,44 @@ function BrandForm() {
   );
 }
 
+/** The admin's own approval template: the download fills it with the numbers. */
+function TemplateForm() {
+  useLang();
+  const res = useResource<{ name: string; data: string | null; uploadedAt: string | null }>('/api/data/ops/approval-template');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  async function upload(file: File | undefined) {
+    if (!file) return;
+    setErr(null); setMsg(null);
+    if (!/\.(xlsx|xlsm)$/i.test(file.name) || file.size > 1_400_000) { setErr(tc('tplBad')); return; }
+    setBusy(true);
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      let bin = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      await api('PUT', '/api/admin/approval-template', { name: file.name, data: btoa(bin) });
+      res.reload(); setMsg(tc('saved'));
+    } catch (x) { setErr(errText(x)); } finally { setBusy(false); }
+  }
+  async function remove() {
+    setBusy(true); setErr(null); setMsg(null);
+    try { await api('PUT', '/api/admin/approval-template', { data: null }); res.reload(); setMsg(tc('saved')); } catch (x) { setErr(errText(x)); } finally { setBusy(false); }
+  }
+  const has = !!res.data?.data;
+  return (
+    <Section title={tc('tplTitle')}>
+      <p class="muted small">{tc('tplHelp')}</p>
+      <div class="toolbar" data-testid="tpl-form">
+        <span class="small" data-testid="tpl-current">{has ? tc('tplCurrent', { name: res.data!.name }) : tc('tplNone')}</span>
+        <label class="btn primary">{tc('tplPick')}<input type="file" accept=".xlsx,.xlsm" hidden data-testid="tpl-file" disabled={busy} onChange={(e) => { void upload(e.currentTarget.files?.[0]); e.currentTarget.value = ''; }} /></label>
+        {has && <button type="button" class="btn" data-testid="tpl-remove" disabled={busy} onClick={() => void remove()}>{tc('tplRemove')}</button>}
+      </div>
+      <Saver busy={busy} err={err ?? res.error} msg={msg} />
+    </Section>
+  );
+}
+
 type MailDto = { on: boolean; configured: boolean; appUrl: boolean; withEmail: number; accounts: number };
 
 /** Target emails: on/off, whether the mail service is set up, and each person's email from an Excel file. */
@@ -378,6 +416,7 @@ export function CycleSetup() {
       <CdRoles />
       <MailForm />
       <BrandForm />
+      <TemplateForm />
     </section>
   );
 }

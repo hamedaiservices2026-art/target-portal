@@ -151,6 +151,25 @@ test('the whole cycle: CD splits and submits, Admin calculates and sends, the He
   expect(s1.flat()).toContain('CSD_CANS150');
   expect(s1.flat()).toContain('Test Company');
   expect(s1.flat()).toContain('June 2031 Target');
+  // With the admin's own template: the download fills it (same file, the numbers written in).
+  const { strFromU8, strToU8, unzipSync, zipSync } = await import('fflate');
+  const tplZip = zipSync({
+    '[Content_Types].xml': strToU8('<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>'),
+    '_rels/.rels': strToU8('<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'),
+    'xl/workbook.xml': strToU8('<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="November" sheetId="1" r:id="rId1"/></sheets></workbook>'),
+    'xl/_rels/workbook.xml.rels': strToU8('<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>'),
+    'xl/worksheets/sheet1.xml': strToU8('<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="B1" t="inlineStr"><is><t>Pack</t></is></c><c r="C1" t="inlineStr"><is><t>TARGET</t></is></c></row><row r="2"><c r="B2" t="inlineStr"><is><t>CSD_CANS150</t></is></c><c r="C2"><v>1</v></c></row></sheetData></worksheet>'),
+  });
+  const put = await cd.request.put('/api/admin/approval-template', { data: { name: 'mine.xlsx', data: Buffer.from(tplZip).toString('base64') } });
+  expect(put.status()).toBe(403); // the CD can't set it; the admin can
+  const putA = await page.request.put('/api/admin/approval-template', { data: { name: 'mine.xlsx', data: Buffer.from(tplZip).toString('base64') } });
+  expect(putA.ok()).toBe(true);
+  const [dl2] = await Promise.all([cd.waitForEvent('download'), cd.getByTestId('approval-download-banner').click()]);
+  expect(dl2.suggestedFilename()).toBe(`Target_For_Approval_${P}.xlsx`);
+  const filled = unzipSync(new Uint8Array(await (await import('node:fs/promises')).readFile(await dl2.path())));
+  expect(strFromU8(filled['xl/workbook.xml']!)).toContain('name="June"');
+  expect(strFromU8(filled['xl/worksheets/sheet1.xml']!)).toContain('<c r="C2"><v>550</v></c>');
+  await page.request.put('/api/admin/approval-template', { data: { data: null } });
 
   // Admin calculates the route targets, applies them and sends to the Head.
   await page.reload();

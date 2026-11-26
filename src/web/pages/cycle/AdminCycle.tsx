@@ -444,7 +444,7 @@ function SendStep({ ws, period, l, onDone, missing }: { ws: Workspace; period: s
           {cycle.cdStatus === 'submitted' && (
             <div class="banner ok cy-approval" data-testid="admin-approval">
               <b>{tc('approvalAdmin')}</b>{' '}
-              <button type="button" class="btn primary" data-testid="admin-approval-download" onClick={() => void downloadApprovalFor(ws, period).catch((x) => setErr(errText(x)))}>{tc('approvalDownload')}</button>
+              <button type="button" class="btn primary" data-testid="admin-approval-download" onClick={() => void downloadApprovalFor(ws, period).then((m) => { if (m) setErr(m); }).catch((x) => setErr(errText(x)))}>{tc('approvalDownload')}</button>
             </div>
           )}
           {(cycle.cdStatus === 'with_cd' || cycle.cdStatus === 'submitted') && (

@@ -17,7 +17,7 @@ import {
 import { forbidden, parseId } from '../services/masters';
 import { listNotifications, markRead } from '../services/notify';
 import { getRules, setRules } from '../services/rulesSettings';
-import { getBrand, setBrand } from '../services/brand';
+import { getApprovalTemplate, getBrand, setApprovalTemplate, setBrand } from '../services/brand';
 import { getPackPlace, setPackPlace } from '../services/packPlace';
 import { syncPackSort, syncPackSortOnce } from '../services/packOrder';
 import { mailStatus, setMailOn, setUserEmails } from '../services/mailSettings';
@@ -46,6 +46,7 @@ cycle.put('/api/admin/mail', h(async (c, db, me, body) => c.json(await setMailOn
 cycle.post('/api/admin/user-emails', h(async (c, db, me, body) => c.json(await setUserEmails(db, me, await body()))));
 cycle.put('/api/admin/pack-place', h(async (c, db, me, body) => { const r = await setPackPlace(db, me, await body()); await syncPackSort(db); return c.json(r); }));
 cycle.put('/api/admin/approval-brand', h(async (c, db, me, body) => c.json(await setBrand(db, me, await body()))));
+cycle.put('/api/admin/approval-template', h(async (c, db, me, body) => { const t = await setApprovalTemplate(db, me, await body()); return c.json({ name: t.name, uploadedAt: t.uploadedAt, has: !!t.data }); }));
 
 cycle.put('/api/admin/departments/:id/workspace', h(async (c, db, me, body) => {
   await setDeptWorkspace(db, me, parseId(p(c, 'id')), await body());
@@ -114,6 +115,7 @@ cycle.get('/api/data/:ws/months', h(async (c, db) => { adminOrCd(c); return raw(
 cycle.get('/api/data/:ws/org', h(async (c, db) => { adminOrCd(c); await syncPackSortOnce(db); return c.json(await readOrg(db, ws(c))); }));
 cycle.get('/api/data/:ws/pack-place', h(async (c, db) => { adminOrCd(c); return c.json({ place: await getPackPlace(db) }); }));
 cycle.get('/api/data/:ws/approval-brand', h(async (c, db) => { adminOrCd(c); return c.json(await getBrand(db)); }));
+cycle.get('/api/data/:ws/approval-template', h(async (c, db) => { adminOrCd(c); return c.json(await getApprovalTemplate(db)); }));
 cycle.get('/api/data/packs-sub', h(async (c, db) => c.json(await packSubs(db))));
 cycle.get('/api/data/:ws/sales-months', h(async (c, db) => c.json({ months: await salesMonths(db, ws(c)) })));
 

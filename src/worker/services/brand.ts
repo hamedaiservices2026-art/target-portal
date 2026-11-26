@@ -41,3 +41,36 @@ export async function setBrand(db: D1Database, actorId: number, body: Obj): Prom
   ]);
   return brand;
 }
+
+// The admin's own approval template (an Excel file): the download fills it with the month's numbers.
+const TEMPLATE_KEY = 'approval_template_json';
+const MAX_TEMPLATE = 1_900_000; // characters of base64 (about 1.4 MB of file)
+
+export type ApprovalTemplate = { name: string; data: string | null; uploadedAt: string | null };
+
+export async function getApprovalTemplate(db: D1Database): Promise<ApprovalTemplate> {
+  const r = await one<{ value: string }>(db, `SELECT value FROM settings WHERE key = ?`, TEMPLATE_KEY);
+  try {
+    const v = r ? (JSON.parse(r.value) as Partial<ApprovalTemplate>) : {};
+    return { name: typeof v.name === 'string' ? v.name : '', data: typeof v.data === 'string' ? v.data : null, uploadedAt: typeof v.uploadedAt === 'string' ? v.uploadedAt : null };
+  } catch {
+    return { name: '', data: null, uploadedAt: null };
+  }
+}
+
+/** body: {name, data (base64 of the .xlsx / .xlsm)}; data null removes the template. */
+export async function setApprovalTemplate(db: D1Database, actorId: number, body: Obj): Promise<ApprovalTemplate> {
+  const remove = body.data === null || body.data === undefined || body.data === '';
+  const name = typeof body.name === 'string' ? body.name.trim().slice(0, 200) : '';
+  if (!remove) {
+    if (typeof body.data !== 'string' || !/^[A-Za-z0-9+/=]+$/.test(body.data)) throw bad('the template must be an Excel file');
+    if (body.data.length > MAX_TEMPLATE) throw bad('the template is too large (at most about 1.4 MB)');
+    if (!/\.(xlsx|xlsm)$/i.test(name)) throw bad('the template must be an .xlsx or .xlsm file');
+  }
+  const t: ApprovalTemplate = remove ? { name: '', data: null, uploadedAt: null } : { name, data: body.data as string, uploadedAt: new Date().toISOString() };
+  await batch(db, [
+    db.prepare(`INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).bind(TEMPLATE_KEY, JSON.stringify(t)),
+    auditStatement(db, actorId, 'approval.template', {}, { name: remove ? null : name }),
+  ]);
+  return t;
+}

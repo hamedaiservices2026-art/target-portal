@@ -537,11 +537,39 @@ function downloadWorkbook(work: CdWork, l: Loaded) {
 // ---------- the approval workbook for signing ----------
 
 /** The approval workbook of the CD's final target (Template For Approval layout). */
-export async function downloadApprovalOf(work: CdWork, l: Loaded): Promise<void> {
+export async function downloadApprovalOf(work: CdWork, l: Loaded): Promise<string | null> {
   const { org, bench, cycle } = l;
   const final = cdReconcile(work);
   const layout = bench.layout;
   const cats = catMap(org);
+  // The admin's own template (Cycle setup): filled with the numbers, everything else kept as it is.
+  const tpl = await api<{ name: string; data: string | null }>('GET', `/api/data/${cycle.ws}/approval-template`).catch(() => null);
+  if (tpl?.data) {
+    const { fillApprovalTemplate } = await import('../../cycle/approvalTemplate');
+    const pidx = packIndex(org.packs.map((p) => p.code));
+    const r = fillApprovalTemplate(Uint8Array.from(atob(tpl.data), (ch) => ch.charCodeAt(0)), {
+      period: cycle.period, target: final.nt, yago: bench.yagoSales, pago: bench.pagoSales, plan: bench.aopNow,
+      channels: orderedDeptCols(org.depts, NO_CHANNEL).flatMap((d) => d.chans.map((c) => ({
+        label: c === NO_CHANNEL ? org.depts.find((x) => String(x.id) === d.id)?.name ?? c : c, g: final.dm[d.id]?.[c] ?? {},
+      }))),
+      codeOf: (n) => pidx.get(packKey(n)) ?? null,
+    });
+    const ext = /\.xlsm$/i.test(tpl.name) ? 'xlsm' : 'xlsx';
+    const blob = new Blob([r.data as Uint8Array<ArrayBuffer>], { type: ext === 'xlsm' ? 'application/vnd.ms-excel.sheet.macroEnabled.12' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Target_For_Approval_${cycle.period}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    const notes = [
+      r.missing.length ? tc('tplMissing', { packs: r.missing.join(', ') }) : '',
+      r.unknown.length ? tc('tplUnknown', { packs: r.unknown.join(', ') }) : '',
+    ].filter(Boolean);
+    return notes.length ? notes.join(' ') : null;
+  }
   const { downloadApproval } = await import('../../cycle/approval');
   // The company name and logo the admin set (Cycle setup).
   const b = await api<{ company: string; logo: string | null; logoW: number; logoH: number }>('GET', `/api/data/${cycle.ws}/approval-brand`).catch(() => null);
@@ -560,13 +588,14 @@ export async function downloadApprovalOf(work: CdWork, l: Loaded): Promise<void>
       chans: d.chans.map((c) => ({ label: c === NO_CHANNEL ? org.depts.find((x) => String(x.id) === d.id)?.name ?? c : c, g: final.dm[d.id]?.[c] ?? {} })),
     })),
   }, `Target_For_Approval_${cycle.period}.xlsx`);
+  return null;
 }
 
 /** For the Admin: loads what the CD screen loads, then the approval workbook. */
-export async function downloadApprovalFor(ws: Workspace, period: string): Promise<void> {
+export async function downloadApprovalFor(ws: Workspace, period: string): Promise<string | null> {
   const l = await loadAll(ws, period);
   if (!l.cycle.cd) throw new Error('No target from the Commercial Director yet.');
-  await downloadApprovalOf(l.cycle.cd, l);
+  return downloadApprovalOf(l.cycle.cd, l);
 }
 
 // ---------- page ----------
@@ -689,7 +718,7 @@ export function CdPage({ ws: wsParam, period: periodParam }: { ws?: string; peri
             {dirty && <span class="pill warn">{tc('unsaved')}</span>}
             <span class="spacer" />
             <button type="button" class="btn" onClick={() => downloadWorkbook(work, l)}>{tc('downloadExcel')}</button>
-            <button type="button" class="btn" data-testid="approval-download" onClick={() => void downloadApprovalOf(work, l).catch((x) => setErr(errText(x)))}>{tc('approvalDownload')}</button>
+            <button type="button" class="btn" data-testid="approval-download" onClick={() => void downloadApprovalOf(work, l).then((m) => { if (m) setErr(m); }).catch((x) => setErr(errText(x)))}>{tc('approvalDownload')}</button>
             {edit && <button type="button" class="btn" disabled={busy || !dirty} onClick={() => void save()}>{tc('save')}</button>}
             {edit && <button type="button" class="btn primary" disabled={busy || problems.length > 0} title={problems.join('; ')} onClick={() => void submit()}>{tc('approveReturnAdmin')}</button>}
           </div>
@@ -698,7 +727,7 @@ export function CdPage({ ws: wsParam, period: periodParam }: { ws?: string; peri
           {l.cycle.cdStatus === 'submitted' && (
             <div class="banner ok cy-approval" data-testid="approval-banner">
               <b>{tc('approvalReady')}</b> {tc('approvalReadyHelp')}{' '}
-              <button type="button" class="btn primary" data-testid="approval-download-banner" onClick={() => void downloadApprovalOf(work, l).catch((x) => setErr(errText(x)))}>{tc('approvalDownload')}</button>
+              <button type="button" class="btn primary" data-testid="approval-download-banner" onClick={() => void downloadApprovalOf(work, l).then((m) => { if (m) setErr(m); }).catch((x) => setErr(errText(x)))}>{tc('approvalDownload')}</button>
             </div>
           )}
           {err && <div class="alert" role="alert">{err}</div>}
