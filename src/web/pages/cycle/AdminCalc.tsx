@@ -12,6 +12,7 @@ import type { Workspace } from '../../../worker/auth';
 import type { CycleDto } from '../../../worker/services/cycle';
 import type { OrgDto } from '../../../worker/services/cycleData';
 import { api } from '../../api';
+import { useSession } from '../../session';
 import { errText } from '../../components/AdminBits';
 import { fmtDateTime } from '../../format';
 import { fmtNum, useLang } from '../../i18n';
@@ -19,6 +20,8 @@ import { calculate, catMap, inPackOrder, deptTree, routeAverages, subMap, sumCat
 import { tc } from '../../cycle/i18n';
 import { loadMonthData, loadRouteData, useAsync } from '../../cycle/load';
 import { Checks, fmtPct, MonthPicker, monthsLabel, NumCell, Section, Tabs, writeWorkbook } from '../../cycle/ui';
+import { writeTargetFile, type TargetLine } from '../../cycle/targetFiles';
+import { RouteUpload, SourcePicker, type Source } from './RouteUpload';
 
 type Loaded = { cycle: CycleDto; org: OrgDto; links?: { kaDeptId: number; opsDeptId: number | null }[] };
 type Basis = 'sales' | 'uploaded';
@@ -42,11 +45,13 @@ const sumPacks = (g: Grid | undefined, packs: string[]) => packs.reduce((s, p) =
 
 export function CalcTab({ ws, period, l, reload, onNext }: { ws: Workspace; period: string; l: Loaded; reload: () => void; onNext?: () => void }) {
   const [lang] = useLang();
+  const me = useSession().user;
   const { cycle, org } = l;
   const cats = catMap(org);
   const subOf = useMemo(() => subMap(org.packs), [org]);
   const [months, setMonthsState] = useState<string[]>(cycle.settings.avgMonths);
   const [basis, setBasis] = useState<Basis>('sales');
+  const [source, setSource] = useState<Source>('system');
   const [ran, setRan] = useState(false);
   const [fixed, setFixed] = useState<Record<string, Grid>>({});
   const [view, setView] = useState<'cat' | 'pack'>('cat');
@@ -66,7 +71,9 @@ export function CalcTab({ ws, period, l, reload, onNext }: { ws: Workspace; peri
       loadRouteData(ws, 'prev_target', [period, pm]),
       loadMonthData<{ mode: string; byPack: Grid; byLeaf?: Record<string, Grid> }>(ws, 'new_target'),
     ]);
-    return { sales: sales.data, routeTargets: prev.data[period] ?? prev.data[pm] ?? {}, upload: nt[period] ?? null };
+    const salesmen: Record<string, string> = {};
+    for (const m of [pm, period]) for (const [r, x] of Object.entries(prev.extra[m] ?? {})) if (x?.salesmanId) salesmen[r] = String(x.salesmanId);
+    return { sales: sales.data, routeTargets: prev.data[period] ?? prev.data[pm] ?? {}, upload: nt[period] ?? null, salesmen };
   } : null, [ws, period, months.join(',')]);
 
   async function setMonths(m: string[]) {
@@ -153,9 +160,12 @@ export function CalcTab({ ws, period, l, reload, onNext }: { ws: Workspace; peri
     </Section>
   );
 
+  const picker = <SourcePicker ws={ws} value={source} onChange={(v) => { setSource(v); setMsg(null); setErr(null); }} />;
+  if (source === 'upload') return <>{returned}{picker}<RouteUpload ws={ws} period={period} org={org} deptTarget={deptT} reload={reload} /></>;
   const head = (
     <>
       {returned}
+      {picker}
       <MonthPicker period={period} months={months} onChange={(m) => void setMonths(m)} available={avail.data ? new Set(avail.data.months) : null} title={tc('monthsForAvg')} />
       {data.error && <div class="alert" role="alert">{data.error}</div>}
       {avgTable}
@@ -365,24 +375,16 @@ export function CalcTab({ ws, period, l, reload, onNext }: { ws: Workspace; peri
     ]);
   }
   function exportRoutes() {
-    const byId = new Map(org.nodes.map((n) => [n.id, n]));
-    const packs = inPackOrder(deptIds.flatMap((d) => Object.keys(deptT[d] ?? {})), org.packs.map((p) => p.code));
-    const list: (string | number | null)[][] = [];
-    const matrix: (string | number | null)[][] = [];
+    const master = org.packs.map((p) => p.code);
+    const lines: TargetLine[] = [];
     for (const x of org.leaves) {
-      const c = calcOf(String(x.deptId));
+      const d = String(x.deptId);
+      const c = calcOf(d);
       if (!c) continue;
       const g = c.routes[x.routeCode] ?? {};
-      const path: string[] = [];
-      for (let n = byId.get(x.nodeId); n; n = n.parentId === null ? undefined : byId.get(n.parentId)) path.unshift(n.name);
-      const [h = '', m = '', s = ''] = path;
-      for (const p of packs) if (g[p]) list.push([period.replace('-', ''), x.deliverySystem, x.routeCode, h, m, s, p, cats.get(p) ?? '', g[p]!]);
-      matrix.push([h, m, s, x.routeCode, ...packs.map((p) => g[p] ?? 0), total(g)]);
+      lines.push({ ds: x.deliverySystem, code: x.routeCode, salesman: data.data?.salesmen[x.routeCode], grid: g, packs: inPackOrder([...Object.keys(deptT[d] ?? {}), ...Object.keys(g)], master) });
     }
-    void writeWorkbook(`target_by_route_and_pack_${ws}_${period}.xlsx`, [
-      { name: 'Route x pack', columns: ['Period', 'Delivery System', 'Route Code', 'Head of Department', 'Manager', 'Supervisor', 'Sales Target Category', 'Category', 'Cases'], rows: list },
-      { name: 'Matrix', columns: ['Head of Department', 'Manager', 'Supervisor', 'Route Code', ...packs, 'Total'], rows: matrix },
-    ]);
+    void writeTargetFile(ws === 'ka' ? 'mdd' : 'mtfl', `${ws === 'ka' ? 'SalesTarget_MDD' : 'MTFL_Targets'}_${period}.xlsx`, period, lines, { preparedBy: me?.name });
   }
   async function apply() {
     setBusy(true);
@@ -431,7 +433,7 @@ export function CalcTab({ ws, period, l, reload, onNext }: { ws: Workspace; peri
       {err && <div class="alert" role="alert">{err}</div>}
       <div class="actions cy-end">
         <button type="button" class="btn" onClick={exportCalc}>{tc('exportCalc')}</button>
-        <button type="button" class="btn" onClick={exportRoutes}>{tc('exportRoutes')}</button>
+        <button type="button" class="btn" onClick={exportRoutes}>{tc('exportMtfl')}</button>
         <button type="button" class="btn primary" disabled={busy || anyOver || overAbc} data-testid="apply-calc" onClick={() => void apply()}>{tc('applyN', { n: live.depts.length })}</button>
       </div>
       <p class="small muted">{tc('periodsNote', { pago: pm, yago: addMonths(period, -12), from: addMonths(period, -3) })}</p>

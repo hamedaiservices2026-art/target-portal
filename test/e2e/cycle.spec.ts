@@ -185,8 +185,27 @@ test('the whole cycle: CD splits and submits, Admin calculates and sends, the He
   // Admin calculates the route targets, applies them and sends to the Head.
   await page.reload();
   await page.getByRole('tab', { name: 'Target calculator' }).click();
+  // Upload instead of the system calculation: the admin's MTFL file, checked against the department target.
+  await page.getByTestId('src-upload').check();
+  const { default: writeX } = await import('write-excel-file/node');
+  const mtfl = await (writeX as unknown as (d: unknown) => { toBuffer: () => Promise<Buffer> })([
+    ['Creation Date:', null], ['Period (YYYYMM)', 'Delivery System', 'Route Code', 'Salesman ID', 'Sales Target Category', 'Cases', 'Amount', 'Format'],
+    [P, 'Presell – TT', 314023, 42464, 'CSD_CANS150', 10, null, 'Small'], [P, 'Presell – TT', 314023, 42464, 'AquafinA_330', 5, null, 'Small'],
+  ].map((r) => r.map((value) => (value === null ? null : { value })))).toBuffer();
+  await page.getByTestId('route-upload-file').setInputFiles({ name: 'MTFL_Targets.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: mtfl });
+  await expect(page.getByTestId('route-upload-check')).toContainText('Under by');
+  await page.getByTestId('apply-upload').click();
+  await expect(page.getByTestId('calc-applied')).toContainText(/Applied for \d+ Heads/);
+  await page.getByTestId('src-system').check();
   await page.getByRole('button', { name: 'Calculate target on route by pack' }).click();
   await expect(page.getByText('Matches').first()).toBeVisible();
+  // The export is the MTFL file.
+  const [dlM] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Export target (MTFL)' }).click()]);
+  expect(dlM.suggestedFilename()).toBe(`MTFL_Targets_${P}.xlsx`);
+  const mt = await readSheet(await dlM.path(), 'Sheet1');
+  expect(mt[0]![0]).toBe('Creation Date:');
+  expect(mt[1]).toEqual(['Period (YYYYMM)', 'Delivery System', 'Route Code', 'Salesman ID', 'Sales Target Category', 'Cases', 'Amount', 'Format']);
+  expect(mt[2]![0]).toBe(P);
   await page.getByTestId('apply-calc').click();
   await expect(page.getByTestId('calc-applied')).toContainText(/Applied for \d+ Heads/);
   await page.getByRole('tab', { name: 'Workflow' }).click();

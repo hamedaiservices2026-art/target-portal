@@ -558,7 +558,9 @@ export async function applyCalc(db: D1Database, actorId: number, ws: Workspace, 
   }
   const json = JSON.stringify(next);
   if (json.length > MAX_CALC_JSON) throw new ApiError(413, { error: 'too_many_rows', detail: 'the calculation is too large' });
-  const notes = body.notes === undefined ? null : JSON.stringify(body.notes).slice(0, 20000);
+  // Notes too long to keep whole are left out (a cut would not be JSON any more).
+  const nj = body.notes === undefined ? null : JSON.stringify(body.notes);
+  const notes = nj !== null && nj.length <= 200000 ? nj : null;
   const res = await writeBatch(db, [
     updateCycle(db, ws, period, c.version, 'calc_json = ?, calc_notes = COALESCE(?, calc_notes)', [json, notes]),
     auditStatement(db, actorId, 'cycle.calc_apply', {}, { ws, period, applied, kept }),
@@ -646,6 +648,10 @@ export async function sendToHead(db: D1Database, actorId: number, ws: Workspace,
     }
     return { leaf_id: l.id, node_id: l.node_id, delivery_system: l.delivery_system, route_code: l.route_code, values_json: JSON.stringify(values) };
   });
+  // Salesman IDs of an uploaded MTFL file win over the previous target's.
+  const sm = parseJson<{ source?: string; salesmen?: Record<string, unknown> }>(c.calc_notes)?.salesmen;
+  const uploadedSalesmen: Record<string, string> = {};
+  if (sm && typeof sm === 'object') for (const [r, v] of Object.entries(sm)) if (typeof v === 'string' && v && !r.includes('"')) uploadedSalesmen[r] = v;
   const now = new Date().toISOString();
   const fileId = `(SELECT MAX(id) FROM month_files WHERE month_id = ? AND dept_id = ?)`;
   await writeBatch(db, [
@@ -655,12 +661,13 @@ export async function sendToHead(db: D1Database, actorId: number, ws: Workspace,
       `INSERT INTO month_leaves(month_id, leaf_id, node_id, dept_id, file_id, delivery_system, route_code, salesman_id, values_json)
        SELECT ?, json_extract(value, '$.leaf_id'), json_extract(value, '$.node_id'), ?, ${fileId},
               json_extract(value, '$.delivery_system'), json_extract(value, '$.route_code'),
-              (SELECT json_extract(dr.extra_json, '$.salesmanId') FROM data_routes dr
+              COALESCE(json_extract(?, '$."' || json_extract(value, '$.route_code') || '"'),
+                (SELECT json_extract(dr.extra_json, '$.salesmanId') FROM data_routes dr
                 WHERE dr.ws = ? AND dr.kind = 'prev_target' AND dr.route_code = json_extract(value, '$.route_code')
-                ORDER BY dr.month DESC LIMIT 1),
+                ORDER BY dr.month DESC LIMIT 1)),
               json_extract(value, '$.values_json')
        FROM json_each(?) WHERE true`,
-    ).bind(m.id, deptId, m.id, deptId, ws, JSON.stringify(rows)),
+    ).bind(m.id, deptId, m.id, deptId, JSON.stringify(uploadedSalesmen), ws, JSON.stringify(rows)),
     db.prepare(
       `INSERT INTO head_approvals(period, dept_id, status, sent_total, sent_json, sent_at, decided_at, comment)
        VALUES (?, ?, 'pending', ?, ?, ?, NULL, NULL)

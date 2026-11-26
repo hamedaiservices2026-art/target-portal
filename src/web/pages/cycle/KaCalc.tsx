@@ -16,8 +16,11 @@ import { achievement, upliftPct } from '../../cycle/kaUplift';
 import { tc } from '../../cycle/i18n';
 import { loadMonthData, loadRouteData, useAsync } from '../../cycle/load';
 import type { RouteMonthData } from '../../cycle/parsers';
-import { fmtPct, MonthPicker, monthsLabel, NumCell, Section, Tabs, writeWorkbook } from '../../cycle/ui';
+import { fmtPct, MonthPicker, monthsLabel, NumCell, Section, Tabs } from '../../cycle/ui';
 import type { Loaded } from './AdminCycle';
+import { useSession } from '../../session';
+import { writeTargetFile, type TargetLine } from '../../cycle/targetFiles';
+import { RouteUpload, SourcePicker, type Source } from './RouteUpload';
 
 type Upload = { mode: string; byPack: Grid; byLeaf?: Record<string, Grid> };
 
@@ -30,7 +33,9 @@ const sumInto = (into: Grid, g: Grid) => { for (const [p, n] of Object.entries(g
 
 export function KaCalcTab({ period, l, reload, onNext }: { period: string; l: Loaded; reload: () => void; onNext?: () => void }) {
   useLang();
+  const me = useSession().user;
   const { cycle, org } = l;
+  const [source, setSource] = useState<Source>('system');
   const cats = catMap(org);
   const [months, setMonths] = useState<string[]>(cycle.settings.avgMonths);
   const [min, setMin] = useState(cycle.settings.uplift?.min ?? 1);
@@ -134,10 +139,12 @@ export function KaCalcTab({ period, l, reload, onNext }: { period: string; l: Lo
     return out;
   }, [calc, data.data, override, min, max, org]);
 
+  const picker = <SourcePicker ws="ka" value={source} onChange={(v) => { setSource(v); setMsg(null); setErr(null); }} />;
+  if (source === 'upload') return <>{picker}<RouteUpload ws="ka" period={period} org={org} deptTarget={null} reload={reload} /></>;
   if (mode === 'ops' && !(l.links ?? []).some((x) => x.opsDeptId !== null && l.ops?.dept?.[String(x.opsDeptId)])) {
-    return <p class="card muted" data-testid="ka-calc-wait">{tc('kaCalcWaitOps', { period })}</p>;
+    return <>{picker}<p class="card muted" data-testid="ka-calc-wait">{tc('kaCalcWaitOps', { period })}</p></>;
   }
-  if (mode !== 'ops' && data.data && !data.data.upload) return <p class="card muted">{tc('kaCalcWaitNt')}</p>;
+  if (mode !== 'ops' && data.data && !data.data.upload) return <>{picker}<p class="card muted">{tc('kaCalcWaitNt')}</p></>;
 
   const pct = (x: Line) => { const b = total(x.base); return b > 0 ? total(x.target) / b - 1 : null; };
   const added = (x: Line) => total(x.target) - total(x.base);
@@ -187,22 +194,12 @@ export function KaCalcTab({ period, l, reload, onNext }: { period: string; l: Lo
   }
 
   function exportIt() {
-    const packs = inPackOrder(lines.flatMap((x) => Object.keys(x.base)), org.packs.map((p) => p.code));
-    void writeWorkbook(`key_account_target_${period}.xlsx`, [
-      {
-        name: 'By KAM and KAE',
-        columns: ['MDM', 'KAM', 'KAE', 'KAE ID', 'Level', 'Avg sales', 'Uplift %', 'Cases added', 'Key Account target'],
-        rows: lines.map((x) => [x.dept, x.kam, x.kae, x.route ?? '', x.level, avgTot(x), pct(x) === null ? null : Math.round(pct(x)! * 10000) / 100, added(x), total(x.target)]),
-      },
-      {
-        name: 'By pack',
-        columns: ['MDM', 'KAM', 'KAE', 'KAE ID', 'Pack', 'Category', 'Avg sales', 'Uplift %', 'Key Account target'],
-        rows: lines.filter((x) => x.level === 'kae').flatMap((x) => packs.filter((p) => x.base[p]).map((p) => [
-          x.dept, x.kam, x.kae, x.route ?? '', p, cats.get(p) ?? '', Math.round(x.avg[p] ?? 0),
-          x.base[p] ? Math.round(((x.target[p] ?? 0) / x.base[p]! - 1) * 10000) / 100 : null, x.target[p] ?? 0,
-        ])),
-      },
-    ]);
+    const master = org.packs.map((p) => p.code);
+    const out: TargetLine[] = lines.filter((x) => x.level === 'kae' && x.route).map((x) => ({
+      ds: org.leaves.find((y) => y.routeCode === x.route)?.deliverySystem ?? '', code: x.route!, grid: x.target,
+      packs: inPackOrder([...Object.keys(x.base), ...Object.keys(x.target)], master),
+    }));
+    void writeTargetFile('mdd', `SalesTarget_MDD_${period}.xlsx`, period, out, { preparedBy: me?.name });
   }
 
   const depts = lines.filter((x) => x.level === 'dept');
@@ -210,6 +207,7 @@ export function KaCalcTab({ period, l, reload, onNext }: { period: string; l: Lo
 
   return (
     <>
+      {picker}
       <MonthPicker period={period} months={months} onChange={setMonths} available={avail.data ? new Set(avail.data.months) : null} title={tc('kaMonths')} />
       {cycle.settings.note && <div class="banner info small" data-testid="ka-note-shown"><b>{tc('kaNote')}:</b> {cycle.settings.note}</div>}
       <Section title={tc('kaUpliftTitle')}>
@@ -299,7 +297,7 @@ export function KaCalcTab({ period, l, reload, onNext }: { period: string; l: Lo
       {err && <div class="alert" role="alert">{err}</div>}
       {lines.length > 0 && (
         <div class="actions cy-end">
-          <button type="button" class="btn" onClick={exportIt}>{tc('exportCalc')}</button>
+          <button type="button" class="btn" onClick={exportIt}>{tc('exportMdd')}</button>
           <button type="button" class="btn primary" data-testid="apply-calc" disabled={busy || min > max} onClick={() => void apply()}>{tc('applyN', { n: depts.length })}</button>
         </div>
       )}

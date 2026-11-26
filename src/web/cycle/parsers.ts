@@ -694,3 +694,63 @@ export function parsePeopleIds(rows: unknown[][]): { people: { name: string; id:
   }
   return { people: [...people.values()], kae: [...kae] };
 }
+
+// ---------- target by route / KAE uploaded by the admin (MTFL and MDD files) ----------
+
+export type RouteTargetFile = {
+  /** Route (or KAE) code -> pack -> cases, every row of the target month (0s kept). */
+  byLeaf: Record<string, Record<string, number>>;
+  /** Route code -> salesman ID (MTFL only). */
+  salesmen: Record<string, string>;
+  /** Route code -> delivery system as written in the file. */
+  deliverySystems: Record<string, string>;
+  /** Delivery system -> Format (Small, Large, Non-Retail, Wholesale). */
+  formats: Record<string, string>;
+  checks: Check[];
+};
+
+/**
+ * The admin's own target file: MTFL (Period, Delivery System, Route Code,
+ * Salesman ID, Sales Target Category, Cases, Amount, Format) for Operation, or
+ * MDD (Period, Delivery System, KAE / KAM, Sales Target Category, Cases,
+ * Amount, Format) for Key Accounts. Rows of other months are ignored.
+ */
+export function parseRouteTarget(rows: unknown[][], target: Month, idx: PackIndex): RouteTargetFile {
+  const h = findHeader(rows, {
+    period: ['Period', 'Month'], ds: ['Delivery System'], leaf: ['Route Code', 'KAE / KAM', 'KAE / KAM ID', 'KAE ID', 'KAE', 'Route', 'KAM ID'],
+    salesman: ['Salesman ID', 'Salesman'], pack: PACK_NAMES, cases: ['Cases'], format: ['Format'],
+  }, ['leaf', 'pack', 'cases']);
+  const out: RouteTargetFile = { byLeaf: {}, salesmen: {}, deliverySystems: {}, formats: {}, checks: [] };
+  if (!h) return { ...out, checks: [{ level: 'error', text: 'Columns "Route Code" (or "KAE / KAM"), "Sales Target Category" and "Cases" were not found.' }] };
+  const unknown = new Map<string, number>();
+  let other = 0;
+  let bad = 0;
+  for (const r of rows.slice(h.row + 1)) {
+    if (!Array.isArray(r)) continue;
+    const leaf = cellText(r[h.col.leaf!]);
+    const name = cellText(r[h.col.pack!]);
+    if (!leaf || !name || isSubtotal(leaf) || isSubtotal(name)) continue;
+    if (h.col.period !== undefined) {
+      const m = parseMonth(r[h.col.period]);
+      if (m && m !== target) { other++; continue; }
+    }
+    const raw = r[h.col.cases!];
+    const n = raw === null || raw === undefined || raw === '' ? 0 : cellNumber(raw);
+    if (n === null || n < 0) { bad++; continue; }
+    const code = idx.get(packKey(name));
+    if (!code) { unknown.set(name, (unknown.get(name) ?? 0) + n); continue; }
+    const g = (out.byLeaf[leaf] ??= {});
+    g[code] = (g[code] ?? 0) + Math.round(n);
+    const ds = h.col.ds !== undefined ? cellText(r[h.col.ds]) : '';
+    if (ds) out.deliverySystems[leaf] = ds;
+    const sm = h.col.salesman !== undefined ? cellText(r[h.col.salesman]) : '';
+    if (sm) out.salesmen[leaf] = sm;
+    const f = h.col.format !== undefined ? cellText(r[h.col.format]) : '';
+    if (ds && f) out.formats[ds] = f;
+  }
+  out.checks.push(...shiftedCheck(h.row), ...unknownTargetPacks(unknown));
+  if (other) out.checks.push({ level: 'info', text: `${other} row(s) of other months were ignored (only ${target} is used).` });
+  if (bad) out.checks.push({ level: 'warning', text: `${bad} row(s) have Cases that are not a number of 0 or more and were skipped.` });
+  if (Object.keys(out.byLeaf).length === 0) out.checks.push({ level: 'error', text: `No target found for ${target}.` });
+  return out;
+}
