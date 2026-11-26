@@ -803,6 +803,10 @@ export const CY = {
   ntFrom: ["New Target from:", "الهدف الجديد من:"],
   byPackOnly: ["By pack only", "حسب العبوة فقط"],
   byPackDept: ["By pack and department", "حسب العبوة والقسم"],
+  catReset: ["Reset", "إعادة ضبط"],
+  catResetHelp: ["Back to the target and split this category had when you opened it", "العودة إلى هدف وتوزيع هذه الفئة كما كانا عند الفتح"],
+  upliftReset: ["Reset uplift", "إلغاء الزيادة"],
+  upliftResetHelp: ["Undo the uplift: the packs go back to their target and split before it", "إلغاء الزيادة: تعود العبوات إلى هدفها وتوزيعها قبلها"],
   // Admin › Hierarchy (v16)
   hzIntro: ['Add, move, rename or delete here, or upload the whole hierarchy in one file. Every Channel Head is the top of one department.', 'أضف أو انقل أو أعد التسمية أو احذف هنا، أو ارفع الهيكل كاملًا في ملف واحد. كل رئيس قناة هو أعلى قسم واحد.'],
   hzAdd: ['Add', 'إضافة'],

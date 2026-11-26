@@ -417,7 +417,7 @@ function DeptTab({ work, edit, l, setWork }: { work: CdWork; edit: boolean; l: L
           <label class="small"><input type="radio" name="cd-dist" checked={!byCat} onChange={() => setByCat(false)} data-testid="cd-dist-pack" /> {tc('cdDistPack')}</label>
         </div>
       )}
-      {hasSplit && byCat && <CdByCategory work={work} heads={cols} cats={cats} subOf={subOf} bench={headBench} editable={edit} setWork={setWork} />}
+      {hasSplit && byCat && <CdByCategory baseKey={`${cycle.ws}-${cycle.period}`} work={work} heads={cols} cats={cats} subOf={subOf} bench={headBench} editable={edit} setWork={setWork} />}
       <Section title={tc('deptTitle', { period: cycle.period })} right={
         <div class="toolbar">
           {edit && calcOn && prevOk && <button type="button" class="btn primary" data-testid="split-prev" onClick={() => split('prev')}>{tc('splitByPrev')}</button>}
