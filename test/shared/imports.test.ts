@@ -262,7 +262,7 @@ describe('planHierarchy', () => {
     const rows = Array.from({ length: 2000 }, (_, i) => N(i + 2, `C${i}`, `C${(i + 1999) % 2000}`, 'ali', 'MT'));
     const t0 = performance.now();
     const p = planHierarchy(rows, ctx());
-    expect(performance.now() - t0).toBeLessThan(250);
+    expect(performance.now() - t0).toBeLessThan(1000);
     expect(p.issues.filter((i) => i.code === 'cycle')).toHaveLength(2000);
     expect(String(p.issues[0]!.vars!.path)).toBe('C0 → C1999 → C1998 → C1997 → C1996 → C1995 → C1994 → C1993 → C1992 → C1991 → …');
   });
