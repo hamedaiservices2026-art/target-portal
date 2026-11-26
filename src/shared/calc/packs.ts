@@ -38,7 +38,7 @@ export function categoryOf(name: string, master?: ReadonlyMap<string, Category>)
 
 function petSize(name: string): number | null {
   for (const t of tokens(name)) {
-    const r = /^(?:MS)?PET(\d{3,4})$/.exec(t);
+    const r = /^(?:MS)?PET(\d{3,4})\+?$/.exec(t);
     if (r) return Number(r[1]);
   }
   return null;

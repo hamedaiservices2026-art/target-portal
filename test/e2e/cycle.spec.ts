@@ -31,6 +31,13 @@ test('admin opens a cycle, saves the rules, and reads the reports', async ({ pag
   await page.getByRole('button', { name: 'Save' }).first().click();
   await expect(page.getByRole('status').first()).toContainText('Saved');
   await expect(page.getByTestId('dept-setup').first()).toBeVisible();
+  // The company name and logo of the approval template.
+  const brand = page.getByTestId('brand-form');
+  await brand.getByTestId('brand-company').fill('Test Company');
+  await brand.getByTestId('brand-logo').setInputFiles({ name: 'logo.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64') });
+  await expect(brand.getByRole('img', { name: 'Logo' })).toBeVisible();
+  await brand.getByTestId('brand-save').click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved' }).last()).toBeVisible();
 
   await page.goto(`/reports/ops/${PERIOD}`);
   await expect(page.getByTestId('reports')).toBeVisible();
@@ -124,6 +131,8 @@ test('the whole cycle: CD splits and submits, Admin calculates and sends, the He
   const s1 = await readSheet(xlsx, 'June');
   expect(s1.flat()).toContain('TARGET vs YAGO');
   expect(s1.flat()).toContain('CSD_CANS150');
+  expect(s1.flat()).toContain('Test Company');
+  expect(s1.flat()).toContain('June 2031 Target');
 
   // Admin calculates the route targets, applies them and sends to the Head.
   await page.reload();

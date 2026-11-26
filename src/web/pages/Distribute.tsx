@@ -296,7 +296,9 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
   // ---- save / submit ----
   const editable = ws.editable;
   const canSave = editable && !stale && busy === null && !anyInvalid;
-  const canSubmit = canSave && allOk;
+  // A supervisor submits only once every route has a salesman ID.
+  const noSalesman = ws.node.level === 'head' || ws.node.workspace === 'ka' ? [] : ws.children.filter((c) => c.key.startsWith('l:') && !c.sub?.trim()).map((c) => c.label);
+  const canSubmit = canSave && allOk && noSalesman.length === 0;
 
   function handleError(e: unknown) {
     if (e instanceof ApiError) {
@@ -304,6 +306,10 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
       if (e.status === 409) return setStale(true);
       if (e.status === 400 && e.body.error === 'rules_failed' && e.body.byPack && typeof e.body.byPack === 'object') {
         return setFailed(e.body.byPack as Record<string, PackCheck>);
+      }
+      if (e.status === 400 && e.body.error === 'salesman_missing') {
+        void load();
+        return setError('errGeneric');
       }
       if (e.status === 400 && e.body.error === 'no_routes' && typeof e.body.node === 'string') {
         setNoRoutesNode(e.body.node);
@@ -466,6 +472,11 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
           </>
         )}
       </div>
+      {editable && noSalesman.length > 0 && (
+        <div class="banner warn" role="status" data-testid="salesman-missing">
+          {tc('salesmanMissing', { n: noSalesman.length, list: noSalesman.slice(0, 10).join(', ') + (noSalesman.length > 10 ? '…' : '') })}
+        </div>
+      )}
       {confirming && editable && (
         <div class="banner warn confirm" role="alertdialog" aria-label={t('dsSubmit')}>
           <span>{t('dsConfirm')}</span>

@@ -3,6 +3,7 @@
 // PAGO and PLAN with the file's Total rows, the pack mix and the signature
 // line; sheet 2, "By Manager", has the target by pack and channel with a
 // total per Head and the grand total (ABC). Totals and % are Excel formulas.
+import { brandFamily, cdSubtotals, type Category } from '../../shared/calc/packs';
 import type { FileRow } from './parsers';
 import type { Grid } from './compute';
 
@@ -17,6 +18,8 @@ export type ApprovalInput = {
   target: Grid; yago: Grid; pago: Grid; plan: Grid;
   /** Heads with their channels (in order) and the target per channel and pack. */
   heads: { name: string; chans: { label: string; g: Grid }[] }[];
+  /** The company name and logo at the top of the first sheet (set by the admin). */
+  brand?: { company: string; logo: { data: ArrayBuffer | Uint8Array; type: 'image/png' | 'image/jpeg'; width: number; height: number } | null };
 };
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -75,7 +78,26 @@ export function approvalLines(layout: FileRow[], packs: string[], catOf: (p: str
     return lines;
   }
   const known = new Set(lines.filter((l) => l.pack).map((l) => l.pack!));
+  // The pack's groups, most specific first: CANS / SSNR / MSPET 2.0+ / MSPET for CSD, the brand for LRB-Others.
+  const groups = (p: string): string[] => {
+    const c = catOf(p);
+    if (c === 'CSD') return cdSubtotals(p, new Map([[p, 'CSD' as Category]])).filter((x) => x !== 'CSD' && x !== 'LRB').map((x) => `CSD:${x}`);
+    return c === 'LRB-Others' ? [`LRB:${brandFamily(p).toLowerCase()}`] : [];
+  };
   for (const p of packs.filter((x) => !known.has(x))) {
+    // After the last pack of its group in the file, and counted in every Total that pack is in.
+    let sib = -1;
+    for (const g of groups(p)) {
+      lines.forEach((l, i) => { if (l.pack && known.has(l.pack) && groups(l.pack).includes(g)) sib = i; });
+      if (sib >= 0) break;
+    }
+    if (sib >= 0) {
+      const q = lines[sib]!.pack!;
+      for (const l of lines) if (!l.pack && l.of.includes(q) && !l.of.includes(p)) l.of.push(p);
+      lines.splice(sib + 1, 0, { label: p, pack: p, of: [p] });
+      known.add(p);
+      continue;
+    }
     const c = catOf(p).toLowerCase();
     const names = c === 'csd' ? ['total csd', 'total abc'] : [`total ${c}`];
     let at = lines.findIndex((l) => !l.pack && names.includes(l.label.trim().toLowerCase()));
@@ -170,6 +192,15 @@ export const PRINT_FEATURE = {
   },
 };
 
+/** The logo where the template has it: column C, rows 1 to 4, about 64 pixels high. */
+function logoImages(inp: ApprovalInput): { images?: unknown[] } {
+  const l = inp.brand?.logo;
+  if (!l || !l.width || !l.height) return {};
+  const h = 64;
+  const w = Math.round((l.width / l.height) * h);
+  return { images: [{ content: l.data, contentType: l.type, width: w, height: h, dpi: 96, anchor: { row: 1, column: 3 }, offsetX: Math.max(0, 115 - w), offsetY: 15, title: 'Logo' }] };
+}
+
 /** The two sheets for write-excel-file. */
 export function approvalSheets(inp: ApprovalInput): unknown[] {
   const packs = Object.keys(inp.target).filter((p) => (inp.target[p] ?? 0) !== 0 || inp.layout.some((r) => 'p' in r && r.p === p));
@@ -189,7 +220,13 @@ export function approvalSheets(inp: ApprovalInput): unknown[] {
   const head = (value: string, c: number, last: number) => ({
     ...base, value, fontWeight: 'bold', textColor: '#FFFFFF', backgroundColor: BLUE, align: c === 1 ? 'left' : 'center', wrap: c !== 1, ...border(c, last, {}, true),
   });
-  const s1: Cell[][] = [[], [], [], [], [{ ...base, value: '' }], [null,
+  // Title as in the template: the company name (blue) and "<Month> <year> Target", right of the logo.
+  const title = (value: string, color: string) => ({ ...base, value, fontSize: 20, fontWeight: 'bold', textColor: color, align: 'center', columnSpan: 4, rowSpan: 2 });
+  const company = inp.brand?.company ?? '';
+  const s1: Cell[][] = [
+    company ? [null, null, null, title(company, '#0070C0'), null, null, null] : [], [],
+    [null, null, null, title(`${month} ${inp.period.slice(0, 4)} Target`, '#000000'), null, null, null], [],
+    [{ ...base, value: '' }], [null,
     ...['Pack', 'TARGET', 'YAGO ', 'TARGET vs YAGO', 'PAGO ', 'TARGET vs PAGO', 'PLAN', 'TARGET vs PLAN'].map((h, i) => head(h, i + 1, 8))]];
   const sum = (col: string, l: Line) => `SUM(${refList(col, l.of.map((p) => rowOf.get(p)!).filter(Boolean))})`;
   lines.forEach((l, i) => {
@@ -261,7 +298,7 @@ export function approvalSheets(inp: ApprovalInput): unknown[] {
   });
 
   return [
-    { sheet: month, data: s1, print: { orientation: 'portrait' }, conditionalFormatting: pctRules(top, top + lines.length - 1), showGridLines: false, stickyRowsCount: 6, stickyColumnsCount: 2, columns: [{ width: 9 }, { width: 27.5 }, ...Array.from({ length: 7 }, () => ({ width: 15.7 }))] },
+    { sheet: month, data: s1, print: { orientation: 'portrait' }, ...logoImages(inp), conditionalFormatting: pctRules(top, top + lines.length - 1), showGridLines: false, stickyRowsCount: 6, stickyColumnsCount: 2, columns: [{ width: 9 }, { width: 27.5 }, ...Array.from({ length: 7 }, () => ({ width: 15.7 }))] },
     { sheet: 'By Manager', data: s2, print: { orientation: 'landscape' }, showGridLines: false, stickyRowsCount: 4, stickyColumnsCount: 2, columns: [{ width: 1.5 }, { width: 22.5 }, ...cols.map((c) => ({ width: c.total ? 11.5 : 10.3 }))] },
   ];
 }

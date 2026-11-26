@@ -248,6 +248,64 @@ function CdRoles() {
   );
 }
 
+type BrandDto = { company: string; logo: string | null; logoW: number; logoH: number };
+
+/** The company name and logo printed at the top of the approval template. */
+function BrandForm() {
+  useLang();
+  const res = useResource<BrandDto>('/api/data/ops/approval-brand');
+  const [b, setB] = useState<BrandDto | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  useEffect(() => { if (res.data) setB(res.data); }, [res.data]);
+  function pick(file: File | undefined) {
+    if (!file || !b) return;
+    setErr(null);
+    if (!/^image\/(png|jpeg)$/.test(file.type)) { setErr(tc('brandLogoType')); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const url = String(reader.result);
+      const img = new Image();
+      img.onload = () => setB({ ...b, logo: url, logoW: img.naturalWidth, logoH: img.naturalHeight });
+      img.onerror = () => setErr(tc('brandLogoType'));
+      img.src = url;
+    };
+    reader.readAsDataURL(file);
+  }
+  async function save() {
+    if (!b) return;
+    setBusy(true); setErr(null); setMsg(null);
+    try {
+      setB(await api<BrandDto>('PUT', '/api/admin/approval-brand', b));
+      setMsg(tc('saved'));
+    } catch (x) {
+      setErr(errText(x));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Section title={tc('brandTitle')}>
+      <p class="muted small">{tc('brandHelp')}</p>
+      {b && (
+        <div class="cy-brand" data-testid="brand-form">
+          <label>{tc('brandCompany')}{' '}
+            <input type="text" value={b.company} maxLength={120} data-testid="brand-company" onInput={(e) => setB({ ...b, company: e.currentTarget.value })} />
+          </label>
+          <div class="toolbar">
+            {b.logo ? <img src={b.logo} alt={tc('brandLogo')} style={{ height: '48px' }} /> : <span class="muted small">{tc('brandNoLogo')}</span>}
+            <label class="btn">{tc('brandLogoPick')}<input type="file" accept="image/png,image/jpeg" hidden data-testid="brand-logo" onChange={(e) => pick(e.currentTarget.files?.[0])} /></label>
+            {b.logo && <button type="button" class="btn" onClick={() => setB({ ...b, logo: null, logoW: 0, logoH: 0 })}>{tc('brandLogoRemove')}</button>}
+            <button type="button" class="btn primary" data-testid="brand-save" disabled={busy} onClick={() => void save()}>{tc('save')}</button>
+          </div>
+        </div>
+      )}
+      <Saver busy={busy} err={err ?? res.error} msg={msg} />
+    </Section>
+  );
+}
+
 export function CycleSetup() {
   useLang();
   return (
@@ -256,6 +314,7 @@ export function CycleSetup() {
       <RulesForm />
       <DeptSetup />
       <CdRoles />
+      <BrandForm />
     </section>
   );
 }

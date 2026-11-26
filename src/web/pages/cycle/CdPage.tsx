@@ -540,7 +540,15 @@ export async function downloadApprovalOf(work: CdWork, l: Loaded): Promise<void>
   const layout = bench.layout;
   const cats = catMap(org);
   const { downloadApproval } = await import('../../cycle/approval');
+  // The company name and logo the admin set (Cycle setup).
+  const b = await api<{ company: string; logo: string | null; logoW: number; logoH: number }>('GET', `/api/data/${cycle.ws}/approval-brand`).catch(() => null);
+  const logo = b?.logo && b.logoW && b.logoH ? {
+    data: Uint8Array.from(atob(b.logo.slice(b.logo.indexOf(',') + 1)), (ch) => ch.charCodeAt(0)),
+    type: (b.logo.startsWith('data:image/png') ? 'image/png' : 'image/jpeg') as 'image/png' | 'image/jpeg',
+    width: b.logoW, height: b.logoH,
+  } : null;
   await downloadApproval({
+    brand: { company: b?.company ?? '', logo },
     period: cycle.period, layout, catOf: (p) => cats.get(p) ?? 'LRB-Others',
     target: final.nt, yago: bench.yagoSales, pago: bench.pagoSales, plan: bench.aopNow,
     heads: orderedDeptCols(org.depts, NO_CHANNEL).map((d) => ({

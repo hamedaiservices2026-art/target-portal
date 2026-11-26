@@ -812,3 +812,20 @@ describe('statement budget', () => {
     expect(await json(r.res)).toHaveLength(1 + areas.length + sups.length);
   }, 60_000);
 });
+
+describe('salesman IDs before a supervisor submits', () => {
+  it('a supervisor cannot submit while a route has no salesman ID; with it the submit goes through', async () => {
+    await areaMoves50();
+    await run(env.DB, `UPDATE month_leaves SET salesman_id = NULL WHERE month_id = ? AND leaf_id = ?`, month, r2);
+    let ws = await json(await getWs(supAS, month, supA));
+    const res = await submit(supAS, month, supA, ws.version);
+    expect(res.status).toBe(400);
+    const body = await json(res);
+    expect(body.error).toBe('salesman_missing');
+    expect(body.issues).toEqual(['R2']);
+    expect((await nodeRow(month, supA)).status).toBe('in_progress');
+    await run(env.DB, `UPDATE month_leaves SET salesman_id = 'S2' WHERE month_id = ? AND leaf_id = ?`, month, r2);
+    ws = await json(await getWs(supAS, month, supA));
+    expect((await submit(supAS, month, supA, ws.version)).status).toBe(200);
+  });
+});

@@ -535,6 +535,13 @@ export async function submitWith(
   if (node.status !== 'in_progress') throw conflict('not_in_progress');
   if (node.parent_id !== null && d.nodes.get(node.parent_id)?.status !== 'submitted') throw conflict('parent_not_submitted');
   if (opts.expectedVersion !== undefined && opts.expectedVersion !== node.version) throw stale();
+  // A supervisor submits only once every route of theirs has a salesman ID (the admin push is not held back).
+  // Supervisors only (not the Head's approval), Operation only (Key Account routes are accounts).
+  if (opts.asManager && node.parent_id !== null) {
+    const missing = (d.leavesByNode.get(nodeId) ?? []).filter((l) => !l.salesman_id?.trim()).map((l) => l.route_code);
+    const isOps = missing.length > 0 && (await one<{ w: string | null }>(db, `SELECT workspace AS w FROM departments WHERE id = ?`, d.deptId))?.w !== 'ka';
+    if (missing.length && isOps) throw new ApiError(400, { error: 'salesman_missing', detail: `Add the salesman ID of route(s) ${missing.slice(0, 20).join(', ')} before submitting.`, issues: missing });
+  }
 
   const { codes } = d;
   const totals = subtreeTotals(d, nodeId);

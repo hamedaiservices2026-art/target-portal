@@ -55,22 +55,27 @@ describe('approval workbook xml', () => {
 
 describe('rows in the order of the AOP by department file', () => {
   const layout = [
+    { p: 'CSD_CANS150' }, { p: 'CSD_CANS240' }, { t: 'Total CANS', of: ['CSD_CANS150', 'CSD_CANS240'] },
     { p: 'CSD_PET1000' }, { p: 'CSD_PET2000+' }, { t: 'Total MSPET', of: ['CSD_PET1000', 'CSD_PET2000+'] },
-    { t: 'Total ABC', of: ['CSD_PET1000', 'CSD_PET2000+'] },
+    { t: 'Total ABC', of: ['CSD_CANS150', 'CSD_CANS240', 'CSD_PET1000', 'CSD_PET2000+'] },
     { p: 'GATORADE' }, { p: 'Propel' }, { t: 'Total Gatorade', of: ['GATORADE', 'Propel'] },
     { p: 'Rockstar_185' }, { p: 'Rockstar_250' }, { t: 'Total ROCKSTAR', of: ['Rockstar_185', 'Rockstar_250'] },
     { t: 'Total LRB-Others', of: ['GATORADE', 'Propel', 'Rockstar_185', 'Rockstar_250'] },
     { t: 'Total LRB ', of: ['CSD_PET1000', 'CSD_PET2000+', 'GATORADE', 'Propel', 'Rockstar_185', 'Rockstar_250'] },
   ];
-  it('keeps the file order and puts a pack missing from the file before its category total', async () => {
+  it('keeps the file order and puts a pack missing from the file with its group', async () => {
     const { approvalLines } = await import('../../src/web/cycle/approval');
     const cat = (p: string) => (p.startsWith('CSD') ? 'CSD' : 'LRB-Others');
-    const lines = approvalLines(layout, ['CSD_PET1000', 'CSD_PET2000+', 'GATORADE', 'Propel', 'Rockstar_185', 'Rockstar_250', 'CSD_NEW'], cat);
+    const lines = approvalLines(layout, ['CSD_PET1000', 'CSD_PET2000+', 'GATORADE', 'Propel', 'Rockstar_185', 'Rockstar_250', 'CSD_CANS150', 'CSD_CANS240', 'CSD_CANS185', 'Rockstar_500'], cat);
     const labels = lines.map((l) => l.label.trim());
     expect(labels.indexOf('Propel')).toBe(labels.indexOf('GATORADE') + 1);
     expect(labels.indexOf('CSD_PET2000+')).toBeLessThan(labels.indexOf('Total MSPET'));
-    expect(labels.indexOf('CSD_NEW')).toBe(labels.indexOf('Total ABC') - 1);
-    expect(lines.find((l) => l.label === 'Total ABC')!.of).toContain('CSD_NEW');
-    expect(lines.find((l) => l.label.trim() === 'Total LRB')!.of).toContain('CSD_NEW');
+    // Packs missing from the file go after the last pack of their group, inside its Totals.
+    expect(labels.indexOf('CSD_CANS185')).toBe(labels.indexOf('CSD_CANS240') + 1);
+    expect(lines.find((l) => l.label === 'Total CANS')!.of).toContain('CSD_CANS185');
+    expect(lines.find((l) => l.label === 'Total ABC')!.of).toContain('CSD_CANS185');
+    expect(lines.find((l) => l.label.trim() === 'Total LRB')!.of).toContain('CSD_CANS185');
+    expect(labels.indexOf('Rockstar_500')).toBe(labels.indexOf('Rockstar_250') + 1);
+    expect(lines.find((l) => l.label === 'Total ROCKSTAR')!.of).toContain('Rockstar_500');
   });
 });
