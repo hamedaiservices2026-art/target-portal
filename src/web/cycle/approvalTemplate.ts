@@ -207,6 +207,77 @@ function readShared(xml: string | undefined): string[] {
   return [...xml.matchAll(/<si>([\s\S]*?)<\/si>/g)].map((m) => unesc([...m[1]!.matchAll(/<t[^>]*>([^<]*)<\/t>/g)].map((x) => x[1]).join('')));
 }
 
+type Head = { at: number; pack: string; cols: Map<string, string> };
+
+/**
+ * The totals of a by-channel sheet (By Manager, YAGO sales) rebuilt so every
+ * sheet adds up the same way, whatever the template held (typed numbers, old
+ * formulas, empty cells):
+ * - a pack row: "Total TT" = its channels, "ABC" = the totals + the other channels;
+ * - a total row ("Total CANS", "Total CSD"...): the formula of the same row of
+ *   the first sheet's target column, applied to each column.
+ * Rows after the last total row (notes, signatures) are left alone.
+ */
+function rebuildTotals(s: Sheet, h: Head, shared: string[], channels: Set<string>, first: { sheet: Sheet; h: Head } | null, codesOf: (name: string) => string[]) {
+  const head = s.rows[h.at]!;
+  const ordered = head.cells.filter((c) => colIndex(c.col) > colIndex(h.pack)).sort((a, b) => colIndex(a.col) - colIndex(b.col));
+  type Col = { col: string; kind: 'chan' | 'total' | 'grand'; members: string[] };
+  const cols: Col[] = [];
+  let open: string[] = [];
+  for (const c of ordered) {
+    const name = norm(cellText(c, shared));
+    if (!name) continue;
+    if (name === 'abc' || name === 'grand total' || name === 'total') {
+      const inTotals = new Set(cols.filter((x) => x.kind === 'total').flatMap((x) => x.members));
+      cols.push({ col: c.col, kind: 'grand', members: cols.filter((x) => x.kind === 'total' || (x.kind === 'chan' && !inTotals.has(x.col))).map((x) => x.col) });
+      break;
+    }
+    if (cols.some((x) => norm(cellText(head.cells.find((y) => y.col === x.col), shared)) === name)) break; // a second block (growth %)
+    if (/^total\b/.test(name)) { cols.push({ col: c.col, kind: 'total', members: open }); open = []; continue; }
+    if (channels.has(squash(name))) { cols.push({ col: c.col, kind: 'chan', members: [] }); open.push(c.col); continue; }
+    break;
+  }
+  if (!cols.some((x) => x.kind !== 'chan')) return;
+  const nameOf = (sh: Sheet, hh: Head, row: Sheet['rows'][number]) => norm(cellText(row.cells.find((c) => c.col === hh.pack), shared));
+  const body = s.rows.slice(h.at + 1);
+  let last = -1;
+  body.forEach((row, i) => { if (isTotal(nameOf(s, h, row))) last = i; });
+  // Rows by name, and by pack (a row "CSD_SSPET500" here is "CSD_SSPET500/400" on the first sheet).
+  const myRows = new Map<string, number>();
+  const byCode = new Map<string, number>();
+  const codeKey = (n: string) => (isTotal(n) ? '' : codesOf(n).sort().join('|'));
+  for (const row of body.slice(0, last + 1)) {
+    const n = nameOf(s, h, row);
+    if (n && !myRows.has(n)) myRows.set(n, row.r);
+    const k = n ? codeKey(cellText(row.cells.find((c) => c.col === h.pack), shared).trim()) : '';
+    if (k && !byCode.has(k)) byCode.set(k, row.r);
+  }
+  const fcol = first ? (first.h.cols.get('new target') ?? first.h.cols.get('target')) : undefined;
+  for (const row of body.slice(0, last + 1)) {
+    const name = nameOf(s, h, row);
+    if (!name) continue;
+    if (!isTotal(name)) {
+      for (const c of cols) if (c.kind !== 'chan' && c.members.length) setFormula(row, c.col, c.members.map((m) => `${m}${row.r}`).join('+'));
+      continue;
+    }
+    if (!first || !fcol) continue;
+    const srow = first.sheet.rows.slice(first.h.at + 1).find((r) => nameOf(first.sheet, first.h, r) === name);
+    const f = formulaOf(srow?.cells.find((c) => c.col === fcol));
+    if (!f) continue;
+    const rowTo = (r: number) => {
+      const sr = first.sheet.rows.find((x) => x.r === r);
+      const n = sr ? nameOf(first.sheet, first.h, sr) : '';
+      if (!n) return null;
+      const k = myRows.get(n) ?? byCode.get(codeKey(cellText(sr!.cells.find((c) => c.col === first.h.pack), shared).trim()));
+      return k ?? null;
+    };
+    for (const c of cols) {
+      const t = translate(f, rowTo, (x) => (x === fcol ? c.col : null));
+      if (t) setFormula(row, c.col, t);
+    }
+  }
+}
+
 /** The template's file with the month's numbers. */
 export function fillApprovalTemplate(file: Uint8Array, inp: TemplateInput): TemplateResult {
   const zip = unzipSync(file);
@@ -236,9 +307,12 @@ export function fillApprovalTemplate(file: Uint8Array, inp: TemplateInput): Temp
     if (one) return [one];
     const m = /^(.*?)(\d+)((?:\s*[/+]\s*\d+)+)$/.exec(name.trim());
     if (!m) return [];
-    const list = [m[2]!, ...m[3]!.split(/[/+]/).map((x) => x.trim()).filter(Boolean)].map((n) => inp.codeOf(`${m[1]}${n}`));
-    return list.every(Boolean) ? [...new Set(list as string[])] : [];
+    // The packs of the row that exist (a size no longer sold is simply not there).
+    const list = [m[2]!, ...m[3]!.split(/[/+]/).map((x) => x.trim()).filter(Boolean)].map((n) => inp.codeOf(`${m[1]}${n}`)).filter(Boolean) as string[];
+    return [...new Set(list)];
   };
+  const chanKeys = new Set(inp.channels.flatMap((c) => [c.label, ...(c.alias ?? [])]).map(squash).filter(Boolean));
+  const firstSrc = () => { const src = parseSheet(text(first.path) ?? ''); unshare(src); const hh = header(src, shared); return hh ? { sheet: src, h: hh } : null; };
   const sumOf = (g: Grid, codes: string[]) => (codes.some((c) => g[c] !== undefined) ? Math.round(codes.reduce((t, c) => t + (g[c] ?? 0), 0) * 100) / 100 : null);
 
   // ----- sheet 1: TARGET, YAGO, PAGO, PLAN per pack -----
@@ -283,6 +357,7 @@ export function fillApprovalTemplate(file: Uint8Array, inp: TemplateInput): Temp
         const codes = codesOf(name);
         for (const c of chanCol) if (c.col) setNumber(row, c.col, codes.length ? sumOf(c.g, codes) ?? 0 : null);
       }
+      rebuildTotals(s, h, shared, chanKeys, firstSrc(), codesOf);
       // The month cell above the header (a date).
       const serial = Math.round(Date.UTC(Number(year), Number(inp.period.slice(5)) - 1, 1) / 864e5) + 25569;
       for (const row of s.rows.slice(0, h.at)) {
@@ -357,6 +432,7 @@ export function fillApprovalTemplate(file: Uint8Array, inp: TemplateInput): Temp
         }
       }
     }
+    if (h) rebuildTotals(s, h, shared, chanKeys, firstSrc(), codesOf);
     dropResults(s);
     put(yagoSheet.path, writeSheet(s));
   }

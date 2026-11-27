@@ -111,13 +111,14 @@ describe('approval template v2: YAGO by channel and the Mix sheet', () => {
     expect(sh('month')).toContain('<c r="D2"><v>90</v></c>');
     expect(sh('month')).toContain('<c r="E2"><v>80</v></c>');
     expect(sh('month')).toContain('<c r="F2"><v>70</v></c>');
-    // Shared formulas are written out on each cell.
-    expect(sh('byMgr')).toContain('<c r="E3"><f>SUM(C3:D3)</f></c>');
+    // Totals follow the first sheet: a pack row's total column adds its channels, a total row takes the first sheet's formula.
+    expect(sh('byMgr')).toContain('<c r="E2"><f>C2+D2</f></c>');
+    expect(sh('byMgr')).toContain('<c r="E3"><f>SUM(E2:E2)</f></c>');
     // YAGO of the target month a year before (2026-12), per channel; totals from By Manager's formulas.
     const y = sh('yago');
     expect(y).toContain('<c r="C6" s="1"><v>30</v></c>');
     expect(y).toContain('<c r="D6" s="1"><v>10</v></c>');
-    expect(y).toContain('<c r="E6" s="1"><f>SUM(C6:D6)</f></c>');
+    expect(y).toContain('<c r="E6" s="1"><f>C6+D6</f></c>');
     expect(y).toContain('<c r="C7" s="2"><f>SUM(C6:C6)</f></c>');
     // Mix: CSD only; "TT DMM - Ali" is the channel TT DMM; FY 2026 share, PAGO (2027-11: none), YAGO, target, YTD growth.
     const m = sh('mix');
