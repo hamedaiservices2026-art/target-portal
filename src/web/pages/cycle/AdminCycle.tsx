@@ -251,7 +251,7 @@ function SendStep({ ws, period, l, onDone, missing }: { ws: Workspace; period: s
   useLang();
   const { cycle, org } = l;
   const [preview, setPreview] = useState<{ nt: Grid; source: NtSource; upload: NtUpload | null; split?: Record<string, Grid> | null; splitBasis?: string } | null>(null);
-  const [fc, setFc] = usePagoFc(ws, period);
+  const [fc, setFc] = usePagoFc(ws, period, cycle.settings.pagoFc);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [deptChecks, setDeptChecks] = useState<Check[]>([]);
@@ -298,6 +298,8 @@ function SendStep({ ws, period, l, onDone, missing }: { ws: Workspace; period: s
     setBusy(true);
     setErr(null);
     try {
+      // The PAGO forecast checked here goes with the cycle: the CD's approval uses the same closing.
+      await api('PUT', `/api/admin/cycle/${ws}/${period}/settings`, { pagoFc: fc });
       await api('POST', `/api/admin/cycle/${ws}/${period}/cd/send`, { nt: preview.nt });
       setPreview(null);
       onDone();
@@ -438,6 +440,10 @@ function SendStep({ ws, period, l, onDone, missing }: { ws: Workspace; period: s
                   );
                 })}</tbody>
               </table></div>
+              <div class="banner info cy-approval" data-testid="admin-forecast">
+                <b>{tc('pfAdminTitle')}</b> <span class="small">{tc('pfAdminHelp')}</span>
+                <PagoForecast ws={ws} period={period} fc={fc} onChange={setFc} />
+              </div>
               <div class="actions">
                 <button type="button" class="btn primary" disabled={busy || total(preview.nt) === 0} onClick={() => void send()}>{tc('sendToCd')}</button>
                 <button type="button" class="btn" onClick={() => setPreview(null)}>{tc('cancel')}</button>
@@ -1377,8 +1383,17 @@ function RoutesTab({ ws, period, l }: { ws: Workspace; period: string; l: Loaded
   if (!cycle.monthId) return <p class="card muted">{tc('noMonthYet')}</p>;
   if (data.error) return <div class="alert">{data.error}</div>;
   if (!data.data) return <p class="muted">{tc('loading')}</p>;
-  const { exp, calc } = data.data;
   const wsRoutes = new Set(org.leaves.map((x) => x.routeCode));
+  // The stored calculation can keep departments (or routes) from an earlier hierarchy: count each route only
+  // under the department it belongs to now, so the target is not counted twice.
+  const deptOfRoute = new Map(org.leaves.map((x) => [x.routeCode, String(x.deptId)]));
+  const calc: Record<string, Record<string, Grid>> = {};
+  for (const [d, routes] of Object.entries(data.data.calc)) {
+    for (const [r, g] of Object.entries(routes)) if (deptOfRoute.get(r) === d) (calc[d] ??= {})[r] = g;
+  }
+  const { exp } = data.data;
+  const staleCalc = Object.entries(data.data.calc).some(([d, routes]) => Object.keys(routes).some((r) => deptOfRoute.get(r) !== d));
+  const sentOff = cycle.heads.filter((h) => h.sentTotal !== null && calc[String(h.deptId)] && Math.abs(Object.values(calc[String(h.deptId)]!).reduce((a, g) => a + total(g), 0) - (h.sentTotal ?? 0)) > 0.5);
   const rows = exp.rows.filter((r) => wsRoutes.has(String(r[2])));
   const allFinal = cycle.heads.length > 0 && cycle.heads.every((h) => h.monthState === 'complete');
   function exportFinal() {
@@ -1422,6 +1437,8 @@ function RoutesTab({ ws, period, l }: { ws: Workspace; period: string; l: Loaded
         </div>
       }>
         {!allFinal && <p class="banner warn small">{tc('notAllFinal')}</p>}
+        {staleCalc && <p class="banner warn small" data-testid="stale-calc">{tc('staleCalc')}</p>}
+        {sentOff.length > 0 && <p class="banner warn small" data-testid="sent-off">{tc('sentOff', { list: sentOff.map((h) => h.name).join(', ') })}</p>}
         <p class="small">{tc('routeTargetsHelp', { n: fmtNum(rows.length) })}</p>
       </Section>
       <FinalSummary ws={ws} period={period} org={org} calc={calc} rows={rows} />

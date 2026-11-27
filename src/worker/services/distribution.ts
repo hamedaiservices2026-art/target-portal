@@ -46,7 +46,7 @@ export interface Workspace {
   /** The cap % of this node's level (rule 3, and rule 2 for people without an exception). */
   capPct: number;
   /** Rules 2 and 3 on/off and each team member's own cap % (null = the level cap). */
-  rules: { rule2: boolean; rule3: boolean; personCapPct: (number | null)[]; capOn?: boolean };
+  rules: { rule2: boolean; rule3: boolean; personCapPct: (number | null)[]; capOn?: boolean; base?: 'own' | 'group' };
   packs: MonthPack[];
   totals: Grid;
   children: { key: ChildKey; label: string; sub: string; starts: Grid; values: Grid }[];
@@ -101,7 +101,7 @@ export function ruleContext(d: Dept, nodeId: number, labels: string[]): { capPct
   return {
     capPct: own ?? d.rules.caps[level],
     level,
-    opts: { rule2: on && d.rules.rule2, rule3: on && d.rules.rule3, personCapPct: caps },
+    opts: { rule2: on && d.rules.rule2, rule3: on && d.rules.rule3, personCapPct: caps, personBase: d.rules.base },
     personCapPct: caps.map((c) => c ?? null),
   };
 }
@@ -386,7 +386,7 @@ export async function getWorkspace(db: D1Database, user: SessionUser, monthId: n
     month: d.month,
     node: { id: nodeId, name: node.name, status: node.status, deptCode: d.deptCode, deptId: d.deptId, level: rc.level, workspace: wsRow?.workspace === 'ka' ? 'ka' : 'ops' },
     capPct: rc.capPct,
-    rules: { rule2: rc.opts.rule2 ?? true, rule3: rc.opts.rule3 ?? true, personCapPct: rc.personCapPct, capOn: d.rules.enabled },
+    rules: { rule2: rc.opts.rule2 ?? true, rule3: rc.opts.rule3 ?? true, personCapPct: rc.personCapPct, capOn: d.rules.enabled, base: d.rules.base },
     packs: d.packs,
     totals: gridOf(totals.get(nodeId)!, d.codes),
     children,

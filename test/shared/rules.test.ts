@@ -194,3 +194,14 @@ describe('parseCaseInput', () => {
     expect(parseCaseInput('9007199254740993')).toBeNull();
   });
 });
+
+describe('threshold on each person\'s own target', () => {
+  it('lets a person move at most the threshold % of their own starting value', () => {
+    // 700/300, 5%: 700 may move 35, 300 may move 15.
+    expect(checkPack(1000, [700, 300], [685, 315], 5, { personBase: 'own' }).status).toBe('ok');
+    expect(checkPack(1000, [700, 300], [684, 316], 5, { personBase: 'own' }).status).toBe('person_over_cap');
+    expect(checkPack(1000, [700, 300], [650, 350], 5, { personBase: 'own' }).caps).toEqual([35, 15]);
+    // The team base (default) still allows 50 either way.
+    expect(checkPack(1000, [700, 300], [650, 350], 5).status).toBe('ok');
+  });
+});

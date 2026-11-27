@@ -652,7 +652,7 @@ export function CdPage({ ws: wsParam, period: periodParam }: { ws?: string; peri
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [comment, setComment] = useState('');
-  const [fc, setFc] = usePagoFc(ws, period);
+  const [fc, setFc] = usePagoFc(ws, period, loaded.data?.cycle.settings.pagoFc);
   const l = loaded.data;
   const isCd = !!user?.cd?.includes(ws);
 

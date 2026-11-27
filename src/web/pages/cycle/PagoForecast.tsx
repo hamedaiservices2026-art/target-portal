@@ -23,9 +23,11 @@ function stored(ws: Workspace, period: string): PagoFc | null {
   } catch { return null; }
 }
 
-export function usePagoFc(ws: Workspace, period: string): [PagoFc, (v: PagoFc) => void] {
-  const [fc, setFc] = useState<PagoFc>(() => stored(ws, period) ?? defaultFc(pagoOf(period)));
-  useEffect(() => setFc(stored(ws, period) ?? defaultFc(pagoOf(period))), [ws, period]);
+/** The forecast: the Admin's (saved with the cycle) when there is one, else this browser's, else the default. */
+export function usePagoFc(ws: Workspace, period: string, server?: PagoFc | null): [PagoFc, (v: PagoFc) => void] {
+  const first = () => server ?? stored(ws, period) ?? defaultFc(pagoOf(period));
+  const [fc, setFc] = useState<PagoFc>(first);
+  useEffect(() => setFc(first()), [ws, period, server?.on, server?.done, server?.left]);
   return [fc, (v: PagoFc) => { setFc(v); try { localStorage.setItem(key(ws, period), JSON.stringify(v)); } catch { /* private mode */ } }];
 }
 

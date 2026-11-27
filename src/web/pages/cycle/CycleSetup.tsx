@@ -13,6 +13,7 @@ import { useLang } from '../../i18n';
 import { tc } from '../../cycle/i18n';
 import { useAsync } from '../../cycle/load';
 import { Section, WS_LABEL } from '../../cycle/ui';
+import { SalesAttrForm } from './SalesAttr';
 
 function Saver({ busy, err, msg }: { busy: boolean; err: string | null; msg: string | null }) {
   return (
@@ -77,7 +78,11 @@ function RulesForm() {
         {cap('supervisor', tc('capSupervisor'))}
       </div>
       <label><input type="checkbox" checked disabled /> {tc('rule1On')}</label><br />
-      <label><input type="checkbox" disabled={r.enabled === false} checked={r.rule2} onChange={(e) => setR({ ...r, rule2: e.currentTarget.checked })} /> {tc('rule2On')}</label><br />
+      <label><input type="checkbox" disabled={r.enabled === false} checked={r.rule2} onChange={(e) => setR({ ...r, rule2: e.currentTarget.checked })} /> {tc('rule2On')}</label>
+      <div class="small" style={{ margin: '0.2em 0 0.4em 1.6em' }} role="radiogroup" aria-label={tc('baseTitle')} data-testid="cap-base">
+        <label><input type="radio" name="capbase" disabled={r.enabled === false || !r.rule2} checked={r.base !== 'group'} onChange={() => setR({ ...r, base: 'own' })} /> {tc('baseOwn')}</label>{' '}
+        <label><input type="radio" name="capbase" disabled={r.enabled === false || !r.rule2} checked={r.base === 'group'} onChange={() => setR({ ...r, base: 'group' })} /> {tc('baseGroup')}</label>
+      </div>
       <label><input type="checkbox" disabled={r.enabled === false} checked={r.rule3} onChange={(e) => setR({ ...r, rule3: e.currentTarget.checked })} /> {tc('rule3On')}</label>
       <h3>{tc('exceptions')}</h3>
       <p class="muted small">{tc('exceptionsHelp')}</p>
@@ -413,6 +418,7 @@ export function CycleSetup() {
       <PageHead title={tc('setupTitle')} intro={tc('setupIntro')} />
       <RulesForm />
       <DeptSetup />
+      <SalesAttrForm />
       <CdRoles />
       <MailForm />
       <BrandForm />

@@ -116,6 +116,8 @@ beforeEach(async () => {
     await run(env.DB, `DELETE FROM ${t}`);
   }
   await run(env.DB, `UPDATE settings SET value = '5' WHERE key = 'cap_pct'`);
+  // These cases use the threshold of the team's pack total (the "own target" base has its own test below).
+  await run(env.DB, `INSERT INTO settings(key, value) VALUES ('rules_json', '{"base":"group"}') ON CONFLICT(key) DO UPDATE SET value = excluded.value`);
   await addUser('boss', 'admin');
   headU = await addUser('head');
   areaU = await addUser('area');
@@ -221,7 +223,7 @@ describe('workspace', () => {
       month: { id: month, period: '2026-10', deadline: '2026-10-25' },
       node: { id: head, name: 'Head', status: 'in_progress', deptCode: 'TT', deptId: expect.any(Number), level: 'head', workspace: 'ops' },
       capPct: 5,
-      rules: { rule2: true, rule3: true, personCapPct: [null], capOn: true },
+      rules: { rule2: true, rule3: true, personCapPct: [null], capOn: true, base: 'group' },
       packs: [
         { code: PET, grp: 'CSD', sort: 0 }, { code: CAN, grp: 'CSD', sort: 1 },
         { code: WATER, grp: 'Water', sort: 2 }, { code: JUICE, grp: 'LRB-Others', sort: 3 },

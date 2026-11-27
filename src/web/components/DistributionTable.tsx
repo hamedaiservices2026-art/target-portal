@@ -91,7 +91,7 @@ class PackRow extends Component<RowProps> {
         {vis.map((i) => {
           const start = starts[i] ?? 0;
           const hint = hintFor(info, start, i);
-          const overCap = !info.invalid[i] && Math.abs((info.nums[i] ?? 0) - start) > check.cap;
+          const overCap = !info.invalid[i] && Math.abs((info.nums[i] ?? 0) - start) > (check.caps[i] ?? check.cap);
           const hintId = `h-${idx}-${i}`;
           return [
             <td key={i}>
@@ -226,7 +226,7 @@ export function DistributionTable(props: {
             <th scope="col">{t('dsColTarget')}<span class="sub">{t('dsLocked')}</span></th>
             {props.bench && <BenchHead team />}
             {vis.map((i) => [
-              <th scope="col" key={i}>{members[i]?.title}<span class="sub">{members[i]?.sub}</span></th>,
+              <th scope="col" key={i} class="mem"><span class="who">{members[i]?.title}</span><span class="sub">{members[i]?.sub}</span></th>,
               props.bench ? <BenchHead key={`b${i}`} /> : null,
             ])}
             <th scope="col">{t('dsColMoved')}</th>

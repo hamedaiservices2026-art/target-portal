@@ -230,12 +230,12 @@ export function SalesmanPanel({ ws, mid, onChanged }: { ws: Workspace; mid: stri
       {missing > 0 && <p class="banner warn small">{tc('salesmenMissing', { n: missing })}</p>}
       {msg && <div class="banner ok" role="status">{msg}</div>}
       {err && <div class="alert" role="alert">{err}</div>}
-      <div class="tablewrap"><table class="ad-table cy-table">
+      <div class="tablewrap cy-fit"><table class="ad-table cy-table">
         <thead><tr><th>{tc('route')}</th><th>{tc('salesman')}</th></tr></thead>
         <tbody>{routes.map((c) => (
           <tr key={c.key}>
             <td><bdi>{c.label}</bdi></td>
-            <td><input value={edits[c.key] ?? c.sub ?? ''} placeholder={tc('salesmanPh')} aria-label={`${tc('salesman')} ${c.label}`} onInput={(e) => setEdits({ ...edits, [c.key]: e.currentTarget.value })} /></td>
+            <td><input class="cy-repid" value={edits[c.key] ?? c.sub ?? ''} placeholder={tc('salesmanPh')} aria-label={`${tc('salesman')} ${c.label}`} onInput={(e) => setEdits({ ...edits, [c.key]: e.currentTarget.value })} /></td>
           </tr>
         ))}</tbody>
       </table></div>

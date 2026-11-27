@@ -54,6 +54,8 @@ export type CycleSettings = {
    * it sets the cap of every level in the distribution rules.
    */
   capPct: number | null;
+  /** PAGO forecast closing set by the Admin before the send to the CD: days with sales and days left. */
+  pagoFc?: { on: boolean; done: number; left: number } | null;
 };
 
 /** The Commercial Director's work (CD tabs 1-3). */
@@ -274,6 +276,14 @@ function parseSettings(body: Obj, period: string): CycleSettings {
       throw bad('capPct must be a number from 0 to 100');
     }
     s.capPct = body.capPct as number | null;
+  }
+  if (body.pagoFc !== undefined) {
+    const f = body.pagoFc as Obj | null;
+    const day = (v: unknown, k: string) => {
+      if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > 31) throw bad(`pagoFc.${k} must be a whole number from 0 to 31`);
+      return v;
+    };
+    s.pagoFc = f === null ? null : { on: f?.on === true, done: day(f?.done, 'done'), left: day(f?.left, 'left') };
   }
   if (body.avgMonths !== undefined) {
     if (!Array.isArray(body.avgMonths) || body.avgMonths.length === 0 || body.avgMonths.length > 24) throw bad('avgMonths must list 1 to 24 months');
@@ -555,6 +565,14 @@ export async function applyCalc(db: D1Database, actorId: number, ws: Workspace, 
     }
     next[d] = routes;
     applied.push(d);
+  }
+  // Departments no longer in this workspace, and routes that moved to another department, are dropped:
+  // a route is counted under one department only.
+  for (const k of Object.keys(next)) {
+    const known = routesOf.get(k);
+    const routes = next[k];
+    if (!known || !routes || typeof routes !== 'object') { delete next[k]; continue; }
+    for (const r of Object.keys(routes as Obj)) if (!known.has(r)) delete (routes as Obj)[r];
   }
   const json = JSON.stringify(next);
   if (json.length > MAX_CALC_JSON) throw new ApiError(413, { error: 'too_many_rows', detail: 'the calculation is too large' });

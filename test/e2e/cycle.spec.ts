@@ -27,7 +27,7 @@ test('admin opens a cycle, saves the rules, and reads the reports', async ({ pag
 
   await page.getByRole('link', { name: 'Cycle setup' }).click();
   await expect(page.getByTestId('cycle-setup')).toBeVisible();
-  await page.getByLabel('Manager cap %').fill('5');
+  await page.getByLabel('Manager threshold %').fill('5');
   await page.getByRole('button', { name: 'Save' }).first().click();
   await expect(page.getByRole('status').first()).toContainText('Saved');
   await expect(page.getByTestId('dept-setup').first()).toBeVisible();

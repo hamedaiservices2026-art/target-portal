@@ -166,7 +166,7 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
   }, [members, q]);
 
   const ruleOpts = useMemo(() => (ws ? {
-    rule2: ws.rules.rule2, rule3: ws.rules.rule3, personCapPct: ws.rules.personCapPct.map((x) => x ?? undefined),
+    rule2: ws.rules.rule2, rule3: ws.rules.rule3, personCapPct: ws.rules.personCapPct.map((x) => x ?? undefined), personBase: ws.rules.base,
   } : {}), [ws]);
 
   // Per-pack checks, cached by the identity of the pack's raw array: an edit

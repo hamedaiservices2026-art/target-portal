@@ -68,7 +68,7 @@ a { color: var(--brand); }
 .subnav .tab { padding: 3px 12px; font-size: 13px; }
 
 /* Content */
-.page { padding: 16px; max-inline-size: 1320px; margin-inline: auto; }
+.page { padding: 16px; max-inline-size: 1760px; margin-inline: auto; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
 
 /* Login */
@@ -468,3 +468,15 @@ td.bench .gsub { display: block; font-size: 11px; }
 .cy-pagofc { flex-basis: 100%; width: 100%; }
 .cy-pagofc .tablewrap { max-width: 760px; }
 .cy-pagofc table { min-width: 0; }
+
+/* Wide tables: the first column stays in view while scrolling sideways. */
+.tablewrap th:first-child, .tablewrap td:first-child { position: sticky; inset-inline-start: 0; z-index: 1; background: var(--panel); box-shadow: inset -1px 0 0 var(--line); }
+[dir="rtl"] .tablewrap th:first-child, [dir="rtl"] .tablewrap td:first-child { box-shadow: inset 1px 0 0 var(--line); }
+.tablewrap thead th:first-child { z-index: 3; }
+/* Route, manager and supervisor names: bold and a little larger, in every list. */
+.cy-table tbody td:first-child { font-weight: 650; font-size: 1.06em; }
+.tablewrap th.mem .who { display: block; font-weight: 700; font-size: 13.5px; color: var(--ink); }
+/* Supervisors' salesman ID column: only as wide as an ID needs. */
+.tablewrap.cy-fit { display: inline-block; max-inline-size: 100%; }
+.tablewrap.cy-fit table { min-inline-size: 0; inline-size: auto; }
+.cy-repid { inline-size: 11ch; }

@@ -1,4 +1,5 @@
 // Admin-only master data API. Logic and validation live in services/masters.ts.
+import { getSalesAttr, setSalesAttr, unmappedOpsCodes } from '../services/salesAttr';
 import { syncPackSort, syncPackSortOnce } from '../services/packOrder';
 import { mergePacksOnce } from '../services/packMerge';
 import { Hono } from 'hono';
@@ -39,6 +40,8 @@ admin.put('/api/admin/positions', h(async (c, db, me, body) => c.json(await setP
 // The employee ID is the login: setting IDs also sets the usernames.
 admin.post('/api/admin/employee-ids', h(async (c, db, me, body) => { const r = await setEmployeeIds(db, me, await body()); const u = await usernamesFromIds(db, me); return c.json({ ...r, logins: u }); }));
 admin.put('/api/admin/users/:id/employee-id', h(async (c, db, me, body) => { const r = await setEmployeeId(db, me, parseId(p(c, 'id')), await body()); const u = await usernamesFromIds(db, me); return c.json({ ...r, logins: u }); }));
+admin.get('/api/admin/sales-attr', h(async (c, db) => c.json({ list: await getSalesAttr(db), unmapped: await unmappedOpsCodes(db) })));
+admin.put('/api/admin/sales-attr', h(async (c, db, me, body) => c.json({ list: await setSalesAttr(db, me, await body()) })));
 admin.get('/api/admin/ka-links', h(async (c, db) => c.json({ links: await listKaLinks(db) })));
 admin.put('/api/admin/ka-links/:id', h(async (c, db, me, body) => c.json(await setKaLink(db, me, parseId(p(c, 'id')), await body()))));
 

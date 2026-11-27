@@ -31,6 +31,11 @@ export interface RuleOptions {
   rule2?: boolean;
   rule3?: boolean;
   personCapPct?: readonly (number | undefined)[];
+  /**
+   * Rule 2 base: 'group' (default) = the threshold % of the pack total being
+   * split; 'own' = the threshold % of each person's own starting value.
+   */
+  personBase?: 'group' | 'own';
 }
 
 export interface PackCheck {
@@ -43,6 +48,8 @@ export interface PackCheck {
   /** sum of the increases over the starting values. Reported even when sum != total. */
   moved: number;
   cap: number;
+  /** Per person: the most their value may move under rule 2. */
+  caps: number[];
 }
 
 function isWholeCases(n: number): boolean {
@@ -74,13 +81,17 @@ export function checkPack(total: number, starts: number[], values: number[], cap
   let sum = 0;
   let moved = 0;
   let personOver = false;
+  const caps: number[] = [];
+  const own = opts.personBase === 'own';
   for (let i = 0; i < values.length; i++) {
     const v = finiteOrZero(values[i]);
     const delta = v - finiteOrZero(starts[i]);
     sum += v;
     if (delta > 0) moved += delta;
-    const own = opts.personCapPct?.[i];
-    const personCap = own !== undefined && Number.isFinite(own) && own >= 0 ? capFor(safeTotal, own) : cap;
+    const pp = opts.personCapPct?.[i];
+    const pct = pp !== undefined && Number.isFinite(pp) && pp >= 0 ? pp : Number.isFinite(capPct) && capPct >= 0 ? capPct : 0;
+    const personCap = own ? capFor(finiteOrZero(starts[i]), pct) : pp !== undefined && Number.isFinite(pp) && pp >= 0 ? capFor(safeTotal, pp) : cap;
+    caps.push(personCap);
     if (Math.abs(delta) > personCap) personOver = true;
   }
   const diff = sum - safeTotal;
@@ -95,7 +106,7 @@ export function checkPack(total: number, starts: number[], values: number[], cap
           : rule2 && personOver
             ? 'person_over_cap'
             : 'ok';
-  return { ok: status === 'ok', status, total: safeTotal, sum, diff, moved, cap };
+  return { ok: status === 'ok', status, total: safeTotal, sum, diff, moved, cap, caps };
 }
 
 export function checkAll(
