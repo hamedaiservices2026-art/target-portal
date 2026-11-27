@@ -1,8 +1,8 @@
-// Admin › Cycle setup › Sales attribution: the Modern Trade and Modern Bulk
-// departments have no routes in the Operation sales file, so their sales are
-// empty. The Admin picks a person (a Key Account KAE or KAM, or a code of the
-// sales file that is in no hierarchy) and assigns them to a department and
-// channel: their sales then count for it in the splits, Mix and reports.
+// Admin › Cycle setup › YAGO sales by channel for the approval template: the
+// Modern Trade and Modern Bulk channels have no routes in the Operation sales
+// file. The Admin picks a person (a Key Account KAE or KAM, or a code of the
+// sales file that is in no hierarchy) and a channel: their YAGO sales are added
+// to that channel in the approval template only.
 import { useEffect, useState } from 'preact/hooks';
 import type { OrgDto } from '../../../worker/services/cycleData';
 import type { SalesAttr } from '../../../worker/services/salesAttr';
@@ -10,7 +10,7 @@ import { api } from '../../api';
 import { errText } from '../../components/AdminBits';
 import { useLang } from '../../i18n';
 import { tc } from '../../cycle/i18n';
-import { clearRouteCache, useAsync } from '../../cycle/load';
+import { useAsync } from '../../cycle/load';
 import { Section } from '../../cycle/ui';
 
 type Person = { id: string; label: string; group: 'kam' | 'kae' | 'ops'; codes: { code: string; src: 'ops' | 'ka'; name: string }[] };
@@ -76,7 +76,6 @@ export function SalesAttrForm() {
     try {
       const r = await api<{ list: SalesAttr[] }>('PUT', '/api/admin/sales-attr', { list });
       setList(r.list);
-      clearRouteCache('ops');
       setMsg(tc('saved'));
     } catch (x) {
       setErr(errText(x));

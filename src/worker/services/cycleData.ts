@@ -5,7 +5,6 @@
 // The browser parses the Excel files and sends checked rows; reads are built
 // as ONE JSON string by SQLite (json_group_array / json_group_object), so the
 // Worker never parses the stored values (CPU budget, docs/decisions.md).
-import { getSalesAttr, kaAttrRows, KA_PREFIX } from './salesAttr';
 import type { Workspace } from '../auth';
 import { all, insertJsonStatement, MAX_INSERT_ROWS, one } from '../db';
 import { auditStatement } from './audit';
@@ -124,12 +123,7 @@ export async function readRouteRows(db: D1Database, ws: Workspace, kindRaw: stri
     `SELECT json_group_array(json_object('r', route_code, 'v', json(values_json), 'x', json(extra_json))) AS j
      FROM (SELECT route_code, values_json, extra_json FROM data_routes WHERE ws = ? AND kind = ? AND month = ? ORDER BY route_code)`,
     ws, kind, m);
-  const j = row?.j ?? '[]';
-  if (ws !== 'ops' || kind !== 'sales') return j;
-  // Key Account people the Admin assigned to an Operation department (Modern Trade, Modern Bulk).
-  const extra = await kaAttrRows(db, m);
-  if (extra === '[]') return j;
-  return j === '[]' ? extra : `${j.slice(0, -1)},${extra.slice(1)}`;
+  return row?.j ?? '[]';
 }
 
 /** Saves one month-level dataset (replacing that month). */
@@ -179,8 +173,6 @@ export type OrgDto = {
   nodes: { id: number; deptId: number; parentId: number | null; name: string; managerUserId: number | null; managerName: string | null }[];
   leaves: { id: number; deptId: number; nodeId: number; routeCode: string; deliverySystem: string; label: string }[];
   packs: { code: string; grp: string; active: boolean; sort: number; sub?: string | null }[];
-  /** Operation: people whose sales the Admin assigned to a department and channel (see salesAttr). */
-  attr?: { key: string; deptId: number; channel: string }[];
 };
 
 /** The live hierarchy of one workspace, with channels and the pack master. */
@@ -210,7 +202,6 @@ export async function readOrg(db: D1Database, ws: Workspace): Promise<OrgDto> {
       deliverySystem: l.delivery_system as string, label: l.label as string,
     })),
     packs: packs!.map((p) => ({ code: p.code as string, grp: p.grp as string, active: p.active === 1, sort: p.sort as number, sub: (p.sub as string | null) ?? null })),
-    ...(ws === 'ops' ? { attr: (await getSalesAttr(db)).map((a) => ({ key: a.src === 'ka' ? `${KA_PREFIX}${a.code}` : a.code, deptId: a.deptId, channel: a.channel })) } : {}),
   };
 }
 

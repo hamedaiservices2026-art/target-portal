@@ -50,13 +50,6 @@ export function routeIndex(org: Org): Map<string, RouteInfo> {
     const match = list.find((c) => c.toLowerCase() === l.deliverySystem.trim().toLowerCase());
     out.set(l.routeCode, { deptId: l.deptId, nodeId: l.nodeId, channel: match ?? (list.length === 1 ? list[0]! : NO_CHANNEL) });
   }
-  // People whose sales the Admin assigned to a department and channel (no route of their own: node -1).
-  for (const a of org.attr ?? []) {
-    if (out.has(a.key)) continue;
-    const list = chans.get(a.deptId) ?? [];
-    const match = list.find((c) => c.toLowerCase() === a.channel.trim().toLowerCase());
-    out.set(a.key, { deptId: a.deptId, nodeId: -1, channel: match ?? (list.length === 1 ? list[0]! : NO_CHANNEL) });
-  }
   return out;
 }
 

@@ -571,6 +571,15 @@ export async function downloadApprovalOf(work: CdWork, l0: Loaded, fc?: PagoFc |
     const pidx = packIndex(org.packs.map((p) => p.code));
     const idx = routeIndex(org);
     const byChan = groupSales(bench.sales, (rc) => { const i = idx.get(rc); return i ? `${i.deptId}\u0000${i.channel}` : null; });
+    // YAGO only: the people the Admin assigned to a channel (Modern Trade, Modern Bulk) add their sales to it.
+    const ymo = yagoOf(cycle.period);
+    const attr = cycle.ws === 'ops' ? await api<{ list: { deptId: number; channel: string; v: Grid }[] }>('GET', `/api/data/ops/attr-sales?month=${ymo}`).catch(() => ({ list: [] })) : { list: [] };
+    for (const a of attr.list) {
+      const chans = org.depts.find((d) => d.id === a.deptId)?.channels.map((c) => c.channel) ?? [];
+      const ch = chans.find((c) => c.toLowerCase() === a.channel.trim().toLowerCase()) ?? (chans.length === 1 ? chans[0]! : NO_CHANNEL);
+      const t = ((byChan[ymo] ??= {})[`${a.deptId}\u0000${ch}`] ??= {});
+      for (const [p, n] of Object.entries(a.v)) { const code = pidx.get(packKey(p)) ?? p; t[code] = (t[code] ?? 0) + n; }
+    }
     const salesOf = (key: string) => Object.fromEntries(Object.entries(byChan).map(([m, k]) => [m, k[key] ?? {}]));
     const r = fillApprovalTemplate(Uint8Array.from(atob(tpl.data), (ch) => ch.charCodeAt(0)), {
       period: cycle.period, target: final.nt, yago: bench.yagoSales, pago: bench.pagoSales, plan: bench.aopNow,

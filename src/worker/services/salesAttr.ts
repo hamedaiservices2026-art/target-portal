@@ -1,17 +1,15 @@
-// Sales attribution (Admin): the Modern Trade and Modern Bulk departments
-// have no routes of their own in the sales file, so their sales show empty.
-// The Admin picks people (a Key Account KAE, or a code of the Operation sales
-// file that is in no hierarchy) and assigns each to a department and channel;
-// their sales then count for that department and channel everywhere the
-// department sales are used (splits, Mix, approval template, reports).
+// Sales attribution (Admin): the Modern Trade and Modern Bulk channels have
+// no routes of their own in the sales file, so their YAGO sales in the
+// approval template are empty. The Admin picks people (a Key Account KAE, or a
+// code of the Operation sales file that is in no hierarchy) and assigns each
+// to a department and channel. Only the approval template's YAGO sales by
+// channel use it: no other sales total (PAGO, splits, reports) changes.
 import { all, one } from '../db';
 import { auditStatement } from './audit';
 import { bad, writeBatch, type Obj } from './masters';
 
 const KEY = 'sales_attr';
 export type SalesAttr = { code: string; src: 'ops' | 'ka'; deptId: number; channel: string; name?: string };
-/** The code a KA person's sales use in the Operation sales data (kept apart from Operation route codes). */
-export const KA_PREFIX = 'KA:';
 
 export async function getSalesAttr(db: D1Database): Promise<SalesAttr[]> {
   const r = await one<{ value: string }>(db, `SELECT value FROM settings WHERE key = ?`, KEY);
@@ -49,16 +47,25 @@ export async function setSalesAttr(db: D1Database, actorId: number, body: Obj): 
   return list;
 }
 
-/** Operation sales of a month: the Key Account people assigned to an Operation department, as `KA:<code>` rows. */
-export async function kaAttrRows(db: D1Database, month: string): Promise<string> {
-  const codes = (await getSalesAttr(db)).filter((a) => a.src === 'ka').map((a) => a.code);
-  if (!codes.length) return '[]';
-  const row = await one<{ j: string | null }>(db,
-    `SELECT json_group_array(json_object('r', ? || route_code, 'v', json(values_json), 'x', json(extra_json))) AS j
-     FROM (SELECT route_code, values_json, extra_json FROM data_routes
-           WHERE ws = 'ka' AND kind = 'sales' AND month = ? AND route_code IN (SELECT value FROM json_each(?)) ORDER BY route_code)`,
-    KA_PREFIX, month, JSON.stringify(codes));
-  return row?.j ?? '[]';
+/**
+ * The YAGO sales of the people assigned to a department and channel, for the
+ * approval template only (no other sales total changes): one grid per person.
+ */
+export async function attrSales(db: D1Database, month: string): Promise<{ deptId: number; channel: string; v: Record<string, number> }[]> {
+  const list = await getSalesAttr(db);
+  if (!list.length) return [];
+  const rows = await all<{ ws: string; route_code: string; values_json: string }>(db,
+    `SELECT ws, route_code, values_json FROM data_routes
+     WHERE kind = 'sales' AND month = ? AND ((ws = 'ka' AND route_code IN (SELECT value FROM json_each(?))) OR (ws = 'ops' AND route_code IN (SELECT value FROM json_each(?))))`,
+    month, JSON.stringify(list.filter((a) => a.src === 'ka').map((a) => a.code)), JSON.stringify(list.filter((a) => a.src === 'ops').map((a) => a.code)));
+  const by = new Map(rows.map((r) => [`${r.ws}:${r.route_code}`, r.values_json]));
+  const out: { deptId: number; channel: string; v: Record<string, number> }[] = [];
+  for (const a of list) {
+    const j = by.get(`${a.src}:${a.code}`);
+    if (!j) continue;
+    try { out.push({ deptId: a.deptId, channel: a.channel, v: JSON.parse(j) as Record<string, number> }); } catch { /* skip */ }
+  }
+  return out;
 }
 
 /** Codes in the Operation sales file that are in no Operation hierarchy (latest month with sales). */

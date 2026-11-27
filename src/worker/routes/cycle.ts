@@ -1,6 +1,7 @@
 // Target cycle API (handover design): data store, Commercial Director step,
 // calculation, Head approval, rules settings, notifications, benchmarks.
 // Logic and validation live in services/cycle*.ts.
+import { attrSales } from '../services/salesAttr';
 import { Hono } from 'hono';
 import { requireUser, type AppEnv } from '../auth';
 import { h, p, type Ctx } from './handler';
@@ -10,7 +11,7 @@ import {
   saveCd, saveSettings, sendToCd, sendToHeadAll, setDeptTarget, submitCd,
 } from '../services/cycle';
 import {
-  clearAllData, clearRouteMonths, dataStatus, listCdRoles, logUpload, packSubs, readMonthData, readOrg, readRouteRows, saveMonthData, setCdRoles, setPackSubs,
+  clearAllData, clearRouteMonths, dataStatus, month, listCdRoles, logUpload, packSubs, readMonthData, readOrg, readRouteRows, saveMonthData, setCdRoles, setPackSubs,
   setChannels, setDeptWorkspace, uploadRouteRows, workspace,
   setupHistory, undoSetupChange,
 } from '../services/cycleData';
@@ -113,6 +114,7 @@ cycle.use('/api/data/*', requireUser);
 
 // Data reads: Admin and the CD (others see sales through their own scope: benchmarks).
 cycle.get('/api/data/:ws/status', h(async (c, db) => { adminOrCd(c); return c.json({ status: await dataStatus(db, ws(c)) }); }));
+cycle.get('/api/data/:ws/attr-sales', h(async (c, db) => { adminOrCd(c); return c.json({ list: ws(c) === 'ops' ? await attrSales(db, month(c.req.query('month'))) : [] }); }));
 cycle.get('/api/data/:ws/routes', h(async (c, db) => { adminOrCd(c); return raw(c, await readRouteRows(db, ws(c), c.req.query('kind'), c.req.query('month'))); }));
 cycle.get('/api/data/:ws/months', h(async (c, db) => { adminOrCd(c); return raw(c, await readMonthData(db, ws(c), c.req.query('kind'))); }));
 cycle.get('/api/data/:ws/org', h(async (c, db) => { adminOrCd(c); await mergePacksOnce(db); await syncPackSortOnce(db); return c.json(await readOrg(db, ws(c))); }));
