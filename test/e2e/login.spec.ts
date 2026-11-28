@@ -90,16 +90,21 @@ test('the language chosen on the login screen is remembered and then saved to th
 });
 
 test('an expired session returns to login and then to the page that was asked for', async ({ page }) => {
-  await page.goto('/m/1/n/2');
-  await expect(page).toHaveURL(/\/login\?next=%2Fm%2F1%2Fn%2F2/);
+  await page.goto('/approve');
+  await expect(page).toHaveURL(/\/login\?next=%2Fapprove/);
   await signIn(page, MANAGER);
-  await expect(page).toHaveURL(/\/m\/1\/n\/2$/);
-  await expect(page.getByRole('heading', { name: 'Distribute to team' })).toBeVisible();
+  await expect(page).toHaveURL(/\/approve$/);
 
   // The session disappears on the server side: the next API call gets a 401.
   await page.context().clearCookies();
   await page.evaluate(() => fetch('/api/me').then(() => window.dispatchEvent(new CustomEvent('auth:expired'))));
-  await expect(page).toHaveURL(/\/login\?next=%2Fm%2F1%2Fn%2F2/);
+  await expect(page).toHaveURL(/\/login\?next=%2Fapprove/);
+});
+
+test('a team page that is not yours sends you to your Home', async ({ page }) => {
+  await page.goto('/m/1/n/99999');
+  await signIn(page, MANAGER);
+  await expect(page).toHaveURL(/\/$/);
 });
 
 test('the admin sees the admin navigation', async ({ page }) => {

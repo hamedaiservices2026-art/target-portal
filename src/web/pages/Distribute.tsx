@@ -6,6 +6,7 @@
 // the same checkPack the server uses. Edits are mirrored to sessionStorage
 // under draft:{mid}:{nid}:{version} so an expired session (or a reload) does
 // not lose them; the mirror is restored when the same version is loaded again.
+import { useLocation } from 'preact-iso';
 import { useCallback, useEffect, useMemo, useState } from 'preact/hooks';
 import { checkPack, parseCaseInput, type PackCheck } from '../../shared/rules';
 import type { PackGroup } from '../../shared/types';
@@ -70,6 +71,7 @@ function rawFromServer(w: Workspace): Raw {
 // ---------- page ----------
 
 export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string }) {
+  const { route } = useLocation();
   const [lang] = useLang();
   const [ws, setWs] = useState<Workspace | null>(null);
   const bench = useBench(ws, mid, nid);
@@ -123,7 +125,9 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
       return true;
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) return false; // the app goes to /login
-      setLoadErr(e instanceof ApiError && (e.status === 403 || e.status === 404) ? 'dsNoAccess' : 'dsLoadError');
+      // Not this person's team (a link or a page left open by someone else): their own Home instead.
+      if (e instanceof ApiError && (e.status === 403 || e.status === 404)) { route('/', true); return false; }
+      setLoadErr('dsLoadError');
       return false;
     }
   }, [mid, nid]);

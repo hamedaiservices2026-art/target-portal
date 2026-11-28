@@ -668,8 +668,11 @@ export function CdPage({ ws: wsParam, period: periodParam }: { ws?: string; peri
   // Take the server copy whenever a fresh load arrives (and nothing is being edited).
   useEffect(() => {
     if (!l || dirty) return;
-    setWorkState(l.cycle.cd);
+    // A shift between departments: the New Target per pack stays approved, the CD works on the split by department.
+    const shifting = !!l.cycle.shift && l.cycle.cdStatus === 'with_cd';
+    setWorkState(shifting && l.cycle.cd ? { ...l.cycle.cd, ntOk: true } : l.cycle.cd);
     setVersion(l.cycle.version);
+    if (shifting) setTab('dept');
   }, [l]);
   const setWork = (w: CdWork) => { setWorkState(w); setDirty(true); setMsg(null); };
   const edit = isCd && l?.cycle.cdStatus === 'with_cd';

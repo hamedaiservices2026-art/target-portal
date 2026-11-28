@@ -66,7 +66,7 @@ test('a Head sees the approvals page and the bell', async ({ page }) => {
 });
 
 test('the whole cycle: CD splits and submits, Admin calculates and sends, the Head approves', async ({ page, browser }, testInfo) => {
-  test.setTimeout(90_000);
+  test.setTimeout(120_000);
   const P = '2031-06';
   await signIn(page, 'admin', 'admin-pass-123', `/admin/cycle/ops/${P}`);
   await expect(page.getByTestId('admin-cycle')).toBeVisible();
@@ -231,6 +231,17 @@ test('the whole cycle: CD splits and submits, Admin calculates and sends, the He
   await expect(item).toContainText('Approved');
   await cd.getByTestId('bell').click();
   await expect(cd.getByRole('dialog', { name: 'Notifications' })).toContainText(P);
+  // Shift: Admin sends the split back to the CD after the send to the Heads; the CD lands on the split by department.
+  await page.goto(`/admin/cycle/ops/${P}`);
+  await page.getByTestId('shift-to-cd').click();
+  await page.getByRole('button', { name: 'Send to CD to shift cases' }).last().click();
+  await expect(page.getByTestId('shift-with-cd')).toBeVisible();
+  await cd.goto(`/cd/ops/${P}`);
+  await expect(cd.getByTestId('cd-shift')).toBeVisible();
+  await expect(cd.getByTestId('dept-table')).toBeVisible();
+  // A page the person cannot open sends them to their own first page.
+  await cd.goto('/admin/cycle');
+  await expect(cd).toHaveURL(/\/cd$/);
   await cdCtx.close();
 });
 
