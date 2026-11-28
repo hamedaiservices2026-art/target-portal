@@ -75,6 +75,8 @@ export interface Dept extends Tree {
   month: { id: number; period: string; deadline: string | null };
   deptId: number;
   deptCode: string;
+  /** The department's workspace: a Key Account manager's split uses the KAM threshold. */
+  ws?: string;
   capPct: number;
   rules: RulesSettings;
   packs: MonthPack[];
@@ -99,7 +101,7 @@ export function ruleContext(d: Dept, nodeId: number, labels: string[]): { capPct
   const own = personCaps(d.rules, [d.nodes.get(nodeId)?.name ?? ''])[0];
   const on = d.rules.enabled;
   return {
-    capPct: own ?? d.rules.caps[level],
+    capPct: own ?? (level === 'manager' && d.ws === 'ka' ? d.rules.caps.kam ?? d.rules.caps.manager : d.rules.caps[level]),
     level,
     opts: { rule2: on && d.rules.rule2, rule3: on && d.rules.rule3, personCapPct: caps, personBase: d.rules.base },
     personCapPct: caps.map((c) => c ?? null),
@@ -170,7 +172,7 @@ export async function loadDept(db: D1Database, monthId: number, nodeId: number, 
   const deptOf = `(SELECT dept_id FROM month_nodes WHERE month_id = ? AND node_id = ?)`;
   const stmts: D1PreparedStatement[] = [
     db.prepare(
-      `SELECT m.id, m.period, m.deadline, m.packs_json, n.dept_id, d.code AS dept_code,
+      `SELECT m.id, m.period, m.deadline, m.packs_json, n.dept_id, d.code AS dept_code, d.workspace AS ws,
               (SELECT value FROM settings WHERE key = 'cap_pct') AS cap_pct,
               (SELECT value FROM settings WHERE key = 'rules_json') AS rules_json
        FROM month_nodes n JOIN months m ON m.id = n.month_id JOIN departments d ON d.id = n.dept_id
@@ -187,7 +189,7 @@ export async function loadDept(db: D1Database, monthId: number, nodeId: number, 
   if (scope !== 'none') stmts.push(leafQuery(db, monthId, nodeId, scope, true));
   const [head, nodesRes, leavesRes] = await batch(db, stmts);
   const h = head!.results[0] as
-    | { id: number; period: string; deadline: string | null; packs_json: string; dept_id: number; dept_code: string; cap_pct: string | null; rules_json: string | null }
+    | { id: number; period: string; deadline: string | null; packs_json: string; dept_id: number; dept_code: string; ws: string | null; cap_pct: string | null; rules_json: string | null }
     | undefined;
   if (!h) throw notFound();
 
@@ -205,6 +207,7 @@ export async function loadDept(db: D1Database, monthId: number, nodeId: number, 
     month: { id: h.id, period: h.period, deadline: h.deadline },
     deptId: h.dept_id,
     deptCode: h.dept_code,
+    ws: h.ws ?? 'ops',
     capPct: capPctFrom(h.cap_pct),
     rules: parseRules(h.rules_json, capPctFrom(h.cap_pct)),
     packs,

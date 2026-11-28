@@ -9,7 +9,8 @@ export type Level = 'head' | 'manager' | 'supervisor';
 export type RulesSettings = {
   /** false = the cap is not applied at all (rules 2 and 3 off); rule 1 (packs add up) always applies. */
   enabled: boolean;
-  caps: Record<Level, number>;
+  /** kam: the Key Account managers' split (KA, level manager); falls back to manager. */
+  caps: Record<Level, number> & { kam?: number };
   rule2: boolean;
   rule3: boolean;
   /** `name` = a Head, manager or supervisor name, or a route code (case-insensitive): their own cap %. */
@@ -18,7 +19,7 @@ export type RulesSettings = {
   base: 'own' | 'group';
 };
 
-export const DEFAULT_RULES: RulesSettings = { enabled: true, caps: { head: 5, manager: 5, supervisor: 5 }, rule2: true, rule3: true, exceptions: [], base: 'own' };
+export const DEFAULT_RULES: RulesSettings = { enabled: true, caps: { head: 5, manager: 5, supervisor: 5, kam: 5 }, rule2: true, rule3: true, exceptions: [], base: 'own' };
 
 function pct(v: unknown, field: string): number {
   if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > 100) throw bad(`${field} must be a number from 0 to 100`);
@@ -26,12 +27,12 @@ function pct(v: unknown, field: string): number {
 }
 
 export function parseRules(raw: string | null | undefined, legacyCap?: number): RulesSettings {
-  if (!raw) return legacyCap === undefined ? DEFAULT_RULES : { ...DEFAULT_RULES, caps: { head: legacyCap, manager: legacyCap, supervisor: legacyCap } };
+  if (!raw) return legacyCap === undefined ? DEFAULT_RULES : { ...DEFAULT_RULES, caps: { head: legacyCap, manager: legacyCap, supervisor: legacyCap, kam: legacyCap } };
   try {
     const o = JSON.parse(raw) as Partial<RulesSettings>;
     return {
       enabled: o.enabled ?? true,
-      caps: { ...DEFAULT_RULES.caps, ...(o.caps ?? {}) },
+      caps: { ...DEFAULT_RULES.caps, kam: o.caps?.kam ?? o.caps?.manager ?? DEFAULT_RULES.caps.kam, ...(o.caps ?? {}) },
       rule2: o.rule2 ?? true,
       rule3: o.rule3 ?? true,
       exceptions: Array.isArray(o.exceptions) ? o.exceptions.filter((e) => e && typeof e.name === 'string' && typeof e.pct === 'number') : [],
@@ -75,7 +76,7 @@ export async function setRules(db: D1Database, actorId: number, body: Obj): Prom
   });
   const rules: RulesSettings = {
     enabled: body.enabled === undefined ? true : body.enabled,
-    caps: { head: pct(c.head, 'head cap'), manager: pct(c.manager, 'manager cap'), supervisor: pct(c.supervisor, 'supervisor cap') },
+    caps: { head: pct(c.head, 'head cap'), manager: pct(c.manager, 'manager cap'), supervisor: pct(c.supervisor, 'supervisor cap'), kam: c.kam === undefined ? pct(c.manager, 'manager cap') : pct(c.kam, 'KAM threshold') },
     rule2: body.rule2, rule3: body.rule3, exceptions,
     base: body.base === 'group' ? 'group' : 'own',
   };

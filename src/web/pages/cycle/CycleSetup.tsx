@@ -63,9 +63,9 @@ function RulesForm() {
       setBusy(false);
     }
   }
-  const cap = (k: 'head' | 'manager' | 'supervisor', label: string) => (
+  const cap = (k: 'head' | 'manager' | 'supervisor' | 'kam', label: string) => (
     <label class="field"><span>{label}</span>
-      <input type="number" min={0} max={100} step="0.5" value={r.caps[k]} onInput={(e) => setR({ ...r, caps: { ...r.caps, [k]: Number(e.currentTarget.value) } })} /></label>
+      <input type="number" min={0} max={100} step="0.5" value={r.caps[k] ?? r.caps.manager} onInput={(e) => setR({ ...r, caps: { ...r.caps, [k]: Number(e.currentTarget.value) } })} /></label>
   );
   return (
     <Section title={tc('rulesTitle')}>
@@ -76,6 +76,7 @@ function RulesForm() {
         {cap('head', tc('capHead'))}
         {cap('manager', tc('capManager'))}
         {cap('supervisor', tc('capSupervisor'))}
+        {cap('kam', tc('capKam'))}
       </div>
       <label><input type="checkbox" checked disabled /> {tc('rule1On')}</label><br />
       <label><input type="checkbox" disabled={r.enabled === false} checked={r.rule2} onChange={(e) => setR({ ...r, rule2: e.currentTarget.checked })} /> {tc('rule2On')}</label>

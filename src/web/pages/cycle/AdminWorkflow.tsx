@@ -31,11 +31,12 @@ export function WorkflowTab({ ws, period, l }: { ws: Workspace; period: string; 
   const { cycle } = l;
   const [open, setOpen] = useState<Set<number>>(new Set());
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  /** Admin: a submitted target goes back to that manager / supervisor to change (the people below wait until they submit again). */
+  /** Admin: a submitted target goes back to that manager / supervisor to change, with everyone under them (they start again after). */
   async function giveBack(n: ProgressNode) {
     setMsg(null);
     try {
-      await api('POST', `/api/admin/months/${prog.data!.monthId}/nodes/${n.nodeId}/reopen`);
+      // Everyone under them is returned too: their turns open again once this target is resubmitted.
+      await api('POST', `/api/admin/months/${prog.data!.monthId}/nodes/${n.nodeId}/reopen`, { team: true });
       setMsg({ ok: true, text: tc('wfReturned', { name: n.userName ?? n.name }) });
       prog.reload();
     } catch (x) {

@@ -148,6 +148,33 @@ describe('target cycle (handover flow)', () => {
     expect((await api('POST', `/admin/cycle/ops/${P}/heads/${tt}/send`, admin)).status).toBe(200);
   });
 
+  it('after the send, the CD can shift cases between departments and Admin re-sends the changed Heads', async () => {
+    await api('PUT', `/admin/cycle/ops/${P}/settings`, admin, { cdStep: true });
+    const work: CdWork = {
+      nt: { CSD_CANS150: 100 }, ntOk: true, splitNt: { CSD_CANS150: 100 }, basis: {},
+      dm: { [tt]: { 'TT DMM': { CSD_CANS150: 60 } }, [mt]: { MT: { CSD_CANS150: 40 } } }, gm: {}, colJ: { [tt]: { CSD: 60 }, [mt]: { CSD: 40 } },
+    };
+    await run(env.DB, `UPDATE cycles SET cd_status = 'submitted', cd_json = ?, dept_json = ? WHERE ws = 'ops' AND period = ?`,
+      JSON.stringify(work), JSON.stringify({ [tt]: { CSD_CANS150: 60 }, [mt]: { CSD_CANS150: 40 } }), P);
+    expect((await api('PUT', `/admin/cycle/ops/${P}/calc`, admin, { calc: { [tt]: { R1: { CSD_CANS150: 45 }, R2: { CSD_CANS150: 15 } } } })).status).toBe(200);
+    expect((await api('POST', `/admin/cycle/ops/${P}/heads/${tt}/send`, admin)).status).toBe(200);
+    // Plain recall is refused once a Head has it; the shift is allowed.
+    expect((await api('POST', `/admin/cycle/ops/${P}/cd/recall`, admin)).status).toBe(409);
+    expect((await api('POST', `/admin/cycle/ops/${P}/cd/shift`, admin)).status).toBe(200);
+    let cyc = await json(await api('GET', `/cycle/ops/${P}`, cd));
+    expect([cyc.cdStatus, !!cyc.shift]).toEqual(['with_cd', true]);
+    // The CD moves 20 cases from MT to TT and submits.
+    const moved = { ...work, dm: { [tt]: { 'TT DMM': { CSD_CANS150: 80 } }, [mt]: { MT: { CSD_CANS150: 20 } } }, colJ: { [tt]: { CSD: 80 }, [mt]: { CSD: 20 } } };
+    expect((await api('PUT', `/cycle/ops/${P}/cd`, cd, { cd: moved, version: cyc.version })).status).toBe(200);
+    expect((await api('POST', `/cycle/ops/${P}/cd/submit`, cd)).status).toBe(200);
+    const r = await json(await api('POST', `/admin/cycle/ops/${P}/shift/send`, admin));
+    expect(r.resent).toEqual(['TT']);
+    const leaves = await all<{ route_code: string; values_json: string }>(env.DB, `SELECT route_code, values_json FROM month_leaves WHERE dept_id = ? ORDER BY route_code`, tt);
+    expect(leaves.map((l) => JSON.parse(l.values_json).CSD_CANS150)).toEqual([60, 20]);
+    cyc = await json(await api('GET', `/cycle/ops/${P}`, admin));
+    expect([cyc.shift, cyc.heads.find((x: Json) => x.deptId === tt).status]).toEqual([null, 'pending']);
+  });
+
   it('sending an Operation Head also sends the linked Key Account department', async () => {
     await api('PUT', `/admin/cycle/ops/${P}/settings`, admin, {});
     await run(env.DB, `UPDATE cycles SET cd_status = 'submitted', dept_json = ? WHERE ws = 'ops' AND period = ?`, JSON.stringify({ [tt]: { CSD_CANS150: 10 } }), P);

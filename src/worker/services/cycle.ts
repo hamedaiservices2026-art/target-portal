@@ -78,6 +78,8 @@ export type CycleDto = {
   heads: HeadDto[];
   /** Workflow progress per department: nodes by status. */
   progress: Record<string, { waiting: number; in_progress: number; submitted: number }>;
+  /** Open shift: the CD moves cases between departments after the send to the Heads. */
+  shift: { at: string } | null;
 };
 
 export type HeadDto = {
@@ -88,7 +90,7 @@ export type HeadDto = {
 
 type CycleRow = {
   ws: Workspace; period: string; settings_json: string; cd_status: CdStatus; cd_comment: string | null; cd_json: string | null;
-  dept_json: string | null; calc_depts: string | null; calc_notes: string | null; version: number; updated_at: string;
+  dept_json: string | null; calc_depts: string | null; calc_notes: string | null; version: number; updated_at: string; shift_json: string | null;
 };
 
 // ---------- helpers ----------
@@ -147,7 +149,7 @@ function packGrid(v: unknown, where: string): Record<string, number> {
 async function cycleRow(db: D1Database, ws: Workspace, period: string): Promise<CycleRow | null> {
   return one<CycleRow>(db,
     `SELECT ws, period, settings_json, cd_status, cd_comment, cd_json, dept_json,
-            (SELECT json_group_array(key) FROM json_each(COALESCE(calc_json, '{}'))) AS calc_depts, calc_notes, version, updated_at
+            (SELECT json_group_array(key) FROM json_each(COALESCE(calc_json, '{}'))) AS calc_depts, calc_notes, version, updated_at, shift_json
      FROM cycles WHERE ws = ? AND period = ?`, ws, period);
 }
 
@@ -223,6 +225,7 @@ export async function getCycle(db: D1Database, user: SessionUser, ws: Workspace,
     monthId: m?.id ?? null,
     heads: headList,
     progress,
+    shift: c?.shift_json ? { at: parseJson<{ at: string }>(c.shift_json)?.at ?? '' } : null,
   };
 }
 
@@ -307,7 +310,7 @@ function parseSettings(body: Obj, period: string): CycleSettings {
 async function capStatements(db: D1Database, cap: number | null): Promise<D1PreparedStatement[]> {
   if (cap === null) return [];
   const rules = await getRules(db);
-  const next = { ...rules, enabled: true, caps: { head: cap, manager: cap, supervisor: cap } };
+  const next = { ...rules, enabled: true, caps: { head: cap, manager: cap, supervisor: cap, kam: cap } };
   return [
     db.prepare(`INSERT INTO settings(key, value) VALUES ('rules_json', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).bind(JSON.stringify(next)),
     db.prepare(`INSERT INTO settings(key, value) VALUES ('cap_pct', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).bind(String(cap)),
@@ -387,6 +390,15 @@ export async function recallFromCd(db: D1Database, actorId: number, ws: Workspac
   const period = parseMonth(periodRaw, 'period');
   const c = await requireCycle(db, ws, period);
   if (c.cd_status !== 'with_cd' && c.cd_status !== 'submitted') throw conflict(`the target is ${c.cd_status}`);
+  // A shift with the CD is cancelled: the split the Heads have stays.
+  if (c.shift_json && c.cd_status === 'with_cd') {
+    const r = await writeBatch(db, [
+      updateCycle(db, ws, period, c.version, `cd_status = 'submitted', cd_json = COALESCE(?, cd_json), shift_json = NULL`, [parseJson<{ cd?: string | null }>(c.shift_json)?.cd ?? null]),
+      auditStatement(db, actorId, 'cycle.shift_cancel', {}, { ws, period }),
+    ], 'conflict');
+    checkApplied(r);
+    return;
+  }
   if (c.cd_status === 'submitted') {
     const sent = await one<{ n: number }>(db,
       `SELECT COUNT(*) AS n FROM head_approvals h JOIN departments d ON d.id = h.dept_id
@@ -400,6 +412,93 @@ export async function recallFromCd(db: D1Database, actorId: number, ws: Workspac
       txt(`Admin recalled the ${period} target.`, `استرجع المسؤول هدف ${period}.`), `/cd/${ws}/${period}`),
   ], 'conflict');
   checkApplied(res);
+}
+
+// ---------- shift between departments after the send to the Heads ----------
+
+/**
+ * Admin: the target already went to the Heads and the CD needs to move cases
+ * from one department to another. The CD's split opens again (the Heads keep
+ * working meanwhile); after the CD submits, Admin re-sends the departments
+ * whose target changed (resendShifted).
+ */
+export async function shiftToCd(db: D1Database, actorId: number, ws: Workspace, periodRaw: string): Promise<void> {
+  const period = parseMonth(periodRaw, 'period');
+  const c = await requireCycle(db, ws, period);
+  const settings = parseJson<CycleSettings>(c.settings_json) ?? defaultSettings(period);
+  if (!cdStepOf(ws, settings)) throw conflict('this cycle has no Commercial Director step');
+  if (c.cd_status !== 'submitted') throw conflict('the Commercial Director has not submitted the split yet');
+  const shift = { at: new Date().toISOString(), from: parseJson(c.dept_json) ?? {}, cd: c.cd_json };
+  const res = await writeBatch(db, [
+    updateCycle(db, ws, period, c.version, `cd_status = 'with_cd', cd_comment = NULL, shift_json = ?`, [JSON.stringify(shift)]),
+    auditStatement(db, actorId, 'cycle.cd_shift', {}, { ws, period }),
+    notifySql(db, CDS(ws).sql, CDS(ws).args, 'cd_sent',
+      txt(`Admin sent the ${period} target back to shift cases between departments.`, `أعاد المسؤول هدف ${period} لنقل كميات بين الأقسام.`), `/cd/${ws}/${period}`),
+  ], 'conflict');
+  checkApplied(res);
+}
+
+/** Route targets of a department scaled to its new target, pack by pack, in whole cases (largest remainder). */
+export function rescaleRoutes(routes: Record<string, Record<string, number>>, target: Record<string, number>): Record<string, Record<string, number>> {
+  const names = Object.keys(routes);
+  const out: Record<string, Record<string, number>> = Object.fromEntries(names.map((r) => [r, {}]));
+  if (!names.length) return out;
+  const totalOf = (r: string) => Object.values(routes[r] ?? {}).reduce((a, b) => a + b, 0);
+  const packs = new Set([...Object.keys(target), ...names.flatMap((r) => Object.keys(routes[r] ?? {}))]);
+  for (const p of packs) {
+    const t = Math.max(0, Math.round(target[p] ?? 0));
+    if (t === 0) continue;
+    let w = names.map((r) => routes[r]?.[p] ?? 0);
+    if (!w.some((x) => x > 0)) w = names.map(totalOf);
+    if (!w.some((x) => x > 0)) w = names.map(() => 1);
+    const sum = w.reduce((a, b) => a + b, 0);
+    const raw = w.map((x) => (t * x) / sum);
+    const base = raw.map(Math.floor);
+    let left = t - base.reduce((a, b) => a + b, 0);
+    const order = raw.map((x, i) => [x - base[i]!, i] as const).sort((a, b) => b[0] - a[0]);
+    for (let k = 0; left > 0; k = (k + 1) % order.length, left--) base[order[k]![1]]! += 1;
+    names.forEach((r, i) => { if (base[i]! > 0) out[r]![p] = base[i]!; });
+  }
+  return out;
+}
+
+/**
+ * Admin, after the CD submitted the shift: every department whose target
+ * changed gets its route targets scaled to the new target and is sent to its
+ * Head again (restarted: the Head and the team start over on the new target).
+ * Departments whose target did not change keep running as they are.
+ */
+export async function resendShifted(db: D1Database, env: Env, actorId: number, ws: Workspace, periodRaw: string): Promise<{ resent: string[]; unchanged: string[] }> {
+  const period = parseMonth(periodRaw, 'period');
+  const c = await requireCycle(db, ws, period);
+  if (!c.shift_json) throw conflict('there is no shift to send');
+  if (c.cd_status !== 'submitted') throw conflict('the Commercial Director has not submitted the shift yet');
+  const dept = parseJson<Record<string, Record<string, number>>>(c.dept_json) ?? {};
+  const calcRow = await one<{ calc_json: string | null }>(db, `SELECT calc_json FROM cycles WHERE ws = ? AND period = ?`, ws, period);
+  const calc = parseJson<Record<string, Record<string, Record<string, number>>>>(calcRow?.calc_json ?? null) ?? {};
+  const names = new Map((await all<{ id: number; name: string }>(db, `SELECT id, name FROM departments WHERE workspace = ?`, ws)).map((d) => [String(d.id), d.name]));
+  const changed: string[] = [];
+  const unchanged: string[] = [];
+  for (const [d, routes] of Object.entries(calc)) {
+    const sums: Record<string, number> = {};
+    for (const g of Object.values(routes)) for (const [p, n] of Object.entries(g)) sums[p] = (sums[p] ?? 0) + n;
+    const t = dept[d] ?? {};
+    const same = [...new Set([...Object.keys(t), ...Object.keys(sums)])].every((p) => Math.round(t[p] ?? 0) === Math.round(sums[p] ?? 0));
+    if (same) { unchanged.push(d); continue; }
+    calc[d] = rescaleRoutes(routes, t);
+    changed.push(d);
+  }
+  const res = await writeBatch(db, [
+    updateCycle(db, ws, period, c.version, `calc_json = ?, shift_json = NULL`, [JSON.stringify(calc)]),
+    auditStatement(db, actorId, 'cycle.shift_send', {}, { ws, period, changed }),
+  ], 'conflict');
+  checkApplied(res);
+  for (const d of changed) {
+    const h = await one<{ status: HeadStatus }>(db, `SELECT status FROM head_approvals WHERE period = ? AND dept_id = ?`, period, Number(d));
+    if (h && (h.status === 'pending' || h.status === 'approved' || h.status === 'returned')) await restartHead(db, actorId, ws, period, Number(d));
+    if (h && h.status !== 'draft') await sendToHead(db, actorId, ws, period, Number(d), env);
+  }
+  return { resent: changed.map((d) => names.get(d) ?? d), unchanged: unchanged.map((d) => names.get(d) ?? d) };
 }
 
 function parseCdWork(v: unknown): CdWork {

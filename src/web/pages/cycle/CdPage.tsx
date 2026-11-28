@@ -775,6 +775,7 @@ export function CdPage({ ws: wsParam, period: periodParam }: { ws?: string; peri
             </div>
           )}
           {err && <div class="alert" role="alert">{err}</div>}
+          {l.cycle.shift && l.cycle.cdStatus === 'with_cd' && <div class="banner warn" data-testid="cd-shift">{tc('cdShiftBanner')}</div>}
           <div class="cy-flow banner small" data-testid="cd-flow">
             <span>1 · {tc('tabGm')} <span class={`pill ${work.ntOk ? 'ok' : 'warn'}`}>{work.ntOk ? tc('approvedWord') : tc('toApprove')}</span></span>
             <span aria-hidden="true">→</span>

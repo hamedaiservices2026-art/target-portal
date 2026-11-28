@@ -222,6 +222,22 @@ describe('reopen', () => {
     expect(await grandTotals(month, tt)).toEqual(start);
   });
 
+  it('team return: everyone below is returned; after the resubmit each gets a fresh turn', async () => {
+    await supsWork();
+    const res = await api('POST', `/admin/months/${month}/nodes/${area}/reopen`, admin, { team: true });
+    expect(res.status).toBe(200);
+    for (const n of [supA, supB, supC]) {
+      const r = await nodeRow(month, n);
+      expect([r.status, r.held_status, r.draft_json, r.submitted_at]).toEqual(['waiting', null, null, null]);
+    }
+    const ws = await json(await getWs(areaS, month, area));
+    expect((await submit(areaS, month, area, ws.version)).status).toBe(200);
+    for (const n of [supA, supB, supC]) expect(await statusOf(month, n)).toEqual(['in_progress', null]);
+    // Sup B's submitted work is gone: a fresh turn on the current routes.
+    expect((await nodeRow(month, supB)).draft_json).toBe(null);
+    expect(await grandTotals(month, tt)).toEqual(start);
+  });
+
   it('unchanged resubmit: Sup A and B return to their held statuses with their work intact', async () => {
     await supsWork();
     const aDraft = (await nodeRow(month, supA)).draft_json;

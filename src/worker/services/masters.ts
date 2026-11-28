@@ -346,8 +346,8 @@ export async function setCapPct(db: D1Database, actorId: number, body: Obj): Pro
     ).bind(String(v)),
     // The single cap sets every level's cap of the distribution rules.
     db.prepare(
-      `UPDATE settings SET value = json_set(value, '$.caps.head', ?, '$.caps.manager', ?, '$.caps.supervisor', ?) WHERE key = 'rules_json'`,
-    ).bind(v, v, v),
+      `UPDATE settings SET value = json_set(value, '$.caps.head', ?, '$.caps.manager', ?, '$.caps.supervisor', ?, '$.caps.kam', ?) WHERE key = 'rules_json'`,
+    ).bind(v, v, v, v),
     auditStatement(db, actorId, 'settings.update', {}, { changes: { capPct: { from: before, to: v } } }),
   ], 'conflict');
   return v;

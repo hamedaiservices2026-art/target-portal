@@ -322,6 +322,27 @@ function SendStep({ ws, period, l, onDone, missing }: { ws: Workspace; period: s
     }
   }
 
+  // The target already went to the Heads: the CD shifts cases between departments, then Admin re-sends.
+  const sentToHeads = cycle.heads.some((h) => h.status === 'pending' || h.status === 'approved' || h.status === 'returned');
+  const [shiftMsg, setShiftMsg] = useState<string | null>(null);
+  async function toShift() {
+    setErr(null);
+    try { await api('POST', `/api/admin/cycle/${ws}/${period}/cd/shift`, {}); onDone(); } catch (x) { setErr(errText(x)); }
+  }
+  async function resendShift() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await api<{ resent: string[]; unchanged: string[] }>('POST', `/api/admin/cycle/${ws}/${period}/shift/send`, {});
+      setShiftMsg(r.resent.length ? tc('shiftSent', { list: r.resent.join(', ') }) : tc('shiftNone'));
+      onDone();
+    } catch (x) {
+      setErr(errText(x));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function putDept(dept: Record<string, Grid>) {
     await api('PUT', `/api/admin/cycle/${ws}/${period}/dept-target`, { dept });
     onDone();
@@ -457,8 +478,21 @@ function SendStep({ ws, period, l, onDone, missing }: { ws: Workspace; period: s
               <button type="button" class="btn primary" data-testid="admin-approval-download" onClick={() => void downloadApprovalFor(ws, period, fc).then((m) => { if (m) setErr(m); }).catch((x) => setErr(errText(x)))}>{tc('approvalDownload')}</button>
             </div>
           )}
+          {cycle.shift && cycle.cdStatus === 'with_cd' && <div class="banner warn" data-testid="shift-with-cd">{tc('shiftWithCd')}</div>}
+          {cycle.shift && cycle.cdStatus === 'submitted' && (
+            <div class="banner ok" data-testid="shift-ready">
+              {tc('shiftReady')}{' '}
+              <button type="button" class="btn primary" disabled={busy} data-testid="shift-send" onClick={() => void resendShift()}>{tc('shiftSend')}</button>
+            </div>
+          )}
+          {shiftMsg && <div class="banner ok" role="status">{shiftMsg}</div>}
           {(cycle.cdStatus === 'with_cd' || cycle.cdStatus === 'submitted') && (
-            <ConfirmButton label={tc('recall')} question={tc('recallQ')} yesLabel={tc('recall')} onConfirm={recall} />
+            <div class="actions">
+              {cycle.cdStatus === 'submitted' && !cycle.shift && sentToHeads && (
+                <ConfirmButton label={tc('shiftToCd')} question={tc('shiftToCdQ')} yesLabel={tc('shiftToCd')} danger={false} testId="shift-to-cd" onConfirm={toShift} />
+              )}
+              <ConfirmButton label={cycle.shift && cycle.cdStatus === 'with_cd' ? tc('shiftCancel') : tc('recall')} question={cycle.shift && cycle.cdStatus === 'with_cd' ? tc('shiftCancelQ') : tc('recallQ')} yesLabel={tc('recall')} onConfirm={recall} />
+            </div>
           )}
         </div>
       ) : (

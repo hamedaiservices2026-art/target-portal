@@ -41,8 +41,10 @@ months.post('/api/admin/months/:id/depts/:deptId/start', h(async (c, db, me) =>
 // when set, else the origin the admin is using.
 months.get('/api/admin/months/:id/board', h(async (c, db) =>
   c.json(await monthBoard(db, c.env.APP_URL || new URL(c.req.url).origin, parseId(p(c, 'id')), requiredDept(c.req.query('dept'))))));
-months.post('/api/admin/months/:id/nodes/:nid/reopen', h(async (c, db, me) =>
-  c.json(await reopenNode(db, c.env, me, parseId(p(c, 'id')), parseId(p(c, 'nid'))))));
+months.post('/api/admin/months/:id/nodes/:nid/reopen', h(async (c, db, me, body) => {
+  const b = await body().catch(() => ({} as Record<string, unknown>));
+  return c.json(await reopenNode(db, c.env, me, parseId(p(c, 'id')), parseId(p(c, 'nid')), { team: b?.team === true }));
+}));
 months.post('/api/admin/months/:id/nodes/:nid/push', h(async (c, db, me) =>
   c.json(await pushNode(db, c.env, me, parseId(p(c, 'id')), parseId(p(c, 'nid'))))));
 

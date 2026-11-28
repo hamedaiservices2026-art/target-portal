@@ -7,7 +7,7 @@ import { requireUser, type AppEnv } from '../auth';
 import { h, p, type Ctx } from './handler';
 import { benchmarks, salesMonths, setSalesman } from '../services/benchmarks';
 import {
-  applyCalc, approveHeadAll, getCalc, getCycle, getProgress, headSummary, listCycles, myApprovals, recallFromCd, restartHead, returnFromCd, revertCycle, returnHead,
+  applyCalc, approveHeadAll, getCalc, getCycle, getProgress, headSummary, listCycles, myApprovals, recallFromCd, resendShifted, restartHead, shiftToCd, returnFromCd, revertCycle, returnHead,
   saveCd, saveSettings, sendToCd, sendToHeadAll, setDeptTarget, submitCd,
 } from '../services/cycle';
 import {
@@ -91,6 +91,11 @@ cycle.post('/api/admin/cycle/:ws/:period/cd/recall', h(async (c, db, me) => {
   await recallFromCd(db, me, ws(c), per(c));
   return c.json({ ok: true });
 }));
+cycle.post('/api/admin/cycle/:ws/:period/cd/shift', h(async (c, db, me) => {
+  await shiftToCd(db, me, ws(c), per(c));
+  return c.json({ ok: true });
+}));
+cycle.post('/api/admin/cycle/:ws/:period/shift/send', h(async (c, db, me) => c.json(await resendShifted(db, c.env, me, ws(c), per(c)))));
 cycle.put('/api/admin/cycle/:ws/:period/dept-target', h(async (c, db, me, body) => {
   await setDeptTarget(db, me, ws(c), per(c), await body());
   return c.json({ ok: true });
