@@ -38,7 +38,7 @@ export function categoryOf(name: string, master?: ReadonlyMap<string, Category>)
 
 function petSize(name: string): number | null {
   for (const t of tokens(name)) {
-    const r = /^(?:MS)?PET(\d{3,4})$/.exec(t);
+    const r = /^(?:MS)?PET(\d{3,4})\+?$/.exec(t);
     if (r) return Number(r[1]);
   }
   return null;
@@ -172,3 +172,17 @@ export function subsOf(cat: Category, packs: readonly string[], subOf: (p: strin
     return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
   });
 }
+
+/**
+ * Packs merged into another pack: every upload reads the alias as the target
+ * pack (cases are added up). LIT_CANS320 and the combined "LIT_CANS310+320"
+ * of the department file are one pack, LIT_CANS310.
+ */
+export const PACK_ALIASES: Readonly<Record<string, string>> = {
+  LIT_CANS320: 'LIT_CANS310',
+  'LIT_CANS310+320': 'LIT_CANS310',
+  // CSD_SSPET500, CSD_SSPET400 and the combined row are one pack, CSD_SSPET400.
+  CSD_SSPET500: 'CSD_SSPET400',
+  'CSD_SSPET500/400': 'CSD_SSPET400',
+  'CSD_SSPET400/500': 'CSD_SSPET400',
+};

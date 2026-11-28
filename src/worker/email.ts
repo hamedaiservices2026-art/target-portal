@@ -81,15 +81,50 @@ function link(env: Env, monthId: number, nodeId: number): string | null {
   return base ? `${base}/m/${monthId}/n/${nodeId}` : null;
 }
 
-type NodeRow = { name: string; email: string; lang: Lang; period: string; deadline: string | null; node_id: number; month_id: number; node_name: string };
+type NodeRow = { name: string; email: string; lang: Lang; period: string; deadline: string | null; node_id: number; month_id: number; node_name: string; baseline: string | null };
 
-const NODE_SELECT = `SELECT u.name, u.email, u.lang, m.period, m.deadline, mn.node_id, mn.month_id, mn.name AS node_name
+const NODE_SELECT = `SELECT u.name, u.email, u.lang, m.period, m.deadline, mn.node_id, mn.month_id, mn.name AS node_name, mn.baseline_json AS baseline
   FROM month_nodes mn JOIN months m ON m.id = mn.month_id JOIN users u ON u.id = mn.manager_user_id
   WHERE u.active = 1 AND u.email IS NOT NULL AND u.email <> ''`;
 
-function nodeMail(env: Env, r: NodeRow, tpl: typeof turnOpened) {
+/** The node's target by category (CSD, Water, LRB-Others) and in total, from its starting split. */
+export function targetSummary(baseline: string | null, grpOf: Map<string, string>): { label: string; cases: number }[] {
+  if (!baseline) return [];
+  let grids: Record<string, Record<string, number>>;
+  try { grids = JSON.parse(baseline) as Record<string, Record<string, number>>; } catch { return []; }
+  const by = new Map<string, number>();
+  let total = 0;
+  for (const g of Object.values(grids ?? {})) {
+    for (const [p, n] of Object.entries(g ?? {})) {
+      if (typeof n !== 'number' || !Number.isFinite(n)) continue;
+      const c = grpOf.get(p) ?? 'LRB-Others';
+      by.set(c, (by.get(c) ?? 0) + n);
+      total += n;
+    }
+  }
+  if (!total) return [];
+  return [...['CSD', 'Water', 'LRB-Others'].filter((c) => by.has(c)).map((c) => ({ label: c, cases: Math.round(by.get(c)!) })), { label: 'Total', cases: Math.round(total) }];
+}
+
+/** The admin can turn the target emails off (Admin › Cycle setup). */
+export async function mailOn(db: D1Database): Promise<boolean> {
+  try {
+    const r = await db.prepare(`SELECT value FROM settings WHERE key = 'mail_on'`).first<{ value: string }>();
+    return r?.value !== '0';
+  } catch {
+    return true;
+  }
+}
+
+async function packGroups(db: D1Database): Promise<Map<string, string>> {
+  const rows = await all<{ code: string; grp: string }>(db, `SELECT code, grp FROM packs`);
+  return new Map(rows.map((r) => [r.code, r.grp]));
+}
+
+function nodeMail(env: Env, r: NodeRow, tpl: typeof turnOpened, grpOf: Map<string, string>) {
   return { to: r.email, ...tpl({
     name: r.name, period: r.period, nodeName: r.node_name, deadline: r.deadline, lang: r.lang, link: link(env, r.month_id, r.node_id),
+    summary: targetSummary(r.baseline, grpOf),
   }) };
 }
 
@@ -113,10 +148,11 @@ async function turnOpenedWork(env: Env, monthId: number, nodeIds: number[]): Pro
   } catch { /* notifications must not fail the request */ }
   try {
     const ids = nodeIds.slice(0, MAX_PER_RUN);
-    if (!ids.length) return;
+    if (!ids.length || !(await mailOn(env.DB))) return;
     const rows = await all<NodeRow>(env.DB,
       `${NODE_SELECT} AND mn.month_id = ? AND mn.node_id IN (${ids.map(() => '?').join(',')})`, monthId, ...ids);
-    await sendMailBatch(env, rows.map((r) => nodeMail(env, r, turnOpened)));
+    const grpOf = await packGroups(env.DB);
+    await sendMailBatch(env, rows.map((r) => nodeMail(env, r, turnOpened, grpOf)));
   } catch { /* email must not fail the request */ }
 }
 
@@ -153,10 +189,12 @@ async function deptCompleteWork(env: Env, monthId: number, deptId: number): Prom
 /** Cron: remind managers of in_progress nodes whose month deadline is tomorrow in Asia/Riyadh (UTC+3, no DST). */
 export async function sendDeadlineReminders(db: D1Database, env: Env, now: Date): Promise<number> {
   try {
+    if (!(await mailOn(db))) return 0;
     const tomorrow = new Date(now.getTime() + (3 + 24) * 3600_000).toISOString().slice(0, 10);
     const rows = await all<NodeRow>(db,
       `${NODE_SELECT} AND mn.status = 'in_progress' AND m.deadline = ? LIMIT ${MAX_PER_RUN}`, tomorrow);
-    await sendMailBatch(env, rows.map((r) => nodeMail(env, r, deadlineReminder)));
+    const grpOf = await packGroups(db);
+    await sendMailBatch(env, rows.map((r) => nodeMail(env, r, deadlineReminder, grpOf)));
     return rows.length;
   } catch {
     return 0;

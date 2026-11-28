@@ -3,6 +3,7 @@ import { useLocation } from 'preact-iso';
 import { useEffect, useState } from 'preact/hooks';
 import type { TaskDto } from '../../worker/services/distribution';
 import { api, ApiError } from '../api';
+import { tc } from '../cycle/i18n';
 import { StatusPill } from '../components/StatusPill';
 import { fmtDeadline, fmtPeriod } from '../format';
 import { t, useLang, type TextKey } from '../i18n';
@@ -51,7 +52,7 @@ export function Home() {
       {!err && !tasks && <p class="muted">{t('loading')}</p>}
       {tasks && tasks.length === 0 && (
         user?.role === 'admin'
-          ? <p class="card muted" data-testid="admin-hint">{t('homeAdminHint')} <a href="/admin/months">{t('navMonths')}</a></p>
+          ? <p class="card muted" data-testid="admin-hint">{t('homeAdminHint')} <a href="/admin/cycle">{tc('navCycle')}</a></p>
           : <p class="card muted" data-testid="no-tasks">{t('homeEmpty')}</p>
       )}
       {tasks && groupByMonth(tasks).map((m) => (

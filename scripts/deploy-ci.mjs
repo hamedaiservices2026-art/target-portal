@@ -3,7 +3,7 @@
 // CI checkout's wrangler.jsonc (never committed), applies migrations, builds,
 // deploys, and sets optional secrets (values piped via stdin, never logged).
 import { spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 const DB_NAME = 'target-portal';
@@ -120,6 +120,7 @@ function main() {
   writeFileSync(CONFIG_PATH, patchDatabaseId(readFileSync(CONFIG_PATH, 'utf8'), id));
 
   must(wrangler(['d1', 'migrations', 'apply', DB_NAME, '--remote']), 'wrangler d1 migrations apply');
+  runDataResets();
 
   const build = spawnSync('npm', ['run', 'build'], { stdio: 'inherit' });
   if (build.status !== 0) {
@@ -142,6 +143,35 @@ function main() {
 
   const url = (deploy.stdout + deploy.stderr).match(/https:\/\/\S+\.workers\.dev\S*/);
   console.log(url ? `Deployed URL: ${url[0]}` : 'Deployed (URL line not found in wrangler output).');
+}
+
+/** Rows of one SQL query on the remote database (wrangler --json output). */
+function query(sql) {
+  const r = must(wrangler(['d1', 'execute', DB_NAME, '--remote', '--json', '--command', sql], { echo: false }), `query: ${sql}`);
+  const parsed = parseDatabaseList(r.stdout); // the same tolerant parse: banner lines may come first
+  return parsed[0] && Array.isArray(parsed[0].results) ? parsed[0].results : [];
+}
+
+const RESET_TABLES = ['data_routes', 'data_months', 'cycles', 'head_approvals', 'notifications', 'months'];
+
+/**
+ * One-time data clean-ups (scripts/data-reset/<date>.sql), each run once: the
+ * file writes the marker settings row data_reset_<yyyymmdd> at its end.
+ * Only row counts are printed.
+ */
+export function runDataResets(dir = 'scripts/data-reset') {
+  if (!existsSync(dir)) return;
+  for (const f of readdirSync(dir).filter((x) => x.endsWith('.sql')).sort()) {
+    const key = `data_reset_${f.replace(/\D/g, '')}`;
+    if (query(`SELECT value FROM settings WHERE key = '${key}'`).length) {
+      console.log(`Data reset ${f}: already done.`);
+      continue;
+    }
+    const counts = () => RESET_TABLES.map((t) => `${t}=${query(`SELECT COUNT(*) AS n FROM ${t}`)[0]?.n ?? '?'}`).join(' ');
+    console.log(`Data reset ${f}: before ${counts()}`);
+    must(wrangler(['d1', 'execute', DB_NAME, '--remote', '--yes', '--file', `${dir}/${f}`], { echo: false }), `data reset ${f}`);
+    console.log(`Data reset ${f}: after  ${counts()}`);
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();

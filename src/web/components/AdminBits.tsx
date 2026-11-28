@@ -14,14 +14,18 @@ export function errText(e: unknown): string {
   if (e instanceof ApiError) {
     const own = importErrorKey(e.status, e.body);
     if (own) return t(own);
-    const detail = typeof e.body.detail === 'string' ? ` (${e.body.detail})` : '';
+    const d = typeof e.body.detail === 'string' ? e.body.detail : '';
+    const detail = d ? ` (${d})` : '';
     if (e.status === 400) return `${t('adErrInvalid')}${detail}`;
-    if (e.status === 404) return t('adErrGone');
-    if (e.status === 409) return `${t('adErrConflict')}${detail}`;
+    if (e.status === 404) return `${t('adErrGone')}${detail}`;
+    if (e.status === 409) return e.body.error === 'stale' ? t('errStale') : `${d || t('adErrConflict')}`;
     if (e.status === 401) return t('errGeneric');
-    return t('errGeneric');
+    if (e.status === 403) return t('errForbidden');
+    return `${t('errGeneric')} (${e.status}${d ? `: ${d}` : typeof e.body.error === 'string' ? `: ${e.body.error}` : ''})`;
   }
-  if (e instanceof TypeError) return t('errNetwork');
+  // A fetch that never reached the server.
+  if (e instanceof TypeError && /fetch|network|load failed/i.test(e.message)) return t('errNetwork');
+  if (e instanceof Error && e.message) return e.message;
   return t('errGeneric');
 }
 

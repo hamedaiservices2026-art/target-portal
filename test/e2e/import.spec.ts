@@ -6,9 +6,6 @@ import writeXlsxFile from 'write-excel-file/node';
 // Bulk import (Task E): upload -> preview -> apply on the Users, Packs and Hierarchy screens.
 const SFX = Date.now().toString(36);
 const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-const DEPT = `IM${SFX}`.toUpperCase();
-const U1 = `imp1${SFX}`;
-const U2 = `imp2${SFX}`;
 
 async function signInAdmin(page: Page) {
   await page.goto('/admin/users');
@@ -59,59 +56,39 @@ test('packs: template, preview with an error, fix, apply, re-apply is unchanged'
   await expect(panel.getByTestId('import-apply')).toBeDisabled();
 });
 
-test('users then hierarchy: generated password shown once, tree built from one file, moves applied', async ({ page, request }) => {
+test('hierarchy from one file, then every person gets an account with a first password', async ({ page, request }) => {
   await signInAdmin(page);
-  await page.getByRole('button', { name: 'Import from Excel' }).click();
-  const users = page.getByTestId('import-users');
-  await users.getByTestId('import-file-users').setInputFiles(await file('users.xlsx',
-    ['Username', 'Full name', 'Role', 'Password', 'Language', 'Email'],
-    [[U1, `Imported One ${SFX}`, 'manager', 'first-pass-123', 'ar', null], [U2, `Imported Two ${SFX}`, 'manager', null, null, null]]));
-  await expect(users.getByTestId('import-summary')).toContainText('2 to add');
-  await users.getByTestId('import-apply').click();
-  await expect(users.getByTestId('import-done')).toContainText('2 added');
-  const gen = users.getByTestId('generated-row');
-  await expect(gen).toHaveCount(1);
-  await expect(gen).toContainText(U2);
-  const generated = (await gen.locator('code').textContent())!.trim();
-  expect(generated).toMatch(/^[A-Za-z0-9]{12}$/);
+  const head = `Imp Head ${SFX}`;
+  await page.goto('/admin/hierarchy');
+  await page.getByTestId('hier-file').setInputFiles(await file('hierarchy.xlsx',
+    ['Channel Head', 'Sales Manager', 'Sales Supervisor', 'Route Code', 'Delivery System'],
+    [[head, `Imp Mgr ${SFX}`, `Imp Sup ${SFX}`, `IR1${SFX}`, 'Presell'], [head, `Imp Mgr ${SFX}`, `Imp Sup ${SFX}`, `IR2${SFX}`, 'Presell']]));
+  const plan = page.getByTestId('hier-plan');
+  await expect(plan).toBeVisible();
+  await plan.getByLabel(`Department ${head}`).selectOption('new');
+  await expect(page.getByTestId('hier-problems')).toHaveCount(0);
+  await page.getByTestId('hier-apply').click();
+  await expect(page.getByTestId('hier-done')).toBeVisible();
+  const headRow = page.getByTestId('hz-head').filter({ has: page.getByLabel(`Name ${head}`, { exact: true }) });
+  await expect(headRow).toContainText('2'); // rolled-up routes
+
+  await page.getByRole('link', { name: 'Users' }).click();
+  await page.getByTestId('create-missing').click();
+  await expect(page.getByTestId('users-flash')).toContainText('accounts created');
+  const row = page.getByTestId('user-row').filter({ hasText: `Imp Sup ${SFX}` });
+  await expect(row).toContainText('Sales Supervisor');
+  await expect(row.getByTestId('user-status')).toHaveText('Not signed in yet');
+  const first = (await row.getByTestId('first-pw').textContent())!.trim();
+  expect(first).toMatch(/^[A-Z]{4}[2-9]{4}$/);
+  const username = (await row.locator('code').first().textContent())!.trim();
+
   const dl = page.waitForEvent('download');
-  await users.getByRole('button', { name: 'Download passwords (.xlsx)' }).click();
+  await page.getByTestId('dl-logins').click();
   const sheet = await readSheet(readFileSync((await (await dl).path())!));
-  expect(sheet).toEqual([['Username', 'Password'], [U2, generated]]);
-  await expect(page.getByTestId('user-row').filter({ hasText: U1 })).toBeVisible();
+  expect(sheet[0]).toEqual(['ID', 'Name', 'Username', 'First password', 'Email', 'Roles', 'Status']);
+  expect(sheet.some((r) => r[2] === username && r[3] === first)).toBe(true);
 
-  // The generated password works (own request context: the admin stays signed in on the page).
-  const login = await request.post('/api/auth/login', { data: { username: U2, password: generated } });
+  // The first password works (own request context: the admin stays signed in on the page).
+  const login = await request.post('/api/auth/login', { data: { username, password: first } });
   expect(login.status()).toBe(200);
-
-  // Hierarchy: a new department, the whole tree in one file (children before parents).
-  const dept = await page.request.post('/api/admin/departments', { data: { code: DEPT, name: `Import ${SFX}` } });
-  const deptId = ((await dept.json()) as { department: { id: number } }).department.id;
-  await page.goto(`/admin/hierarchy?dept=${deptId}`);
-  await page.getByRole('button', { name: 'Import from Excel' }).click();
-  const hier = page.getByTestId('import-hierarchy');
-  const header = ['Department', 'Node name', 'Parent node name', 'Manager username'];
-  await hier.getByTestId('import-file-hierarchy').setInputFiles(await file('bad-tree.xlsx', header, [
-    [DEPT, 'Head', null, 'admin'], [DEPT, 'Sup', 'Area', 'nobody'],
-  ]));
-  await expect(hier.getByTestId('import-error')).toHaveCount(2); // unknown manager, unknown parent
-  await expect(hier.getByTestId('import-apply')).toBeDisabled();
-
-  await hier.getByTestId('import-file-hierarchy').setInputFiles(await file('tree.xlsx', header, [
-    [DEPT, 'Sup 1', 'Area', U1], [DEPT, 'Sup 2', 'Area', U2], [DEPT, 'Area', 'Head', U1], [DEPT, 'Head', null, 'admin'],
-  ]));
-  await expect(hier.getByTestId('import-summary')).toContainText('4 to add, 0 to update, 0 unchanged');
-  await hier.getByTestId('import-apply').click();
-  await expect(hier.getByTestId('import-done')).toContainText('4 added');
-  await expect(page.getByTestId('node-row')).toHaveCount(4);
-  await expect(page.getByTestId('node-row').filter({ hasText: 'Sup 2' }).getByTestId('node-manager')).toContainText(`Imported Two ${SFX}`);
-
-  // Move Sup 2 under Head and change its manager.
-  await hier.getByTestId('import-file-hierarchy').setInputFiles(await file('move.xlsx', header, [[DEPT, 'Sup 2', 'Head', U1]]));
-  await expect(hier.getByTestId('import-summary')).toContainText('0 to add, 1 to update, 0 unchanged');
-  await hier.getByTestId('import-apply').click();
-  await expect(hier.getByTestId('import-done')).toContainText('1 updated');
-  const sup2 = page.getByTestId('node-row').filter({ hasText: 'Sup 2' });
-  await expect(sup2.getByTestId('node-manager')).toContainText(`Imported One ${SFX}`);
-  await expect(sup2).toHaveAttribute('aria-level', '2');
 });

@@ -46,7 +46,7 @@ test('a short pack blocks submit; moving the cases to another route makes it OK'
 
   // Per-pack reset puts the starting numbers back.
   await page.getByRole('button', { name: `Reset ${PET}` }).click();
-  await expect(cell(page, PET, '314023')).toHaveValue('5015');
+  await expect(cell(page, PET, '314023')).toHaveValue('5,015');
   await expect(page.getByTestId(`hint-${PET}-0`)).toHaveText('start 5,015');
 });
 
@@ -115,14 +115,14 @@ test('edits survive an expired session: saving sends to login, and after login t
   await signIn(page);
   await expect(page).toHaveURL(/\/m\/1\/n\/2$/);
   await expect(page.getByTestId('restored-notice')).toBeVisible();
-  await expect(cell(page, PET, '314023')).toHaveValue('4815');
-  await expect(cell(page, PET, '314075')).toHaveValue('8434');
+  await expect(cell(page, PET, '314023')).toHaveValue('4,815');
+  await expect(cell(page, PET, '314075')).toHaveValue('8,434');
 
   // Now the save goes through; the copy in this tab is dropped.
   await saveBtn(page).click();
   await expect(page.getByTestId('notice')).toHaveText('Draft saved.');
   await page.reload();
-  await expect(cell(page, PET, '314023')).toHaveValue('4815'); // from the server's draft
+  await expect(cell(page, PET, '314023')).toHaveValue('4,815'); // from the server's draft
   await expect(page.getByTestId('restored-notice')).toHaveCount(0);
 });
 
@@ -164,7 +164,7 @@ test('a change made elsewhere shows "Changed elsewhere — reload" instead of ov
   await expect(page.getByTestId('stale-banner')).toContainText('Changed elsewhere — reload');
   await page.getByTestId('stale-banner').getByRole('button', { name: 'Reload' }).click();
   await expect(page.getByTestId('stale-banner')).toHaveCount(0);
-  await expect(cell(page, PET, '314023')).toHaveValue('4815');
+  await expect(cell(page, PET, '314023')).toHaveValue('4,815');
 });
 
 test('submitting a passing distribution makes the node submitted and read-only', async ({ page }) => {
@@ -178,12 +178,12 @@ test('submitting a passing distribution makes the node submitted and read-only',
   await expect(page.getByTestId('node-status')).toHaveText('Submitted');
   await expect(page.getByTestId('notice')).toContainText('Submitted');
   await expect(cell(page, PET, '314023')).toBeDisabled();
-  await expect(cell(page, PET, '314023')).toHaveValue('4815');
+  await expect(cell(page, PET, '314023')).toHaveValue('4,815');
   await expect(saveBtn(page)).toHaveCount(0);
   await expect(submitBtn(page)).toHaveCount(0);
 
   await page.reload();
   await expect(page.getByTestId('node-status')).toHaveText('Submitted');
   await expect(page.getByTestId('read-only')).toBeVisible();
-  await expect(cell(page, PET, '314075')).toHaveValue('8434');
+  await expect(cell(page, PET, '314075')).toHaveValue('8,434');
 });

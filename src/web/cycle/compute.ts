@@ -5,7 +5,8 @@
 import type { OrgDto } from '../../worker/services/cycleData';
 import { averageSales } from '../../shared/calc/averages';
 import { cascade, reconcile, type CascadeNode, type CascadeResult } from '../../shared/calc/cascade';
-import { brandFamily, cdSubtotals, subCategoryByName, type Category, CATEGORIES } from '../../shared/calc/packs';
+import { brandFamily, categoryByName, cdSubtotals, packKey, subCategoryByName, type Category, CATEGORIES } from '../../shared/calc/packs';
+import { approvalLines, orderPacks } from '../../shared/calc/packOrder';
 import { addMonths, pago as pagoOf, yago as yagoOf, type Month } from '../../shared/calc/periods';
 import { channelSplit, departmentSplit, splitByWeights } from '../../shared/calc/splits';
 import type { RouteMonthData } from './parsers';
@@ -171,8 +172,12 @@ export type DeptSplitResult = { dm: Record<string, Record<string, Grid>>; basis:
  */
 export function defaultDeptSplit(args: {
   period: Month; nt: Grid; org: Org; sales: RouteMonthData; avgMonths: Month[]; deptChannel: ChannelHist; uploadedByChannel?: Record<string, Grid> | null;
+  /** Split by the average previous department & channel targets of the months (when uploaded), before the sales. */
+  byPrevTarget?: boolean;
 }): DeptSplitResult {
   const { period, nt, org, sales, avgMonths, deptChannel } = args;
+  const prevMonths = args.byPrevTarget ? prevTargetMonths(deptChannel, avgMonths) : [];
+  const prevChan = (c: string, p: string) => (prevMonths.length ? prevMonths.reduce((s2, m) => s2 + (deptChannel[m]?.[c]?.[p] ?? 0), 0) / prevMonths.length : 0);
   const cats = catMap(org);
   const idx = routeIndex(org);
   const depts = org.depts.map((d) => String(d.id));
@@ -203,6 +208,24 @@ export function defaultDeptSplit(args: {
   for (const [pack, target] of Object.entries(nt)) {
     const cat = cats.get(pack) ?? 'LRB-Others';
     const w = (f: (d: string) => number) => Object.fromEntries(depts.map((d) => [d, f(d)]));
+    // The previous targets by department & channel (average of the months picked) set the shares.
+    if (prevMonths.length) {
+      const chansOf = (d: string) => channelsOf(org, Number(d));
+      const dw = w((d) => chansOf(d).reduce((s2, c) => s2 + prevChan(c, pack), 0));
+      if (depts.some((d) => (dw[d] ?? 0) > 0)) {
+        const alloc = splitByWeights(target, depts, dw);
+        for (const d of depts) {
+          const chans = chansOf(d);
+          const amount = alloc[d] ?? 0;
+          const cw = Object.fromEntries(chans.map((c) => [c, prevChan(c, pack)]));
+          const byChan = chans[0] === NO_CHANNEL ? { [NO_CHANNEL]: amount }
+            : chans.some((c) => (cw[c] ?? 0) > 0) ? splitByWeights(amount, chans, cw) : { [chans[0]!]: amount };
+          for (const [c, n] of Object.entries(byChan)) (dm[d]![c] ??= {})[pack] = n;
+        }
+        basis[pack] = 'prev_target';
+        continue;
+      }
+    }
     const catAvg = (d: string) => {
       let s = 0;
       for (const p of Object.keys(nt)) if (cats.get(p) === cat) s += avgOf(byDept, d, p, avgMonths);
@@ -238,6 +261,11 @@ export function defaultDeptSplit(args: {
     }
   }
   return { dm, basis };
+}
+
+/** The months of the list that have previous department & channel targets uploaded. */
+export function prevTargetMonths(deptChannel: ChannelHist, months: Month[]): Month[] {
+  return months.filter((m) => deptChannel[m] && Object.keys(deptChannel[m]!).length > 0);
 }
 
 /** Department total of a pack across its channels. */
@@ -324,51 +352,23 @@ export type CdRow = { kind: 'pack'; pack: string } | { kind: 'sub'; label: strin
  * Pack rows with the CD workbook subtotals: CANS -> SSNR -> MSPET -> CSD,
  * Water, LRB-Others by brand family, then Total LRB.
  */
+/** Packs in the order of the department file (the default layout). */
+export const sortPacksLikeFile = (list: string[], cats?: Map<string, Category>) => orderPacks(list, (p) => cats?.get(p) ?? categoryByName(p));
+
+/** The packs given in the pack master's order (the order of the uploaded file); packs it doesn't have follow in the file's default order. */
+export function inPackOrder(list: Iterable<string>, master: readonly string[]): string[] {
+  const at = new Map(master.map((p, i) => [p, i]));
+  const rest = sortPacksLikeFile([...new Set(list)].filter((p) => !at.has(p)));
+  const rank = new Map(rest.map((p, i) => [p, master.length + i]));
+  return [...new Set(list)].sort((a, b) => (at.get(a) ?? rank.get(a)!) - (at.get(b) ?? rank.get(b)!));
+}
+
+/** Pack rows and the Total rows of the department file (the default layout); packs it doesn't list go with their group. */
 export function cdRows(packs: string[], cats: Map<string, Category>): CdRow[] {
-  const sorted = [...packs].sort();
-  const master = new Map([...cats.entries()]);
-  const out: CdRow[] = [];
-  const csd = sorted.filter((p) => cats.get(p) === 'CSD');
-  const has = (p: string, s: string) => cdSubtotals(p, master).includes(s as never);
-  const cans = csd.filter((p) => has(p, 'CANS'));
-  const ssnr = csd.filter((p) => has(p, 'SSNR') && !has(p, 'CANS'));
-  const ms2 = csd.filter((p) => has(p, 'MSPET2'));
-  const ms1 = csd.filter((p) => has(p, 'MSPET') && !has(p, 'MSPET2'));
-  const restCsd = csd.filter((p) => !has(p, 'SSNR') && !has(p, 'MSPET'));
-  const push = (list: string[]) => list.forEach((p) => out.push({ kind: 'pack', pack: p }));
-  if (csd.length) {
-    push(cans);
-    if (cans.length) out.push({ kind: 'sub', label: 'Total CANS', packs: cans, level: 2 });
-    push(ssnr);
-    if (cans.length + ssnr.length) out.push({ kind: 'sub', label: 'Total SSNR', packs: [...cans, ...ssnr], level: 2 });
-    push(ms1);
-    push(ms2);
-    if (ms2.length) out.push({ kind: 'sub', label: 'Total MSPET 2.0/2.2/2.25', packs: ms2, level: 2 });
-    if (ms1.length + ms2.length) out.push({ kind: 'sub', label: 'Total MSPET', packs: [...ms1, ...ms2], level: 2 });
-    push(restCsd);
-    out.push({ kind: 'sub', label: 'Total CSD', packs: csd, level: 1 });
-  }
-  const water = sorted.filter((p) => cats.get(p) === 'Water');
-  if (water.length) {
-    push(water);
-    out.push({ kind: 'sub', label: 'Total Water', packs: water, level: 1 });
-  }
-  const lrb = sorted.filter((p) => (cats.get(p) ?? 'LRB-Others') === 'LRB-Others');
-  if (lrb.length) {
-    const fams = new Map<string, string[]>();
-    for (const p of lrb) {
-      const f = brandFamily(p);
-      if (!fams.has(f)) fams.set(f, []);
-      fams.get(f)!.push(p);
-    }
-    for (const [f, list] of fams) {
-      push(list);
-      if (list.length > 1) out.push({ kind: 'sub', label: `Total ${f}`, packs: list, level: 2 });
-    }
-    out.push({ kind: 'sub', label: 'Total LRB-Others', packs: lrb, level: 1 });
-  }
-  out.push({ kind: 'sub', label: 'Total LRB', packs: sorted, level: 1 });
-  return out;
+  const have = new Set(packs);
+  return approvalLines([], [...have], (p) => cats.get(p) ?? 'LRB-Others').flatMap((x): CdRow[] => (x.pack
+    ? (have.has(x.pack) ? [{ kind: 'pack', pack: x.pack }] : [])
+    : [{ kind: 'sub', label: x.label, packs: [...new Set(x.of)], level: /^total\s+(csd|water|lrb-others|lrb)\s*$/i.test(x.label) ? 1 : 2 }]));
 }
 
 // ---------- Admin › Target calculator (section 6, step D) ----------

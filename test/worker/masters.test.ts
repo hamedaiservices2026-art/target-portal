@@ -203,7 +203,6 @@ describe('users', () => {
     const id = await addUser('sara', 'old-password');
     const saraSid = await sidFor('sara', 'old-password');
     expect((await call('POST', `/users/${id}/password`, { password: 'short' })).status).toBe(400);
-    expect((await call('POST', `/users/${id}/password`, {})).status).toBe(400);
     expect((await call('POST', '/users/99999/password', { password: 'new-password' })).status).toBe(404);
 
     const res = await call('POST', `/users/${id}/password`, { password: 'new-password' });
@@ -215,6 +214,24 @@ describe('users', () => {
     });
     expect(bad.status).toBe(401);
     await sidFor('sara', 'new-password');
+  });
+
+  it('a reset without a password makes a first password, shows it until the person changes it, and unlocks', async () => {
+    const id = await addUser('omar', 'old-password');
+    const res = await call('POST', `/users/${id}/password`, {});
+    expect(res.status).toBe(200);
+    const { password } = await json(res);
+    expect(password).toMatch(/^[A-Z]{4}[2-9]{4}$/);
+    const list = async () => (await json(await call('GET', '/accounts'))).accounts.find((a: { id: number }) => a.id === id);
+    expect(await list()).toMatchObject({ firstPw: password, status: 'norole' });
+    const sid = await sidFor('omar', password);
+    const chg = await SELF.fetch('http://x/api/me/password', {
+      method: 'POST', headers: { 'content-type': 'application/json', cookie: `sid=${sid}` },
+      body: JSON.stringify({ current: password, currentPassword: password, password: 'my-own-pass-1', newPassword: 'my-own-pass-1' }),
+    });
+    expect(chg.status, await chg.clone().text()).toBe(200);
+    expect(await list()).toMatchObject({ firstPw: null });
+    expect((await list()).lastLogin).toBeTruthy();
   });
 
   it('an admin changing their own password keeps their session', async () => {
@@ -286,7 +303,7 @@ describe('departments', () => {
 });
 
 describe('packs', () => {
-  it('create, list, patch round-trip; code keeps its case; list sorted by sort then code', async () => {
+  it('create, list, patch round-trip; code keeps its case; list in the file order (CSD, Water, LRB-Others)', async () => {
     const created = await call('POST', '/packs', { code: ' Pep330 ', grp: 'CSD', sort: 20 });
     expect(created.status).toBe(201);
     expect((await json(created)).pack).toEqual({ code: 'Pep330', grp: 'CSD', active: true, sort: 20 });
@@ -295,9 +312,9 @@ describe('packs', () => {
 
     const list = (await json(await call('GET', '/packs'))).packs;
     expect(list).toEqual([
-      { code: 'pep330', grp: 'LRB-Others', active: true, sort: 0 },
-      { code: 'Aqua', grp: 'Water', active: false, sort: 10 },
-      { code: 'Pep330', grp: 'CSD', active: true, sort: 20 },
+      { code: 'Pep330', grp: 'CSD', active: true, sort: 10 },
+      { code: 'Aqua', grp: 'Water', active: false, sort: 20 },
+      { code: 'pep330', grp: 'LRB-Others', active: true, sort: 30 },
     ]);
 
     const patched = await call('PATCH', '/packs/Pep330', { grp: 'Water', active: false, sort: 5 });
@@ -338,7 +355,7 @@ describe('packs', () => {
     await call('POST', '/packs', { code: 'P1', grp: 'CSD' });
     const res = await call('PATCH', '/packs/P1', { code: 'P2', sort: 4 });
     expect(res.status).toBe(400);
-    expect(await one(env.DB, `SELECT code, sort FROM packs`)).toEqual({ code: 'P1', sort: 0 });
+    expect(await one(env.DB, `SELECT code, sort FROM packs`)).toEqual({ code: 'P1', sort: 10 });
     // Repeating the same code is harmless.
     expect((await call('PATCH', '/packs/P1', { code: 'P1', sort: 4 })).status).toBe(200);
   });
@@ -390,5 +407,23 @@ describe('logAudit', () => {
     expect(rows[0]).toMatchObject({ user_id: adminId, action: 'x.test', month_id: 3, node_id: 4, detail_json: '{"a":[1,2]}' });
     expect(Number.isNaN(Date.parse(rows[0]!.at))).toBe(false);
     expect(rows[1]).toMatchObject({ user_id: null, month_id: null, node_id: null, detail_json: null });
+  });
+});
+
+describe('employee ID is the login', () => {
+  it('setting an ID makes it the username; the password stays; the admin and taken IDs are left', async () => {
+    const ali = await addUser('ali.hassan', 'ali-password');
+    const sam = await addUser('sam', 'sam-password');
+    const res = await call('PUT', `/users/${ali}/employee-id`, { employeeId: ' 41419 ' });
+    expect(res.status).toBe(200);
+    expect((await json(res)).logins.changed).toBe(1);
+    expect(await one(env.DB, `SELECT username, employee_id FROM users WHERE id = ?`, ali)).toEqual({ username: '41419', employee_id: '41419' });
+    await sidFor('41419', 'ali-password');
+    // An ID another account already signs in with is skipped.
+    const r2 = await json(await call('PUT', `/users/${sam}/employee-id`, { employeeId: '41419' }));
+    expect(r2.logins.skipped).toEqual(['41419']);
+    expect(await one(env.DB, `SELECT username FROM users WHERE id = ?`, sam)).toEqual({ username: 'sam' });
+    await call('PUT', `/users/${adminId}/employee-id`, { employeeId: '1' });
+    expect(await one(env.DB, `SELECT username FROM users WHERE id = ?`, adminId)).toEqual({ username: 'boss' });
   });
 });

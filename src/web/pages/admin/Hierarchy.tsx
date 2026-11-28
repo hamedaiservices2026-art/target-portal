@@ -1,451 +1,301 @@
-// Admin: hierarchy. One department at a time: its tree of nodes, the route mapping upload, and its routes (leaves).
-import { useEffect, useMemo, useState } from 'preact/hooks';
-import type { DepartmentDto, UserDto } from '../../../worker/services/masters';
+// Admin › Hierarchy, laid out like the v16 prototype ("Hierarchy · add / edit
+// / delete"): add a Channel Head, Sales Manager, Sales Supervisor or route;
+// rename in place, move with the "reports to" lists, delete what is empty.
+// Above it, the whole hierarchy can be uploaded in one file (HierarchyUpload).
+// Every Channel Head is the top of one department; moves stay inside it.
+import { useMemo, useState } from 'preact/hooks';
+import type { DepartmentDto } from '../../../worker/services/masters';
 import type { LeafDto, NodeDto } from '../../../worker/services/hierarchy';
-import { descendants } from '../../../shared/tree';
-import { api, ApiError } from '../../api';
-import {
-  ConfirmButton, errText, Field, LoadError, PageHead, TreeChangeBanner, useResource, type TreeChange,
-} from '../../components/AdminBits';
-import { ImportPanel } from '../../components/ImportPanel';
-import { writeXlsx, readSheet } from '../../excel';
-import { explainErrors, MAPPING_COLUMNS, MAPPING_MAX_ROWS, parseMappingSheet, type ExplainedError, type LineError } from '../../mapping';
-import { t, tf, fmtNum, useLang, type TextKey } from '../../i18n';
+import { api } from '../../api';
+import { ConfirmButton, errText, LoadError, PageHead, TreeChangeBanner, useResource, type TreeChange } from '../../components/AdminBits';
+import { fmtNum, t, useLang } from '../../i18n';
+import { tc } from '../../cycle/i18n';
+import { HierarchyUpload } from './HierarchyUpload';
+import { KaCleanup } from './KaCleanup';
 
-const ROW_STEP = 200;
+type Node = NodeDto & { dept_id: number; depth: number; head: Node | null; mgr: Node | null };
 
-type Editor = { id: number | 'root'; mode: 'child' | 'rename' | 'move' | 'manager' } | null;
-type MapState =
-  | { kind: 'idle' }
-  | { kind: 'busy' }
-  | { kind: 'file'; message: string }
-  | { kind: 'errors'; errors: ExplainedError[]; fileName: string }
-  | { kind: 'done'; created: number; moved: number; unchanged: number; fileName: string };
-
-const ERR_KEY: Record<string, TextKey> = {
-  required: 'adMapErrRequired', unknownNode: 'adMapErrUnknownNode', duplicate: 'adMapErrDuplicate',
-  otherDept: 'adMapErrOtherDept', tooLong: 'adMapErrTooLong', other: 'adMapErrOther',
-};
-
-type Flat = { node: NodeDto; depth: number; children: number };
-type Run = (call: () => Promise<unknown>, ok: string) => Promise<boolean>;
-
-function NodeEditor({ target, node, nodes, flat, managers, deptId, run, onCancel }: {
-  target: NonNullable<Editor>; node: NodeDto | null; nodes: NodeDto[]; flat: Flat[]; managers: UserDto[];
-  deptId: number | null; run: Run; onCancel: () => void;
-}) {
-  useLang();
-  const [name, setName] = useState(target.mode === 'rename' ? node?.name ?? '' : '');
-  const [pick, setPick] = useState<string>(
-    target.mode === 'move' ? String(node?.parent_id ?? '') : target.mode === 'manager' ? String(node?.manager_user_id ?? '') : '');
-  const [busy, setBusy] = useState(false);
-  const [local, setLocal] = useState<string | null>(null);
-
-  const blocked = node ? new Set([node.id, ...descendants(nodes, node.id)]) : new Set<number>();
-  const parentChoices = flat.filter((f) => !blocked.has(f.node.id));
-
-  async function submit(e: Event) {
-    e.preventDefault();
-    setLocal(null);
-    if ((target.mode === 'child' || target.mode === 'rename') && !name.trim()) return setLocal(t('adNodeErrName'));
-    if (target.mode === 'move' && !pick) return setLocal(t('adNodeErrParent'));
-    setBusy(true);
-    let ok = false;
-    if (target.mode === 'child') {
-      ok = await run(() => api<{ node: NodeDto }>('POST', '/api/admin/nodes', {
-        deptId, name: name.trim(), parentId: target.id === 'root' ? null : target.id,
-      }), t('adNodeAdded'));
-    } else if (target.mode === 'rename') {
-      ok = await run(() => api('PATCH', `/api/admin/nodes/${node!.id}`, { name: name.trim() }), t('adSaved'));
-    } else if (target.mode === 'move') {
-      ok = await run(() => api('PATCH', `/api/admin/nodes/${node!.id}`, { parentId: Number(pick) }), t('adNodeMoved'));
-    } else {
-      ok = await run(() => api('PATCH', `/api/admin/nodes/${node!.id}`, { managerUserId: pick ? Number(pick) : null }), t('adManagerSaved'));
-    }
-    if (!ok) setBusy(false);
-  }
-
-  return (
-    <form class="node-editor" onSubmit={submit} noValidate>
-      {(target.mode === 'child' || target.mode === 'rename') && (
-        <Field id="ne-name" label={t('adNodeName')} hint={target.mode === 'child' && node ? tf('adNodeUnder', { node: node.name }) : undefined}>
-          <input id="ne-name" value={name} autofocus onInput={(e) => setName(e.currentTarget.value)} />
-        </Field>
-      )}
-      {target.mode === 'move' && (
-        <Field id="ne-parent" label={t('adNodeNewParent')} hint={t('adNodeMoveHint')}>
-          <select id="ne-parent" value={pick} onChange={(e) => setPick(e.currentTarget.value)}>
-            {parentChoices.map((f) => <option value={f.node.id}>{'  '.repeat(f.depth)}{f.node.name}</option>)}
-          </select>
-        </Field>
-      )}
-      {target.mode === 'manager' && (
-        <Field id="ne-manager" label={t('adManager')} hint={t('adManagerHint')}>
-          <select id="ne-manager" value={pick} onChange={(e) => setPick(e.currentTarget.value)}>
-            <option value="">{t('adNoManager')}</option>
-            {managers.map((u) => <option value={u.id}>{`${u.name} (${u.username})`}</option>)}
-          </select>
-        </Field>
-      )}
-      <div class="actions">
-        <button type="submit" class="btn primary" disabled={busy}>{t('adSave')}</button>
-        <button type="button" class="btn" onClick={onCancel}>{t('dsCancel')}</button>
-      </div>
-      {local && <div class="alert" role="alert">{local}</div>}
-    </form>
-  );
-}
-
-
-function LeafEditor({ leaf, mode, flat, run, onClose }: {
-  leaf: LeafDto; mode: 'move' | 'label'; flat: Flat[]; run: Run; onClose: () => void;
-}) {
-  useLang();
-  const [node, setNode] = useState(String(leaf.node_id));
-  const [label, setLabel] = useState(leaf.label);
-  const [busy, setBusy] = useState(false);
-  const [local, setLocal] = useState<string | null>(null);
-  async function submit(e: Event) {
-    e.preventDefault();
-    if (mode === 'label' && !label.trim()) return setLocal(t('adLeafErrLabel'));
-    setBusy(true);
-    const ok = await run(
-      () => api('PATCH', `/api/admin/leaves/${leaf.id}`, mode === 'move' ? { nodeId: Number(node) } : { label: label.trim() }),
-      mode === 'move' ? t('adLeafMoved') : t('adSaved'));
-    if (ok) onClose();
-    else setBusy(false);
-  }
-  return (
-    <form class="inline-form" onSubmit={submit} noValidate>
-      {mode === 'move' ? (
-        <>
-          <label for={`lm-${leaf.id}`}>{t('adLeafMoveTo')}</label>
-          <select id={`lm-${leaf.id}`} value={node} onChange={(e) => setNode(e.currentTarget.value)}>
-            {flat.map((f) => <option value={f.node.id}>{'  '.repeat(f.depth)}{f.node.name}</option>)}
-          </select>
-        </>
-      ) : (
-        <>
-          <label for={`ll-${leaf.id}`}>{t('adLabel')}</label>
-          <input id={`ll-${leaf.id}`} value={label} onInput={(e) => setLabel(e.currentTarget.value)} />
-        </>
-      )}
-      <button type="submit" class="btn primary" disabled={busy}>{t('adSave')}</button>
-      <button type="button" class="btn" onClick={onClose}>{t('dsCancel')}</button>
-      {local && <div class="alert" role="alert">{local}</div>}
-    </form>
-  );
-}
-
-
-function initialDept(): number | null {
-  const n = Number(new URLSearchParams(location.search).get('dept'));
-  return Number.isInteger(n) && n > 0 ? n : null;
+/** Department code from the Head's name: initials, made unique ("Amir Elnagar" → "AE"). */
+export function codeFor(name: string, taken: Set<string>): string {
+  const base = name.normalize('NFKD').replace(/[^\p{L}\p{N}\s]/gu, '').trim().split(/\s+/).map((w) => w[0] ?? '').join('').toUpperCase().replace(/[^A-Z0-9]/g, '') || 'HEAD';
+  let c = base;
+  for (let i = 2; taken.has(c); i++) c = `${base}${i}`;
+  return c;
 }
 
 export function Hierarchy() {
   useLang();
   const depts = useResource<{ departments: DepartmentDto[] }>('/api/admin/departments');
-  const users = useResource<{ users: UserDto[] }>('/api/admin/users');
-  const [wanted, setWanted] = useState<number | null>(initialDept);
-  const deptList = depts.data?.departments ?? [];
-  const deptId = deptList.some((d) => d.id === wanted) ? wanted : deptList[0]?.id ?? null;
-  const dept = deptList.find((d) => d.id === deptId) ?? null;
-
-  const nodesRes = useResource<{ nodes: NodeDto[] }>(deptId === null ? null : `/api/admin/nodes?dept=${deptId}`);
-  const leavesRes = useResource<{ leaves: LeafDto[] }>(deptId === null ? null : `/api/admin/leaves?dept=${deptId}`);
-  const nodes = nodesRes.data?.nodes ?? [];
-  const leaves = leavesRes.data?.leaves ?? [];
-
-  const [editor, setEditor] = useState<Editor>(null);
+  const nodesRes = useResource<{ nodes: NodeDto[] }>('/api/admin/nodes');
+  const leavesRes = useResource<{ leaves: LeafDto[] }>('/api/admin/leaves');
   const [change, setChange] = useState<TreeChange | null>(null);
-  const [flash, setFlash] = useState('');
-  const [err, setErr] = useState<string | null>(null);
-  const [map, setMap] = useState<MapState>({ kind: 'idle' });
-  const [importing, setImporting] = useState(false);
-
-  useEffect(() => {
-    setEditor(null);
-    setChange(null);
-    setFlash('');
-    setErr(null);
-    setMap({ kind: 'idle' });
-  }, [deptId]);
-
-  const reloadTree = () => {
-    nodesRes.reload();
-    leavesRes.reload();
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [arm, setArm] = useState<string | null>(null);
+  const [f, setF] = useState('');
+  const [add, setAdd] = useState({ head: '', mgr: '', mgrP: '', sup: '', supP: '', route: '', label: '', ds: '', routeP: '' });
+  // One tab per workspace: the Operation hierarchy and the Key Account hierarchy are kept apart.
+  const [ws, setWs] = useState<'ops' | 'ka'>(() => (new URLSearchParams(location.search).get('ws') === 'ka' ? 'ka' : 'ops'));
+  const pickWs = (w: 'ops' | 'ka') => {
+    setWs(w); setMsg(null); setChange(null); setArm(null);
+    try { const u = new URL(location.href); u.searchParams.set('ws', w); history.replaceState(null, '', u); } catch { /* ignore */ }
   };
 
-  /** Runs a write; shows the error or the tree-change banners; refreshes the lists. */
-  async function run(call: () => Promise<unknown>, ok: string): Promise<boolean> {
-    setErr(null);
-    setChange(null);
-    setFlash('');
-    try {
-      const out = await call();
-      setChange((out as { treeChange?: TreeChange | null } | null)?.treeChange ?? null);
-      setFlash(ok);
-      setEditor(null);
-      reloadTree();
-      return true;
-    } catch (x) {
-      setErr(errText(x));
-      return false;
-    }
-  }
+  const allDepts = depts.data?.departments ?? [];
+  const deptList = allDepts.filter((d) => (d.workspace ?? 'ops') === ws);
+  const inWs = new Set(deptList.map((d) => d.id));
+  const deptCode = new Map(deptList.map((d) => [d.id, d.code]));
+  const leaves = (leavesRes.data?.leaves ?? []).filter((l) => inWs.has(l.dept_id));
 
-  const managers = (users.data?.users ?? []).filter((u) => u.active && (u.role === 'manager' || u.role === 'admin'));
-  const userById = useMemo(() => new Map((users.data?.users ?? []).map((u) => [u.id, u])), [users.data]);
-  const nodeName = useMemo(() => new Map(nodes.map((n) => [n.id, n.name])), [nodes]);
-  const leafCount = useMemo(() => {
+  const { all, heads, managers, supervisors, byId } = useMemo(() => {
+    const raw = (nodesRes.data?.nodes ?? []).filter((n) => inWs.has(n.dept_id ?? 0));
+    const byId = new Map<number, Node>();
+    for (const n of raw) byId.set(n.id, { ...n, dept_id: n.dept_id ?? 0, depth: 0, head: null, mgr: null });
+    for (const n of byId.values()) {
+      const path: Node[] = [];
+      for (let p = n.parent_id === null ? undefined : byId.get(n.parent_id); p; p = p.parent_id === null ? undefined : byId.get(p.parent_id)) path.unshift(p);
+      n.depth = path.length;
+      n.head = path[0] ?? null;
+      n.mgr = path[1] ?? null;
+    }
+    const all = [...byId.values()];
+    const by = (a: Node, b: Node) => a.name.localeCompare(b.name);
+    return {
+      all, byId,
+      heads: all.filter((n) => n.depth === 0).sort(by),
+      managers: all.filter((n) => n.depth === 1).sort((a, b) => (a.head?.name ?? '').localeCompare(b.head?.name ?? '') || by(a, b)),
+      supervisors: all.filter((n) => n.depth >= 2).sort((a, b) => (a.mgr?.name ?? '').localeCompare(b.mgr?.name ?? '') || by(a, b)),
+    };
+  }, [nodesRes.data, depts.data, ws]);
+
+  const kids = useMemo(() => {
+    const m = new Map<number, number>();
+    for (const n of all) if (n.parent_id !== null) m.set(n.parent_id, (m.get(n.parent_id) ?? 0) + 1);
+    return m;
+  }, [all]);
+  const own = useMemo(() => {
     const m = new Map<number, number>();
     for (const l of leaves) m.set(l.node_id, (m.get(l.node_id) ?? 0) + 1);
     return m;
   }, [leaves]);
+  // Routes rolled up the tree: Head ← Manager ← Supervisor ← routes.
+  const rolled = useMemo(() => {
+    const m = new Map<number, number>();
+    for (const l of leaves) for (let n = byId.get(l.node_id); n; n = n.parent_id === null ? undefined : byId.get(n.parent_id)) m.set(n.id, (m.get(n.id) ?? 0) + 1);
+    return m;
+  }, [leaves, byId]);
+  const countUnder = (id: number, depth: number) => all.filter((n) => n.depth === depth && (n.head?.id === id || n.mgr?.id === id)).length;
 
-  // Tree order: depth-first, siblings by name.
-  const flat = useMemo(() => {
-    const kids = new Map<number | null, NodeDto[]>();
-    for (const n of nodes) kids.set(n.parent_id, [...(kids.get(n.parent_id) ?? []), n]);
-    const out: Flat[] = [];
-    const walk = (parent: number | null, depth: number) => {
-      for (const n of (kids.get(parent) ?? []).sort((a, b) => a.name.localeCompare(b.name))) {
-        out.push({ node: n, depth, children: kids.get(n.id)?.length ?? 0 });
-        walk(n.id, depth + 1);
-      }
-    };
-    walk(null, 0);
-    return out;
-  }, [nodes]);
-  const hasRoot = nodes.some((n) => n.parent_id === null);
-
-  function pickDept(id: number) {
-    setWanted(id);
-    try {
-      history.replaceState(null, '', `${location.pathname}?dept=${id}`);
-    } catch { /* the URL is a convenience only */ }
-  }
-
-  // ---------- route mapping upload ----------
-  async function downloadTemplate() {
-    await writeXlsx('route-mapping-template.xlsx', [...MAPPING_COLUMNS], [
-      [t('adTplSystem'), '1001', t('adTplNode'), t('adTplLabel')],
-    ]);
-  }
-
-  async function onFile(e: Event) {
-    const input = e.currentTarget as HTMLInputElement;
-    const file = input.files?.[0];
-    input.value = '';
-    if (!file || deptId === null) return;
-    setMap({ kind: 'busy' });
+  const reload = () => { nodesRes.reload(); leavesRes.reload(); depts.reload(); };
+  async function run(fn: () => Promise<unknown>, ok: string) {
+    setMsg(null);
     setChange(null);
-    setFlash('');
-    let sheet: unknown[][];
     try {
-      sheet = await readSheet(file);
-    } catch {
-      return setMap({ kind: 'file', message: t('adMapErrUnreadable') });
-    }
-    const parsed = parseMappingSheet(sheet);
-    if (!parsed.ok) {
-      const msg = parsed.reason === 'no_header' ? t('adMapErrHeader')
-        : parsed.reason === 'no_rows' ? t('adMapErrEmpty')
-        : tf('adMapErrTooMany', { n: fmtNum(parsed.count ?? 0), max: fmtNum(MAPPING_MAX_ROWS) });
-      return setMap({ kind: 'file', message: msg });
-    }
-    try {
-      const out = await api<{ created: number; moved: number; unchanged: number; treeChange: TreeChange | null }>(
-        'POST', '/api/admin/leaves/bulk-map', { deptId, rows: parsed.rows });
-      setChange(out.treeChange);
-      setMap({ kind: 'done', created: out.created, moved: out.moved, unchanged: out.unchanged, fileName: file.name });
-      reloadTree();
+      const out = await fn();
+      setChange((out as { treeChange?: TreeChange | null } | null)?.treeChange ?? null);
+      setMsg({ ok: true, text: ok });
+      setArm(null);
+      reload();
+      return true;
     } catch (x) {
-      const list = x instanceof ApiError && x.status === 400 && Array.isArray(x.body.errors) ? (x.body.errors as LineError[]) : null;
-      if (list) setMap({ kind: 'errors', errors: explainErrors(list, parsed.excelRows), fileName: file.name });
-      else setMap({ kind: 'file', message: errText(x) });
+      setMsg({ ok: false, text: errText(x) });
+      return false;
     }
   }
+  const set = (k: keyof typeof add, v: string) => setAdd((a) => ({ ...a, [k]: v }));
 
-  // ---------- leaves ----------
-  const [q, setQ] = useState('');
-  const [shown, setShown] = useState(ROW_STEP);
-  const [leafEdit, setLeafEdit] = useState<{ id: number; mode: 'move' | 'label' } | null>(null);
-  const needle = q.trim().toLowerCase();
-  const filtered = leaves.filter((l) => !needle ||
-    [l.delivery_system, l.route_code, l.label, nodeName.get(l.node_id) ?? ''].some((s) => s.toLowerCase().includes(needle)));
-
-  // ---------- render ----------
-  if (depts.error) return <section><PageHead title={t('navHierarchy')} /><LoadError message={depts.error} onRetry={depts.reload} /></section>;
-  if (!depts.data) return <section><PageHead title={t('navHierarchy')} /><p class="muted">{t('loading')}</p></section>;
-  if (deptList.length === 0) {
-    return (
-      <section>
-        <PageHead title={t('navHierarchy')} intro={t('adHierIntro')} />
-        <p class="card muted">{t('adHierNoDept')} <a href="/admin/departments">{t('navDepartments')}</a></p>
-      </section>
-    );
+  async function addHead() {
+    const name = add.head.trim();
+    if (!name) return setMsg({ ok: false, text: tc('hzNeedName') });
+    const ok = await run(async () => {
+      const { department } = await api<{ department: DepartmentDto }>('POST', '/api/admin/departments', { code: codeFor(name, new Set(allDepts.map((d) => d.code))), name });
+      if (ws === 'ka') await api('PUT', `/api/admin/departments/${department.id}/workspace`, { workspace: 'ka' });
+      return api('POST', '/api/admin/nodes', { deptId: department.id, parentId: null, name });
+    }, tc('hzAdded', { name }));
+    if (ok) set('head', '');
+  }
+  async function addUnder(kind: 'mgr' | 'sup') {
+    const name = add[kind].trim();
+    const parent = byId.get(Number(add[kind === 'mgr' ? 'mgrP' : 'supP']));
+    if (!name || !parent) return setMsg({ ok: false, text: tc('hzNeedName') });
+    const ok = await run(() => api('POST', '/api/admin/nodes', { deptId: parent.dept_id, parentId: parent.id, name }), tc('hzAdded', { name }));
+    if (ok) set(kind, '');
+  }
+  async function addRoute() {
+    const node = byId.get(Number(add.routeP));
+    const code = add.route.trim();
+    const ds = add.ds.trim() || leaves.find((l) => l.dept_id === node?.dept_id)?.delivery_system || node?.head?.name || '';
+    if (!code || !node) return setMsg({ ok: false, text: tc('hzNeedRoute') });
+    const ok = await run(() => api('POST', '/api/admin/leaves', { deptId: node.dept_id, nodeId: node.id, deliverySystem: ds, routeCode: code, label: add.label.trim() || code }), tc('hsRouteAdded'));
+    if (ok) setAdd((a) => ({ ...a, route: '', label: '' }));
   }
 
+  const rename = (n: Node, v: string) => { if (v.trim() && v.trim() !== n.name) void run(() => api('PATCH', `/api/admin/nodes/${n.id}`, { name: v.trim() }), t('adSaved')); };
+  const move = (n: Node, parentId: number) => { if (parentId !== n.parent_id) void run(() => api('PATCH', `/api/admin/nodes/${n.id}`, { parentId }), t('adNodeMoved')); };
+  const del = (key: string, fn: () => Promise<unknown>) => (arm === key ? void run(fn, t('adNodeDeleted')) : setArm(key));
+  const delBtn = (key: string, blocked: string | null, fn: () => Promise<unknown>) => (
+    <button type="button" class="btn link danger" disabled={!!blocked} title={blocked ?? undefined} onClick={() => del(key, fn)}>{arm === key ? tc('hzConfirmDelete') : t('adDelete')}</button>
+  );
+  const nameInput = (n: Node) => (
+    <input class="hz-name" value={n.name} key={`${n.id}:${n.name}`} aria-label={`${tc('ppName')} ${n.name}`} onChange={(e) => rename(n, e.currentTarget.value)} />
+  );
+  const lab = (n: Node) => `${n.name} · ${n.mgr?.name ?? n.head?.name ?? deptCode.get(n.dept_id) ?? ''}`;
+  const channels = [...new Set(leaves.map((l) => l.delivery_system))].sort();
+
+  const needle = f.trim().toLowerCase();
+  const routes = leaves
+    .map((l) => ({ l, node: byId.get(l.node_id) }))
+    .filter(({ l, node }) => !needle || [l.route_code, l.label, l.delivery_system, node?.name ?? '', node?.mgr?.name ?? '', node?.head?.name ?? ''].join(' ').toLowerCase().includes(needle))
+    .sort((a, b) => a.l.route_code.localeCompare(b.l.route_code));
+
+  // Key Account names: MDM (Head), KAM (manager), KAE (supervisor), KAE ID (route).
+  const L = ws === 'ka'
+    ? { head: 'MDM', mgr: 'KAM', sup: 'KAE', heads: 'MDM', mgrs: 'KAM', sups: 'KAE', routes: 'KAE ID', route: 'KAE ID' }
+    : { head: tc('ppHead'), mgr: tc('ppManager'), sup: tc('ppSupervisor'), heads: tc('hzHeads'), mgrs: tc('hzManagers'), sups: tc('hzSupervisors'), routes: tc('routes'), route: tc('route') };
+  const err = depts.error ?? nodesRes.error ?? leavesRes.error;
   return (
     <section data-testid="admin-hierarchy">
-      <PageHead title={t('navHierarchy')} intro={t('adHierIntro')}>
-        <button type="button" class="btn" aria-expanded={importing} onClick={() => setImporting(!importing)}>
-          {importing ? t('imClose') : t('imOpen')}
-        </button>
-      </PageHead>
-      {importing && (
-        <ImportPanel kind="hierarchy" example={{ dept: dept?.code, parent: nodes.find((n) => n.parent_id === null)?.name }}
-          onApplied={() => { reloadTree(); users.reload(); }} />
-      )}
-      <div class="toolbar">
-        <label for="h-dept">{t('adDepartment')}</label>
-        <select id="h-dept" value={deptId ?? ''} onChange={(e) => pickDept(Number(e.currentTarget.value))}>
-          {deptList.map((d) => <option value={d.id}>{`${d.code} — ${d.name}`}</option>)}
-        </select>
+      <PageHead title={t('navHierarchy')} intro={tc('hzIntro')} />
+      {err && <LoadError message={err} onRetry={reload} />}
+      <div class="toolbar" role="tablist" data-testid="hz-tabs">
+        <button type="button" role="tab" class={`tab${ws === 'ops' ? ' on' : ''}`} aria-selected={ws === 'ops'} onClick={() => pickWs('ops')}>{tc('hzTabOps')}</button>
+        <button type="button" role="tab" class={`tab${ws === 'ka' ? ' on' : ''}`} aria-selected={ws === 'ka'} onClick={() => pickWs('ka')}>{tc('hzTabKa')}</button>
       </div>
-
+      <HierarchyUpload key={ws} depts={deptList} ws={ws} onApplied={reload} />
+      {ws === 'ops' && <KaCleanup onDone={reload} />}
       <TreeChangeBanner change={change} />
-      {flash && <div class="banner ok" role="status">{flash}</div>}
-      {err && <div class="alert" role="alert">{err}</div>}
+      {msg && <div class={msg.ok ? 'banner ok' : 'alert'} role={msg.ok ? 'status' : 'alert'} data-testid="hz-msg">{msg.text}</div>}
+
+      <div class="card ad-card hz-add" data-testid="hz-add">
+        <h2>{tc('hzAdd')}</h2>
+        <div class="row">
+          <b>{L.head}</b>
+          <input aria-label={tc('hzNewHead')} placeholder={tc('ppName')} value={add.head} onInput={(e) => set('head', e.currentTarget.value)} />
+          <button type="button" class="btn primary" onClick={() => void addHead()}>{tc('hzAddBtn')}</button>
+        </div>
+        <div class="row">
+          <b>{L.mgr}</b>
+          <input aria-label={tc('hzNewManager')} placeholder={tc('ppName')} value={add.mgr} onInput={(e) => set('mgr', e.currentTarget.value)} />
+          <span class="muted">{tc('hzReportsTo')}</span>
+          <select aria-label={tc('hzManagerParent')} value={add.mgrP} onChange={(e) => set('mgrP', e.currentTarget.value)}>
+            <option value="">—</option>
+            {heads.map((h) => <option key={h.id} value={h.id}>{`${h.name} · ${deptCode.get(h.dept_id) ?? ''}`}</option>)}
+          </select>
+          <button type="button" class="btn primary" onClick={() => void addUnder('mgr')}>{tc('hzAddBtn')}</button>
+        </div>
+        <div class="row">
+          <b>{L.sup}</b>
+          <input aria-label={tc('hzNewSupervisor')} placeholder={tc('ppName')} value={add.sup} onInput={(e) => set('sup', e.currentTarget.value)} />
+          <span class="muted">{tc('hzReportsTo')}</span>
+          <select aria-label={tc('hzSupervisorParent')} value={add.supP} onChange={(e) => set('supP', e.currentTarget.value)}>
+            <option value="">—</option>
+            {managers.map((m) => <option key={m.id} value={m.id}>{`${m.name} · ${m.head?.name ?? ''}`}</option>)}
+          </select>
+          <button type="button" class="btn primary" onClick={() => void addUnder('sup')}>{tc('hzAddBtn')}</button>
+        </div>
+        <div class="row">
+          <b>{L.route}</b>
+          <input aria-label={tc('hzNewRoute')} placeholder={t('adRouteCode')} value={add.route} style={{ width: '120px' }} onInput={(e) => set('route', e.currentTarget.value)} />
+          <input aria-label={tc('salesman')} placeholder={tc('salesman')} value={add.label} style={{ width: '120px' }} onInput={(e) => set('label', e.currentTarget.value)} />
+          <input aria-label={t('adDeliverySystem')} placeholder={t('adDeliverySystem')} list="hz-ch" value={add.ds} style={{ width: '150px' }} onInput={(e) => set('ds', e.currentTarget.value)} />
+          <span class="muted">{tc('hzUnder')}</span>
+          <select aria-label={tc('hzRouteParent')} value={add.routeP} onChange={(e) => set('routeP', e.currentTarget.value)}>
+            <option value="">—</option>
+            {supervisors.map((s) => <option key={s.id} value={s.id}>{lab(s)}</option>)}
+          </select>
+          <button type="button" class="btn primary" onClick={() => void addRoute()}>{tc('hzAddBtn')}</button>
+        </div>
+        <datalist id="hz-ch">{channels.map((c) => <option key={c} value={c} />)}</datalist>
+        <p class="muted small">{tc('hzAddHelp')}</p>
+      </div>
 
       <div class="card ad-card">
-        <div class="ad-card-head">
-          <h2>{t('adTreeTitle')}</h2>
-          {!hasRoot && nodesRes.data && (
-            <button type="button" class="btn primary" onClick={() => setEditor({ id: 'root', mode: 'child' })}>{t('adAddTop')}</button>
-          )}
-        </div>
-        <p class="muted small">{t('adTreeHelp')}</p>
-        {nodesRes.error && <LoadError message={nodesRes.error} onRetry={nodesRes.reload} />}
-        {!nodesRes.data && !nodesRes.error && <p class="muted">{t('loading')}</p>}
-        {editor?.id === 'root' && <NodeEditor target={editor} node={null} nodes={nodes} flat={flat} managers={managers} deptId={deptId} run={run} onCancel={() => setEditor(null)} />}
-        {nodesRes.data && nodes.length === 0 && editor?.id !== 'root' && <p class="muted" data-testid="tree-empty">{t('adTreeEmpty')}</p>}
-        <div class="tree" role="tree">
-          {flat.map(({ node, depth, children }) => {
-            const routes = leafCount.get(node.id) ?? 0;
-            const mgr = node.manager_user_id === null ? null : userById.get(node.manager_user_id);
-            const isRoot = node.parent_id === null;
-            const open = editor?.id === node.id ? editor : null;
-            const deleteWhy = children > 0 ? t('adDeleteHasChildren') : routes > 0 ? t('adDeleteHasRoutes') : undefined;
-            const act = (mode: NonNullable<Editor>['mode']) => () => { setFlash(''); setErr(null); setEditor({ id: node.id, mode }); };
+        <h2>{L.heads} <span class="muted">({fmtNum(heads.length)})</span></h2>
+        <div class="tablewrap"><table class="ad-table" data-testid="hz-heads">
+          <thead><tr><th>{tc('ppName')}</th><th>{tc('ppDept')}</th><th class="num">{L.mgrs}</th><th class="num">{L.sups}</th><th class="num">{L.routes}</th><th /></tr></thead>
+          <tbody>{heads.map((h) => {
+            const c = kids.get(h.id) ?? 0;
             return (
-              <div class="node" data-testid="node-row" key={node.id} role="treeitem" aria-level={depth + 1} style={{ '--depth': depth }}>
-                <div class="node-line">
-                  <span class="node-name">{node.name}</span>
-                  <span class="node-meta" data-testid="node-manager">
-                    {mgr ? `${mgr.name}${mgr.active ? '' : ` (${t('adDisabled')})`}` : <span class="muted">{t('adNoManager')}</span>}
-                  </span>
-                  <span class="node-meta muted">{tf('adRoutesCount', { n: fmtNum(routes) })}</span>
-                  <span class="act">
-                    <button type="button" class="btn" onClick={act('child')}>{t('adAddChild')}</button>
-                    <button type="button" class="btn" onClick={act('rename')}>{t('adRename')}</button>
-                    <button type="button" class="btn" disabled={isRoot} title={isRoot ? t('adMoveRootWhy') : undefined} onClick={act('move')}>{t('adMove')}</button>
-                    <button type="button" class="btn" onClick={act('manager')}>{t('adAssignManager')}</button>
-                    <ConfirmButton
-                      label={t('adDelete')} question={tf('adDeleteNodeQ', { node: node.name })} yesLabel={t('adDeleteYes')}
-                      disabled={deleteWhy !== undefined} title={deleteWhy}
-                      onConfirm={async () => { await run(() => api<{ ok: true }>('DELETE', `/api/admin/nodes/${node.id}`), t('adNodeDeleted')); }}
-                    />
-                  </span>
-                </div>
-                {open && <NodeEditor key={open.mode} target={open} node={node} nodes={nodes} flat={flat} managers={managers} deptId={deptId} run={run} onCancel={() => setEditor(null)} />}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      <div class="card ad-card">
-        <h2>{t('adMapTitle')}</h2>
-        <p>{tf('adMapIntro', { dept: dept ? dept.code : '' })}</p>
-        <ol class="small">
-          <li>{t('adMapStep1')}</li>
-          <li>{t('adMapStep2')}</li>
-          <li>{t('adMapStep3')}</li>
-        </ol>
-        <p class="small muted">
-          {t('adMapColumns')} {MAPPING_COLUMNS.map((c, i) => <><b>{c}</b>{i < 3 ? ', ' : '.'} </>)}{t('adMapLabelOptional')}
-        </p>
-        <div class="actions">
-          <button type="button" class="btn" onClick={downloadTemplate}>{t('adMapTemplate')}</button>
-          <span class="filepick">
-            <input id="map-file" type="file" class="visually-hidden" data-testid="map-file" onChange={onFile}
-              accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" disabled={map.kind === 'busy' || nodes.length === 0} />
-            <label for="map-file" class={`btn primary${map.kind === 'busy' || nodes.length === 0 ? ' disabled' : ''}`}>{t('adMapChoose')}</label>
-          </span>
-        </div>
-        {nodes.length === 0 && <p class="muted small">{t('adMapNeedTree')}</p>}
-        {map.kind === 'busy' && <p class="muted" role="status">{t('adMapWorking')}</p>}
-        {map.kind === 'file' && <div class="alert" role="alert" data-testid="map-file-error">{map.message}</div>}
-        {map.kind === 'done' && (
-          <div class="banner ok" role="status" data-testid="map-summary">
-            <b>{map.fileName}</b>: {tf('adMapDone', { created: fmtNum(map.created), moved: fmtNum(map.moved), unchanged: fmtNum(map.unchanged) })}
-          </div>
-        )}
-        {map.kind === 'errors' && (
-          <div class="alert" role="alert" data-testid="map-errors">
-            <p><b>{tf('adMapErrorsTitle', { n: fmtNum(map.errors.length) })}</b> {t('adMapNothingSaved')}</p>
-            <ul>
-              {map.errors.slice(0, 100).map((e) => (
-                <li>{tf('adLine', { n: e.excelRow })}: {tf(ERR_KEY[e.kind] ?? 'adMapErrOther', e.vars)}</li>
-              ))}
-            </ul>
-            {map.errors.length > 100 && <p>{tf('adMapMoreErrors', { n: fmtNum(map.errors.length - 100) })}</p>}
-          </div>
-        )}
-      </div>
-
-      <div class="card ad-card">
-        <div class="ad-card-head">
-          <h2>{t('adRoutesTitle')} <span class="muted">({fmtNum(leaves.length)})</span></h2>
-        </div>
-        <div class="toolbar">
-          <div class="search">
-            <input type="search" aria-label={t('adRoutesSearch')} placeholder={t('adRoutesSearch')} value={q}
-              onInput={(e) => { setQ(e.currentTarget.value); setShown(ROW_STEP); }} />
-          </div>
-        </div>
-        {leavesRes.error && <LoadError message={leavesRes.error} onRetry={leavesRes.reload} />}
-        <div class="tablewrap">
-          <table class="ad-table">
-            <thead>
-              <tr>
-                <th class="s">{t('adDeliverySystem')}</th><th class="s">{t('adRouteCode')}</th><th class="s">{t('adLabel')}</th>
-                <th class="s">{t('node')}</th><th class="s">{t('adActions')}</th>
+              <tr key={h.id} data-testid="hz-head">
+                <td>{nameInput(h)}</td>
+                <td>{deptCode.get(h.dept_id) ?? '—'}</td>
+                <td class="num">{fmtNum(countUnder(h.id, 1))}</td>
+                <td class="num">{fmtNum(countUnder(h.id, 2))}</td>
+                <td class="num">{fmtNum(rolled.get(h.id) ?? 0)}</td>
+                <td><ConfirmButton label={t('adDelete')} question={tc('hzDeleteHeadQ', { name: h.name, n: fmtNum(rolled.get(h.id) ?? 0) })} yesLabel={t('adDelete')} testId="hz-delete-head"
+                  onConfirm={async () => { await run(() => api('DELETE', `/api/admin/departments/${h.dept_id}`), tc('hzHeadDeleted', { name: h.name })); }} /></td>
               </tr>
-            </thead>
-            <tbody>
-              {filtered.length === 0 && leavesRes.data && <tr><td class="empty" colSpan={5}>{leaves.length === 0 ? t('adRoutesEmpty') : t('adNothingFound')}</td></tr>}
-              {filtered.slice(0, shown).map((l) => (
-                <>
-                  <tr key={l.id} data-testid="leaf-row">
-                    <td class="s">{l.delivery_system}</td>
-                    <td class="s">{l.route_code}</td>
-                    <td class="s">{l.label}</td>
-                    <td class="s">{nodeName.get(l.node_id) ?? '—'}</td>
-                    <td class="s act">
-                      <button type="button" class="btn" onClick={() => setLeafEdit({ id: l.id, mode: 'move' })}>{t('adMove')}</button>
-                      <button type="button" class="btn" onClick={() => setLeafEdit({ id: l.id, mode: 'label' })}>{t('adEditLabel')}</button>
-                      <ConfirmButton
-                        label={t('adDelete')} question={tf('adDeleteRouteQ', { route: l.route_code })} yesLabel={t('adDeleteYes')}
-                        onConfirm={async () => { await run(() => api<{ ok: true }>('DELETE', `/api/admin/leaves/${l.id}`), t('adRouteDeleted')); }}
-                      />
-                    </td>
-                  </tr>
-                  {leafEdit?.id === l.id && <tr key={`e${l.id}`}><td colSpan={5} class="s"><LeafEditor key={leafEdit.mode} leaf={l} mode={leafEdit.mode} flat={flat} run={run} onClose={() => setLeafEdit(null)} /></td></tr>}
-                </>
-              ))}
-            </tbody>
-          </table>
+            );
+          })}</tbody>
+        </table></div>
+      </div>
+
+      <div class="card ad-card">
+        <h2>{L.mgrs} <span class="muted">({fmtNum(managers.length)})</span></h2>
+        <div class="tablewrap"><table class="ad-table" data-testid="hz-managers">
+          <thead><tr><th>{tc('ppName')}</th><th>{L.head}</th><th class="num">{L.sups}</th><th class="num">{L.routes}</th><th /></tr></thead>
+          <tbody>{managers.map((m) => {
+            const c = kids.get(m.id) ?? 0;
+            return (
+              <tr key={m.id} data-testid="hz-manager">
+                <td>{nameInput(m)}</td>
+                <td>{m.head?.name ?? '—'}</td>
+                <td class="num">{fmtNum(c)}</td>
+                <td class="num">{fmtNum(rolled.get(m.id) ?? 0)}</td>
+                <td>{delBtn(`n${m.id}`, c || own.get(m.id) ? tc('hzMoveFirst') : null, () => api('DELETE', `/api/admin/nodes/${m.id}`))}</td>
+              </tr>
+            );
+          })}</tbody>
+        </table></div>
+      </div>
+
+      <div class="card ad-card">
+        <h2>{L.sups} <span class="muted">({fmtNum(supervisors.length)})</span></h2>
+        <div class="tablewrap" style={{ maxHeight: '440px' }}><table class="ad-table" data-testid="hz-supervisors">
+          <thead><tr><th>{tc('ppName')}</th><th>{L.mgr}</th><th class="num">{L.routes}</th><th /></tr></thead>
+          <tbody>{supervisors.map((s) => {
+            const c = kids.get(s.id) ?? 0;
+            const options = all.filter((n) => n.dept_id === s.dept_id && n.depth === s.depth - 1);
+            return (
+              <tr key={s.id} data-testid="hz-supervisor">
+                <td>{nameInput(s)}</td>
+                <td>
+                  <select aria-label={`${L.mgr} ${s.name}`} value={s.parent_id ?? ''} onChange={(e) => move(s, Number(e.currentTarget.value))}>
+                    {options.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                  </select>
+                </td>
+                <td class="num">{fmtNum(rolled.get(s.id) ?? 0)}</td>
+                <td>{delBtn(`n${s.id}`, c || own.get(s.id) ? tc('hzMoveFirst') : null, () => api('DELETE', `/api/admin/nodes/${s.id}`))}</td>
+              </tr>
+            );
+          })}</tbody>
+        </table></div>
+      </div>
+
+      <div class="card ad-card">
+        <h2>{L.routes} <span class="muted">({fmtNum(leaves.length)})</span></h2>
+        <div class="toolbar">
+          <input type="search" aria-label={tc('hzFilter')} placeholder={tc('hzFilter')} value={f} onInput={(e) => setF(e.currentTarget.value)} style={{ flex: 1, maxWidth: '420px' }} />
+          <span class="muted">{tc('hzOf', { n: fmtNum(routes.length), total: fmtNum(leaves.length) })}</span>
         </div>
-        {filtered.length > shown && (
-          <p class="foot">
-            {tf('adShowing', { n: fmtNum(shown), total: fmtNum(filtered.length) })}{' '}
-            <button type="button" class="btn link" onClick={() => setShown(shown + ROW_STEP)}>{t('adShowMore')}</button>
-          </p>
-        )}
+        <div class="tablewrap" style={{ maxHeight: '480px' }}><table class="ad-table" data-testid="hz-routes">
+          <thead><tr><th>{L.route}</th><th>{tc('salesman')}</th><th>{t('adDeliverySystem')}</th><th>{L.sup}</th><th>{L.mgr}</th><th /></tr></thead>
+          <tbody>{routes.slice(0, 400).map(({ l, node }) => (
+            <tr key={l.id} data-testid="hz-route">
+              <td>{l.route_code}</td>
+              <td><input value={l.label} key={`${l.id}:${l.label}`} style={{ width: '110px' }} aria-label={`${tc('salesman')} ${l.route_code}`}
+                onChange={(e) => { const v = e.currentTarget.value.trim(); if (v && v !== l.label) void run(() => api('PATCH', `/api/admin/leaves/${l.id}`, { label: v }), t('adSaved')); }} /></td>
+              <td>{l.delivery_system}</td>
+              <td>
+                <select aria-label={`${L.sup} ${l.route_code}`} value={l.node_id} onChange={(e) => { const v = Number(e.currentTarget.value); if (v !== l.node_id) void run(() => api('PATCH', `/api/admin/leaves/${l.id}`, { nodeId: v }), t('adSaved')); }}>
+                  {all.filter((n) => n.dept_id === l.dept_id && (n.depth >= 2 || n.id === l.node_id)).sort((a, b) => a.name.localeCompare(b.name)).map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}
+                </select>
+              </td>
+              <td class="muted">{node?.depth === 1 ? node.name : node?.mgr?.name ?? '—'}</td>
+              <td>{delBtn(`l${l.id}`, null, () => api('DELETE', `/api/admin/leaves/${l.id}`))}</td>
+            </tr>
+          ))}</tbody>
+        </table></div>
+        {routes.length > 400 && <p class="muted small">{tc('hzMore', { n: fmtNum(routes.length - 400) })}</p>}
       </div>
     </section>
   );

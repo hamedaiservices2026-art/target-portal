@@ -6,6 +6,7 @@
 // the same checkPack the server uses. Edits are mirrored to sessionStorage
 // under draft:{mid}:{nid}:{version} so an expired session (or a reload) does
 // not lose them; the mirror is restored when the same version is loaded again.
+import { useLocation } from 'preact-iso';
 import { useCallback, useEffect, useMemo, useState } from 'preact/hooks';
 import { checkPack, parseCaseInput, type PackCheck } from '../../shared/rules';
 import type { PackGroup } from '../../shared/types';
@@ -64,12 +65,13 @@ function clearMirrors(mid: string, nid: string, keep?: string): void {
 // ---------- formatting ----------
 
 function rawFromServer(w: Workspace): Raw {
-  return Object.fromEntries(w.packs.map((p) => [p.code, w.children.map((c) => String(c.values[p.code] ?? 0))]));
+  return Object.fromEntries(w.packs.map((p) => [p.code, w.children.map((c) => fmtNum(c.values[p.code] ?? 0))]));
 }
 
 // ---------- page ----------
 
 export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string }) {
+  const { route } = useLocation();
   const [lang] = useLang();
   const [ws, setWs] = useState<Workspace | null>(null);
   const bench = useBench(ws, mid, nid);
@@ -104,9 +106,11 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
       if (m) {
         r = Object.fromEntries(Object.entries(server).map(([p, arr]) => [p, arr.map((v, i) => {
           const saved = m[w.children[i]!.key]?.[p];
-          return typeof saved === 'string' ? saved : v;
+          if (typeof saved !== 'string') return v;
+          const n = parseCaseInput(saved);
+          return n === null ? saved : fmtNum(n);
         })]));
-        back = Object.keys(r).some((p) => r[p]!.some((v, i) => v !== server[p]![i]));
+        back = Object.keys(r).some((p) => r[p]!.some((v, i) => parseCaseInput(v) !== parseCaseInput(server[p]![i]!)));
         if (!back) clearMirrors(mid, nid);
       }
       setWs(w);
@@ -123,7 +127,9 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
       return true;
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) return false; // the app goes to /login
-      setLoadErr(e instanceof ApiError && (e.status === 403 || e.status === 404) ? 'dsNoAccess' : 'dsLoadError');
+      // Not this person's team (a link or a page left open by someone else): their own Home instead.
+      if (e instanceof ApiError && (e.status === 403 || e.status === 404)) { route('/', true); return false; }
+      setLoadErr('dsLoadError');
       return false;
     }
   }, [mid, nid]);
@@ -151,7 +157,7 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
   }, [ws]);
   const members = useMemo<Member[]>(() => (ws ? ws.children.map((c) => {
     const leaf = c.key.startsWith('l:');
-    const title = leaf ? `${t('dsRoute')} ${c.label}` : c.label;
+    const title = leaf ? `${ws.node.workspace === 'ka' ? 'KAE' : t('dsRoute')} ${c.label}` : c.label;
     const sub = leaf ? (c.sub ? `${t('dsSalesman')} ${c.sub}` : '') : c.sub;
     return { key: c.key, title, sub, aria: sub ? `${title} · ${sub}` : title };
   }) : []), [ws, lang]);
@@ -166,7 +172,7 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
   }, [members, q]);
 
   const ruleOpts = useMemo(() => (ws ? {
-    rule2: ws.rules.rule2, rule3: ws.rules.rule3, personCapPct: ws.rules.personCapPct.map((x) => x ?? undefined),
+    rule2: ws.rules.rule2, rule3: ws.rules.rule3, personCapPct: ws.rules.personCapPct.map((x) => x ?? undefined), personBase: ws.rules.base,
   } : {}), [ws]);
 
   // Per-pack checks, cached by the identity of the pack's raw array: an edit
@@ -212,12 +218,12 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
     setRaw((prev) => {
       const v = prev[pack]?.[i] ?? '';
       const n = parseCaseInput(v);
-      if (n === null || String(n) === v) return prev;
-      return { ...prev, [pack]: prev[pack]!.map((x, j) => (j === i ? String(n) : x)) };
+      if (n === null || fmtNum(n) === v) return prev;
+      return { ...prev, [pack]: prev[pack]!.map((x, j) => (j === i ? fmtNum(n) : x)) };
     });
   }, []);
   const onReset = useCallback((pack: string) => {
-    setRaw((prev) => ({ ...prev, [pack]: (starts[pack] ?? []).map(String) }));
+    setRaw((prev) => ({ ...prev, [pack]: (starts[pack] ?? []).map(fmtNum) }));
     touched();
   }, [starts]);
   const onToggle = useCallback((g: string) => {
@@ -296,7 +302,9 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
   // ---- save / submit ----
   const editable = ws.editable;
   const canSave = editable && !stale && busy === null && !anyInvalid;
-  const canSubmit = canSave && allOk;
+  // A supervisor submits only once every route has a salesman ID.
+  const noSalesman = ws.node.level === 'head' || ws.node.workspace === 'ka' ? [] : ws.children.filter((c) => c.key.startsWith('l:') && !c.sub?.trim()).map((c) => c.label);
+  const canSubmit = canSave && allOk && noSalesman.length === 0;
 
   function handleError(e: unknown) {
     if (e instanceof ApiError) {
@@ -304,6 +312,10 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
       if (e.status === 409) return setStale(true);
       if (e.status === 400 && e.body.error === 'rules_failed' && e.body.byPack && typeof e.body.byPack === 'object') {
         return setFailed(e.body.byPack as Record<string, PackCheck>);
+      }
+      if (e.status === 400 && e.body.error === 'salesman_missing') {
+        void load();
+        return setError('errGeneric');
       }
       if (e.status === 400 && e.body.error === 'no_routes' && typeof e.body.node === 'string') {
         setNoRoutesNode(e.body.node);
@@ -394,7 +406,7 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
         </div>
         <div class="card">
           <div class="k">{t('dsCap')}</div>
-          <div class="v"><bdi>{ws.capPct}%</bdi> <small>{t('dsCapSub')}</small></div>
+          <div class="v">{ws.rules.capOn === false ? <small data-testid="cap-off">{tc('capOffShort')}</small> : <><bdi>{ws.capPct}%</bdi> <small>{t('dsCapSub')}</small></>}</div>
         </div>
         <div class="card">
           <div class="k">{t('dsPassing')}</div>
@@ -461,11 +473,16 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
               {busy === 'save' ? t('dsSaving') : t('dsSave')}
             </button>
             <button type="button" class="btn primary" disabled={!canSubmit} onClick={() => setConfirming(true)}>
-              {busy === 'submit' ? t('dsSubmitting') : t('dsSubmit')}
+              {busy === 'submit' ? t('dsSubmitting') : ws.node.level === 'head' ? tc('approveSendMgrs') : t('dsSubmit')}
             </button>
           </>
         )}
       </div>
+      {editable && noSalesman.length > 0 && (
+        <div class="banner warn" role="status" data-testid="salesman-missing">
+          {tc('salesmanMissing', { n: noSalesman.length, list: noSalesman.slice(0, 10).join(', ') + (noSalesman.length > 10 ? '…' : '') })}
+        </div>
+      )}
       {confirming && editable && (
         <div class="banner warn confirm" role="alertdialog" aria-label={t('dsSubmit')}>
           <span>{t('dsConfirm')}</span>
@@ -477,7 +494,7 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
       <BenchControls ws={ws} b={bench} />
       <ByCategory ws={ws} codes={codes} info={info} totals={totals} editable={editable} bench={bench.fn}
         onApply={(next) => { setRaw((prev) => ({ ...prev, ...next })); touched(); }} />
-      {leafTeam && <SalesmanPanel ws={ws} mid={mid} onChanged={() => void load()} />}
+      {ws.children.some((c) => c.key.startsWith('l:')) && <SalesmanPanel ws={ws} mid={mid} onChanged={() => void load()} />}
       <h2 class="cy-step-title"><span class="n">2</span> {tc('distByPack')}</h2>
 
       <DistributionTable

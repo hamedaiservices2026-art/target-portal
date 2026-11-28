@@ -116,6 +116,8 @@ beforeEach(async () => {
     await run(env.DB, `DELETE FROM ${t}`);
   }
   await run(env.DB, `UPDATE settings SET value = '5' WHERE key = 'cap_pct'`);
+  // These cases use the threshold of the team's pack total (the "own target" base has its own test below).
+  await run(env.DB, `INSERT INTO settings(key, value) VALUES ('rules_json', '{"base":"group"}') ON CONFLICT(key) DO UPDATE SET value = excluded.value`);
   await addUser('boss', 'admin');
   headU = await addUser('head');
   areaU = await addUser('area');
@@ -221,7 +223,7 @@ describe('workspace', () => {
       month: { id: month, period: '2026-10', deadline: '2026-10-25' },
       node: { id: head, name: 'Head', status: 'in_progress', deptCode: 'TT', deptId: expect.any(Number), level: 'head', workspace: 'ops' },
       capPct: 5,
-      rules: { rule2: true, rule3: true, personCapPct: [null] },
+      rules: { rule2: true, rule3: true, personCapPct: [null], capOn: true, base: 'group' },
       packs: [
         { code: PET, grp: 'CSD', sort: 0 }, { code: CAN, grp: 'CSD', sort: 1 },
         { code: WATER, grp: 'Water', sort: 2 }, { code: JUICE, grp: 'LRB-Others', sort: 3 },
@@ -811,4 +813,21 @@ describe('statement budget', () => {
     expect(r.statements).toBeLessThanOrEqual(budget);
     expect(await json(r.res)).toHaveLength(1 + areas.length + sups.length);
   }, 60_000);
+});
+
+describe('salesman IDs before a supervisor submits', () => {
+  it('a supervisor cannot submit while a route has no salesman ID; with it the submit goes through', async () => {
+    await areaMoves50();
+    await run(env.DB, `UPDATE month_leaves SET salesman_id = NULL WHERE month_id = ? AND leaf_id = ?`, month, r2);
+    let ws = await json(await getWs(supAS, month, supA));
+    const res = await submit(supAS, month, supA, ws.version);
+    expect(res.status).toBe(400);
+    const body = await json(res);
+    expect(body.error).toBe('salesman_missing');
+    expect(body.issues).toEqual(['R2']);
+    expect((await nodeRow(month, supA)).status).toBe('in_progress');
+    await run(env.DB, `UPDATE month_leaves SET salesman_id = 'S2' WHERE month_id = ? AND leaf_id = ?`, month, r2);
+    ws = await json(await getWs(supAS, month, supA));
+    expect((await submit(supAS, month, supA, ws.version)).status).toBe(200);
+  });
 });

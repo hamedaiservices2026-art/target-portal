@@ -1,0 +1,109 @@
+import { describe, expect, it } from 'vitest';
+import { unzipSync, strFromU8 } from 'fflate';
+import write from 'write-excel-file/node';
+import { approvalSheets, orderSheetXml, PRINT_FEATURE } from '../../src/web/cycle/approval';
+
+// Excel empties a sheet whose top-level elements are out of the required
+// order (LibreOffice does not), so the print setup must come after every
+// conditional format.
+const ORDER = ['sheetPr', 'sheetViews', 'cols', 'sheetData', 'mergeCells', 'conditionalFormatting', 'printOptions', 'pageMargins', 'pageSetup'];
+
+function tops(xml: string): string[] {
+  const inner = xml.slice(xml.indexOf('>', xml.indexOf('<worksheet')) + 1, xml.lastIndexOf('</worksheet>'));
+  const out: string[] = [];
+  let depth = 0;
+  for (const m of inner.matchAll(/<(\/?)([\w:]+)[^>]*?(\/?)>/g)) {
+    if (depth === 0 && !m[1]) out.push(m[2]!);
+    if (m[1]) depth--; else if (!m[3]) depth++;
+  }
+  return out;
+}
+
+describe('approval workbook xml', () => {
+  it('orders the added print elements after the conditional formats', () => {
+    const xml = '<?xml version="1.0"?><worksheet a="1"><sheetViews/><sheetData><row r="1"><c r="A1"><f>C1&gt;0</f></c></row></sheetData><conditionalFormatting sqref="E7"><cfRule type="cellIs"><formula>0</formula></cfRule></conditionalFormatting><conditionalFormatting sqref="G7"/></worksheet>';
+    const out = orderSheetXml(xml, ['<sheetPr/>', '<pageSetup paperSize="9"/>']);
+    expect(tops(out)).toEqual(['sheetPr', 'sheetViews', 'sheetData', 'conditionalFormatting', 'conditionalFormatting', 'pageSetup']);
+    expect(out).toContain('<f>C1&gt;0</f>');
+  });
+
+  it('writes both sheets with their data and elements in the required order', async () => {
+    const g = (v: number) => ({ CSD_CANS150: v, AquafinA_330: v / 2 });
+    const inp = {
+      period: '2026-11',
+      layout: [{ p: 'CSD_CANS150' }, { t: 'Total CSD', of: ['CSD_CANS150'] }, { p: 'AquafinA_330' }, { t: 'Total Water', of: ['AquafinA_330'] }, { t: 'Total LRB', of: ['CSD_CANS150', 'AquafinA_330'] }],
+      catOf: (p: string) => (p.startsWith('CSD') ? 'CSD' : 'Water'),
+      target: g(100), yago: g(90), pago: g(95), plan: g(110),
+      heads: [{ name: 'TT', chans: [{ label: 'TT DMM', g: g(60) }, { label: 'TT Outer', g: g(40) }] }],
+    };
+    const buf = await (write as unknown as (d: unknown, o: unknown) => { toBuffer: () => Promise<Buffer> })(approvalSheets(inp as never), { features: [PRINT_FEATURE] }).toBuffer();
+    const files = unzipSync(new Uint8Array(buf));
+    for (const n of [1, 2]) {
+      const xml = strFromU8(files[`xl/worksheets/sheet${n}.xml`]!);
+      const t = tops(xml);
+      const ranks = t.map((x) => ORDER.indexOf(x));
+      expect(ranks.every((r) => r >= 0), t.join(',')).toBe(true);
+      expect([...ranks].sort((a, b) => a - b)).toEqual(ranks);
+      expect(t).toContain('pageSetup');
+    }
+    expect(strFromU8(files['xl/workbook.xml']!)).toContain('fullCalcOnLoad="1"');
+    const s1 = strFromU8(files['xl/worksheets/sheet1.xml']!);
+    expect(s1).toContain('<v>100</v>');
+    expect(tops(s1).filter((x) => x === 'conditionalFormatting').length).toBeGreaterThan(0);
+  });
+});
+
+describe('rows in the order of the AOP by department file', () => {
+  const layout = [
+    { p: 'CSD_CANS150' }, { p: 'CSD_CANS240' }, { t: 'Total CANS', of: ['CSD_CANS150', 'CSD_CANS240'] },
+    { p: 'CSD_PET1000' }, { p: 'CSD_PET2000+' }, { t: 'Total MSPET', of: ['CSD_PET1000', 'CSD_PET2000+'] },
+    { t: 'Total ABC', of: ['CSD_CANS150', 'CSD_CANS240', 'CSD_PET1000', 'CSD_PET2000+'] },
+    { p: 'GATORADE' }, { p: 'Propel' }, { t: 'Total Gatorade', of: ['GATORADE', 'Propel'] },
+    { p: 'Rockstar_185' }, { p: 'Rockstar_250' }, { t: 'Total ROCKSTAR', of: ['Rockstar_185', 'Rockstar_250'] },
+    { t: 'Total LRB-Others', of: ['GATORADE', 'Propel', 'Rockstar_185', 'Rockstar_250'] },
+    { t: 'Total LRB ', of: ['CSD_PET1000', 'CSD_PET2000+', 'GATORADE', 'Propel', 'Rockstar_185', 'Rockstar_250'] },
+  ];
+  it('keeps the file order and puts a pack missing from the file with its group', async () => {
+    const { approvalLines } = await import('../../src/web/cycle/approval');
+    const cat = (p: string) => (p.startsWith('CSD') ? 'CSD' : 'LRB-Others');
+    const lines = approvalLines(layout, ['CSD_PET1000', 'CSD_PET2000+', 'GATORADE', 'Propel', 'Rockstar_185', 'Rockstar_250', 'CSD_CANS150', 'CSD_CANS240', 'CSD_CANS185', 'Rockstar_500'], cat);
+    const labels = lines.map((l) => l.label.trim());
+    expect(labels.indexOf('Propel')).toBe(labels.indexOf('GATORADE') + 1);
+    expect(labels.indexOf('CSD_PET2000+')).toBeLessThan(labels.indexOf('Total MSPET'));
+    // Packs missing from the file go after the last pack of their group, inside its Totals.
+    expect(labels.indexOf('CSD_CANS185')).toBe(labels.indexOf('CSD_CANS240') + 1);
+    expect(lines.find((l) => l.label === 'Total CANS')!.of).toContain('CSD_CANS185');
+    expect(lines.find((l) => l.label === 'Total ABC')!.of).toContain('CSD_CANS185');
+    expect(lines.find((l) => l.label.trim() === 'Total LRB')!.of).toContain('CSD_CANS185');
+    expect(labels.indexOf('Rockstar_500')).toBe(labels.indexOf('Rockstar_250') + 1);
+    expect(lines.find((l) => l.label === 'Total ROCKSTAR')!.of).toContain('Rockstar_500');
+  });
+});
+
+describe('the Total a new pack shows under', () => {
+  it('puts the pack above the chosen Total and counts it there and in the Totals around it', async () => {
+    const { approvalLines } = await import('../../src/web/cycle/approval');
+    const layout = [
+      { p: 'GATORADE' }, { p: 'Propel' }, { t: 'Total Gatorade', of: ['GATORADE', 'Propel'] },
+      { p: 'Rockstar_185' }, { t: 'Total Energy', of: ['Rockstar_185'] },
+      { t: 'Total LRB-Others', of: ['GATORADE', 'Propel', 'Rockstar_185'] },
+      { t: 'Total LRB', of: ['GATORADE', 'Propel', 'Rockstar_185'] },
+    ];
+    const lines = approvalLines(layout, ['GATORADE', 'Propel', 'Rockstar_185', 'Pepsi Tret'], () => 'LRB-Others', { 'Pepsi Tret': 'total gatorade' });
+    const labels = lines.map((l) => l.label);
+    expect(labels.indexOf('Pepsi Tret')).toBe(labels.indexOf('Total Gatorade') - 1);
+    expect(lines.find((l) => l.label === 'Total Gatorade')!.of).toContain('Pepsi Tret');
+    expect(lines.find((l) => l.label === 'Total LRB-Others')!.of).toContain('Pepsi Tret');
+    expect(lines.find((l) => l.label === 'Total Energy')!.of).not.toContain('Pepsi Tret');
+  });
+
+  it('reads the pack order and Total rows of a New Target file (Pack, Cases)', async () => {
+    const { fileLayout, packIndex } = await import('../../src/web/cycle/parsers');
+    const rows = [['Pack', 'Cases'], ['CSD_CANS150', 10], ['CSD_CANS240', 5], ['Total CANS', 15], ['GATORADE', 3], ['Total LRB', 18]];
+    const idx = packIndex(['CSD_CANS150', 'CSD_CANS240', 'GATORADE']);
+    expect(fileLayout(rows, idx)).toEqual([
+      { p: 'CSD_CANS150' }, { p: 'CSD_CANS240' }, { t: 'Total CANS', of: ['CSD_CANS150', 'CSD_CANS240'] }, { p: 'GATORADE' },
+      { t: 'Total LRB', of: ['CSD_CANS150', 'CSD_CANS240', 'GATORADE'] },
+    ]);
+  });
+});

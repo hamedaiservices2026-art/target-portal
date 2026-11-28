@@ -1,22 +1,29 @@
 // Excel layouts of the Admin start (handover section 4). Pure functions over
 // the rows read-excel-file returns; each returns its data plus the problems
 // found, as ok / info / warning / error, before anything is sent.
-import { packKey } from '../../shared/calc/packs';
+import { PACK_ALIASES, packKey } from '../../shared/calc/packs';
 import { parseMonth, type Month } from '../../shared/calc/periods';
 
 export type CheckLevel = 'info' | 'warning' | 'error';
-export type Check = { level: CheckLevel; text: string };
+/** `packs`: pack codes missing from the pack master (the screen offers to add them). */
+export type Check = { level: CheckLevel; text: string; packs?: string[] };
 
 export type PackIndex = Map<string, string>;
 
 /** Maps packKey(name) -> the pack master code (CSD_CANS150 = CSD CANS150 = csd_cans150). */
 export function packIndex(codes: string[]): PackIndex {
-  return new Map(codes.map((c) => [packKey(c), c]));
+  const idx = new Map(codes.map((c) => [packKey(c), c]));
+  // Merged packs (e.g. LIT_CANS320 -> LIT_CANS310) count as the pack they were merged into.
+  for (const [alias, to] of Object.entries(PACK_ALIASES)) {
+    const target = idx.get(packKey(to));
+    if (target) idx.set(packKey(alias), target);
+  }
+  return idx;
 }
 
 const squash = (s: unknown): string => (typeof s === 'string' ? s : s === null || s === undefined ? '' : String(s)).toLowerCase().replace(/[\s_\-./]+/g, '');
 
-function cellText(c: unknown): string {
+export function cellText(c: unknown): string {
   if (c === null || c === undefined) return '';
   if (c instanceof Date) return c.toISOString().slice(0, 10);
   return String(c).trim();
@@ -59,13 +66,13 @@ export function findHeader(rows: unknown[][], spec: Record<string, string[]>, re
   return null;
 }
 
-const PACK_NAMES = ['Sales Target Category', 'Pack', 'Pack Code', 'Category'];
+const PACK_NAMES = ['Sales Target Category', 'Target Category', 'Pack', 'Pack Code', 'Category'];
 const ROUTE_NAMES = ['Route Code', 'Route', 'KAE ID', 'KAE', 'KAM ID', 'KAM', 'KAE / KAM ID'];
 
 function unknownPacksCheck(unknown: Set<string>): Check[] {
   if (unknown.size === 0) return [];
   const list = [...unknown].slice(0, 15).join(', ');
-  return [{ level: 'warning', text: `${unknown.size} pack(s) are not in the pack master and their rows are skipped (add them in Admin › Packs): ${list}` }];
+  return [{ level: 'warning', text: `${unknown.size} pack(s) are not in the pack master and their rows are skipped (add them in Admin › Packs): ${list}`, packs: [...unknown] }];
 }
 
 /**
@@ -176,6 +183,18 @@ export function parseChannelGrid(rows: unknown[][], channels: string[], idx: Pac
     else if (k === 'abc') abcCol = i;
     else if (k.startsWith('total') && groupChannels.has(k.slice(5))) totalCols.push([i, groupChannels.get(k.slice(5))!]);
   });
+  // Older months: "Total MT" with no MT channel columns, or "MT PS" for MT. They count for the channel named
+  // like them (MT) when that channel has no column of its own in the sheet.
+  const present = new Set(chCols.map(([, c]) => c));
+  header.forEach((k, i) => {
+    if (!k || want.has(k) || k === 'abc' || chCols.some(([j]) => j === i) || totalCols.some(([j]) => j === i) || PACK_NAMES.some((n) => squash(n) === k)) return;
+    const stem = k.startsWith('total') ? k.slice(5) : k;
+    const match = channels.filter((c) => stem.startsWith(squash(c))).sort((a, b) => squash(b).length - squash(a).length)[0];
+    if (!match || present.has(match)) return;
+    if (k.startsWith('total') && channels.some((c) => squash(c) !== squash(match) && squash(c).startsWith(squash(match)) && present.has(c))) return;
+    chCols.push([i, match]);
+    present.add(match);
+  });
   const missing = channels.filter((c) => !chCols.some(([, n]) => n === c));
   const unknown = new Map<string, number>();
   const byChannel: Record<string, Record<string, number>> = Object.fromEntries(chCols.map(([, c]) => [c, {}]));
@@ -207,8 +226,10 @@ export function parseChannelGrid(rows: unknown[][], channels: string[], idx: Pac
       if (n === null || Math.round(n) === 0) continue;
       const inGroup = chCols.filter(([j, c]) => list.includes(c) && (cellNumber(r[j]) ?? 0) !== 0);
       if (inGroup.length) continue;
-      const first = list.find((c) => c in byChannel);
+      // The group's first channel with a column; when none of them has one (older months), its first channel.
+      const first = list.find((c) => c in byChannel) ?? list[0];
       if (!first) continue;
+      byChannel[first] ??= {};
       byChannel[first]![code] = (byChannel[first]![code] ?? 0) + Math.round(n);
       rowSum += Math.round(n);
       fromTotals++;
@@ -397,7 +418,7 @@ export function parseSales(rows: unknown[][], idx: PackIndex, knownRoutes?: Set<
     g[pack] = (g[pack] ?? 0) + n;
   };
   const checks: Check[] = [];
-  const long = findHeader(rows, { route: ROUTE_NAMES, pack: PACK_NAMES, period: ['Period', 'Month'], cases: ['Cases', 'Sales', 'Sales Cases', 'Actual'] }, ['route', 'pack', 'period', 'cases']);
+  const long = findHeader(rows, { route: ROUTE_NAMES, pack: PACK_NAMES, period: ['Period', 'Year Month', 'Month'], cases: ['Cases', 'Total Invoiced Cases', 'Invoiced Cases', 'Sales', 'Sales Cases', 'Actual'] }, ['route', 'pack', 'period', 'cases']);
   let layout: 'wide' | 'long' = 'wide';
   if (long) {
     layout = 'long';
@@ -458,8 +479,8 @@ export type PrevTargets = {
 /** Period, Delivery System, Route Code (KA: KAE / KAM), Salesman ID, Sales Target Category, Cases. */
 export function parsePrevTargets(rows: unknown[][], idx: PackIndex): PrevTargets {
   const h = findHeader(rows, {
-    period: ['Period', 'Month'], ds: ['Delivery System', 'DS'], route: ROUTE_NAMES, salesman: ['Salesman ID', 'Salesman', 'Salesman Code'],
-    pack: PACK_NAMES, cases: ['Cases', 'Target', 'Target Cases'],
+    period: ['Period', 'Year Month', 'Month'], ds: ['Delivery System', 'DS'], route: ROUTE_NAMES, salesman: ['Salesman ID', 'Salesman', 'Salesman Code'],
+    pack: PACK_NAMES, cases: ['Cases', 'MD Target Cases', 'Target Cases', 'Target'],
   }, ['period', 'route', 'pack', 'cases']);
   const data: RouteMonthData = {};
   const extra: PrevTargets['extra'] = {};
@@ -501,3 +522,235 @@ export const TEMPLATES: Record<string, { file: string; columns: string[]; sample
   prev_target: { file: 'previous_targets.xlsx', columns: ['Period', 'Delivery System', 'Route Code', 'Salesman ID', 'Sales Target Category', 'Cases'], sample: [['202609', 'TT DMM', 'R001', 'S100', 'CSD_CANS150', 33]] },
   dept_channel: { file: 'department_channel_targets.xlsx', columns: ['Pack', 'TT DMM', 'TT Outer', 'Total TT', 'MT', 'MT SSV', 'MT Bulk', 'Total MT', 'HoReCa', 'WS', 'ABC'], sample: [['CSD_CANS150', 300, 200, 500, 150, 50, 20, 220, 100, 180, 1000]] },
 };
+
+/**
+ * AOP by pack and department (one sheet per channel, e.g. "TT Damm", "MT SSV";
+ * rows: Pack; columns: the months of the year, then FY). The sheet named ABC /
+ * Total is the check: channels must add up to it. Values are rounded to whole cases.
+ */
+/** The rows of a target file in its own order: packs, and the file's Total rows with the packs each one sums. */
+export type { FileRow } from '../../shared/calc/packOrder';
+import type { FileRow } from '../../shared/calc/packOrder';
+
+/**
+ * The file's layout from one sheet (the ABC / total sheet): packs in order and
+ * each "Total …" row with the packs it adds up, found from the numbers (the
+ * nearest packs above it whose months add up to the total).
+ */
+export function fileLayout(data: unknown[][], idx: PackIndex): FileRow[] {
+  const hRow = data.findIndex((r) => Array.isArray(r) && r.some((x) => PACK_NAMES.some((n) => squash(n) === squash(x))));
+  if (hRow < 0) return [];
+  const header = data[hRow]!;
+  const pCol = header.findIndex((x) => PACK_NAMES.some((n) => squash(n) === squash(x)));
+  const nCols = header.map((x, i) => (i !== pCol && (parseMonth(x) || /fy|total|^\s*(cases|new target|target|abc)\s*$/i.test(String(x ?? ''))) ? i : -1)).filter((i) => i >= 0);
+  const rows: { name: string; code: string | null; total: boolean; v: number[] }[] = [];
+  for (const r of data.slice(hRow + 1)) {
+    if (!Array.isArray(r)) continue;
+    const name = cellText(r[pCol]);
+    if (!name) continue;
+    const total = isSubtotal(name);
+    rows.push({ name, total, code: total ? null : idx.get(packKey(name)) ?? null, v: nCols.map((i) => cellNumber(r[i]) ?? 0) });
+  }
+  const out: FileRow[] = [];
+  const seen = new Set<string>();
+  rows.forEach((row, t) => {
+    if (!row.total) {
+      // A pack missing from the pack master keeps its name, so it shows once it is added.
+      const id = row.code ?? row.name;
+      if (!seen.has(id)) { seen.add(id); out.push({ p: id }); }
+      return;
+    }
+    const sum = row.v.map(() => 0);
+    const of: string[] = [];
+    let ok = false;
+    for (let k = t - 1; k >= 0; k--) {
+      const x = rows[k]!;
+      if (x.total) continue;
+      x.v.forEach((n, i) => { sum[i] = (sum[i] ?? 0) + n; });
+      const id = x.code ?? x.name;
+      if (!of.includes(id)) of.unshift(id);
+      if (sum.every((n, i) => Math.abs(n - row.v[i]!) <= 1)) { ok = true; break; }
+    }
+    if (ok && of.length) out.push({ t: row.name, of });
+  });
+  return out;
+}
+
+/** Whole cases per pack whose sum keeps the column's total (largest remainder). */
+function roundKeepTotal(g: Record<string, number>): Record<string, number> {
+  const keys = Object.keys(g);
+  const want = Math.round(keys.reduce((s, k) => s + g[k]!, 0));
+  const out: Record<string, number> = {};
+  for (const k of keys) out[k] = Math.floor(g[k]!);
+  let left = want - keys.reduce((s, k) => s + out[k]!, 0);
+  for (const k of [...keys].sort((a, b) => (g[b]! - Math.floor(g[b]!)) - (g[a]! - Math.floor(g[a]!)))) {
+    if (left <= 0) break;
+    out[k]! += 1;
+    left--;
+  }
+  for (const k of keys) if (out[k] === 0) delete out[k];
+  return out;
+}
+
+export function parseAopByDept(sheets: { sheet: string; data: unknown[][] }[], channels: string[], idx: PackIndex): { byMonth: Record<Month, Record<string, Record<string, number>>>; layout: FileRow[]; checks: Check[] } {
+  const checks: Check[] = [];
+  const consonants = (s: string) => s.slice(0, 1) + s.slice(1).replace(/[aeiou]/g, '');
+  const chanOf = (name: string): string | null => {
+    const k = squash(name);
+    return channels.find((c) => squash(c) === k) ?? channels.find((c) => consonants(squash(c)) === consonants(k)) ?? null;
+  };
+  const unknown = new Set<string>();
+  const byMonth: Record<Month, Record<string, Record<string, number>>> = {};
+  const totalSheet: Record<Month, Record<string, number>> = {};
+  const skipped: string[] = [];
+  const read = (data: unknown[][]): Record<Month, Record<string, number>> | null => {
+    const hRow = data.findIndex((r) => Array.isArray(r) && r.some((x) => PACK_NAMES.some((n) => squash(n) === squash(x))));
+    if (hRow < 0) return null;
+    const header = data[hRow]!;
+    const pCol = header.findIndex((x) => PACK_NAMES.some((n) => squash(n) === squash(x)));
+    const mCols: [number, Month][] = [];
+    header.forEach((x, i) => { const m = i === pCol || /fy|total/i.test(String(x ?? '')) ? null : parseMonth(x); if (m) mCols.push([i, m]); });
+    const out: Record<Month, Record<string, number>> = {};
+    for (const r of data.slice(hRow + 1)) {
+      if (!Array.isArray(r)) continue;
+      const name = cellText(r[pCol]);
+      if (!name || isSubtotal(name)) continue;
+      const code = resolvePack(idx, name, unknown);
+      if (!code) continue;
+      for (const [i, m] of mCols) {
+        const n = cellNumber(r[i]);
+        if (n === null || n === 0) continue;
+        const g = (out[m] ??= {});
+        g[code] = (g[code] ?? 0) + n;
+      }
+    }
+    return out;
+  };
+  let layout: FileRow[] = [];
+  for (const s of sheets) {
+    if (/^(abc|total|all)$/i.test(s.sheet.trim())) {
+      const t = read(s.data);
+      if (t) Object.assign(totalSheet, t);
+      layout = fileLayout(s.data, idx);
+      continue;
+    }
+    const ch = chanOf(s.sheet);
+    if (!ch) { skipped.push(s.sheet); continue; }
+    const g = read(s.data);
+    if (!g) { checks.push({ level: 'error', text: `Sheet ${s.sheet}: the Pack column and the month columns were not found.` }); continue; }
+    for (const [m, packs] of Object.entries(g)) {
+      const dst = ((byMonth[m] ??= {})[ch] ??= {});
+      for (const [p, n] of Object.entries(packs)) dst[p] = (dst[p] ?? 0) + n;
+    }
+  }
+  // Whole cases, keeping each channel's monthly total as in the file.
+  for (const chs of Object.values(byMonth)) for (const [c, g] of Object.entries(chs)) chs[c] = roundKeepTotal(g);
+  if (!layout.length && sheets[0]) layout = fileLayout(sheets[0].data, idx);
+  if (skipped.length) checks.push({ level: 'warning', text: `Sheet(s) not matched to a channel and not read: ${skipped.join(', ')}. Channels: ${channels.join(', ')}.` });
+  const missing = channels.filter((c) => !Object.values(byMonth).some((x) => x[c]));
+  if (missing.length) checks.push({ level: 'warning', text: `No sheet for channel(s): ${missing.join(', ')} (they get 0).` });
+  // Check against the ABC / Total sheet.
+  let off = 0;
+  for (const [m, t] of Object.entries(totalSheet)) {
+    for (const [p, n] of Object.entries(t)) {
+      const sum = Object.values(byMonth[m] ?? {}).reduce((s2, g) => s2 + (g[p] ?? 0), 0);
+      if (Math.abs(sum - n) > Math.max(2, Object.keys(byMonth[m] ?? {}).length)) off++;
+    }
+  }
+  if (Object.keys(totalSheet).length) checks.push(off ? { level: 'warning', text: `${off} pack-month(s) where the channels do not add up to the ABC sheet.` } : { level: 'info', text: 'The channels add up to the ABC sheet.' });
+  checks.push(...unknownPacksCheck(unknown));
+  const months = Object.keys(byMonth).sort();
+  if (!months.length) checks.push({ level: 'error', text: 'No month was read.' });
+  else checks.push({ level: 'info', text: `${months.length} month(s) read (${months[0]} to ${months[months.length - 1]}), ${Object.keys(Object.assign({}, ...Object.values(byMonth))).length} channel(s).` });
+  return { byMonth, layout, checks };
+}
+
+/**
+ * The people's IDs in a sales file: HOD / Manager / Supervisor / KAM name with
+ * the ID column next to it, and the KAE IDs of a Key Account file.
+ */
+export function parsePeopleIds(rows: unknown[][]): { people: { name: string; id: string }[]; kae: string[] } {
+  const pairs: [string, string][] = [['HOD Name', 'HOD ID'], ['Manager Name', 'Manager ID'], ['Supervisor Name', 'Supervisor ID'], ['KAM Name', 'KAM ID']];
+  const spec: Record<string, string[]> = { kae: ['KAE ID'] };
+  pairs.forEach(([n, i], k) => { spec[`n${k}`] = [n]; spec[`i${k}`] = [i]; });
+  let h: ReturnType<typeof findHeader> = null;
+  for (let k = 0; k < pairs.length && !h; k++) h = findHeader(rows, spec, [`n${k}`, `i${k}`]);
+  if (!h) h = findHeader(rows, spec, ['kae']);
+  if (!h) return { people: [], kae: [] };
+  const people = new Map<string, { name: string; id: string }>();
+  const kae = new Set<string>();
+  const idText = (v: unknown) => (typeof v === 'number' ? String(Math.round(v)) : cellText(v));
+  for (const r of rows.slice(h.row + 1)) {
+    if (!Array.isArray(r)) continue;
+    pairs.forEach((_p, k) => {
+      const nc = h!.col[`n${k}`];
+      const ic = h!.col[`i${k}`];
+      if (nc === undefined || ic === undefined) return;
+      const name = cellText(r[nc]);
+      const id = idText(r[ic]);
+      if (name && id && !isSubtotal(name)) people.set(`${name.toLowerCase()}\u0000${id}`, { name, id });
+    });
+    if (h.col.kae !== undefined) { const k = idText(r[h.col.kae]); if (k) kae.add(k); }
+  }
+  return { people: [...people.values()], kae: [...kae] };
+}
+
+// ---------- target by route / KAE uploaded by the admin (MTFL and MDD files) ----------
+
+export type RouteTargetFile = {
+  /** Route (or KAE) code -> pack -> cases, every row of the target month (0s kept). */
+  byLeaf: Record<string, Record<string, number>>;
+  /** Route code -> salesman ID (MTFL only). */
+  salesmen: Record<string, string>;
+  /** Route code -> delivery system as written in the file. */
+  deliverySystems: Record<string, string>;
+  /** Delivery system -> Format (Small, Large, Non-Retail, Wholesale). */
+  formats: Record<string, string>;
+  checks: Check[];
+};
+
+/**
+ * The admin's own target file: MTFL (Period, Delivery System, Route Code,
+ * Salesman ID, Sales Target Category, Cases, Amount, Format) for Operation, or
+ * MDD (Period, Delivery System, KAE / KAM, Sales Target Category, Cases,
+ * Amount, Format) for Key Accounts. Rows of other months are ignored.
+ */
+export function parseRouteTarget(rows: unknown[][], target: Month, idx: PackIndex): RouteTargetFile {
+  const h = findHeader(rows, {
+    period: ['Period', 'Month'], ds: ['Delivery System'], leaf: ['Route Code', 'KAE / KAM', 'KAE / KAM ID', 'KAE ID', 'KAE', 'Route', 'KAM ID'],
+    salesman: ['Salesman ID', 'Salesman'], pack: PACK_NAMES, cases: ['Cases'], format: ['Format'],
+  }, ['leaf', 'pack', 'cases']);
+  const out: RouteTargetFile = { byLeaf: {}, salesmen: {}, deliverySystems: {}, formats: {}, checks: [] };
+  if (!h) return { ...out, checks: [{ level: 'error', text: 'Columns "Route Code" (or "KAE / KAM"), "Sales Target Category" and "Cases" were not found.' }] };
+  const unknown = new Map<string, number>();
+  let other = 0;
+  let bad = 0;
+  for (const r of rows.slice(h.row + 1)) {
+    if (!Array.isArray(r)) continue;
+    const leaf = cellText(r[h.col.leaf!]);
+    const name = cellText(r[h.col.pack!]);
+    if (!leaf || !name || isSubtotal(leaf) || isSubtotal(name)) continue;
+    if (h.col.period !== undefined) {
+      const m = parseMonth(r[h.col.period]);
+      if (m && m !== target) { other++; continue; }
+    }
+    const raw = r[h.col.cases!];
+    const n = raw === null || raw === undefined || raw === '' ? 0 : cellNumber(raw);
+    if (n === null || n < 0) { bad++; continue; }
+    const code = idx.get(packKey(name));
+    if (!code) { unknown.set(name, (unknown.get(name) ?? 0) + n); continue; }
+    const g = (out.byLeaf[leaf] ??= {});
+    g[code] = (g[code] ?? 0) + Math.round(n);
+    const ds = h.col.ds !== undefined ? cellText(r[h.col.ds]) : '';
+    if (ds) out.deliverySystems[leaf] = ds;
+    const sm = h.col.salesman !== undefined ? cellText(r[h.col.salesman]) : '';
+    if (sm) out.salesmen[leaf] = sm;
+    const f = h.col.format !== undefined ? cellText(r[h.col.format]) : '';
+    if (ds && f) out.formats[ds] = f;
+  }
+  out.checks.push(...shiftedCheck(h.row), ...unknownTargetPacks(unknown));
+  if (other) out.checks.push({ level: 'info', text: `${other} row(s) of other months were ignored (only ${target} is used).` });
+  if (bad) out.checks.push({ level: 'warning', text: `${bad} row(s) have Cases that are not a number of 0 or more and were skipped.` });
+  if (Object.keys(out.byLeaf).length === 0) out.checks.push({ level: 'error', text: `No target found for ${target}.` });
+  return out;
+}

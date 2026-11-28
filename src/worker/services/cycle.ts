@@ -7,7 +7,7 @@
 // in the browser with src/shared/calc; the Worker re-checks every total before
 // it stores anything, and computes the CD final fit itself (it is small:
 // packs x departments per category).
-import { cdFinal, cdSubmitProblems, type CdWork, type PackCat } from '../../shared/calc/cd';
+import { cdFinal, cdReconcile, cdSubmitProblems, type CdWork, type PackCat } from '../../shared/calc/cd';
 import type { SessionUser, Workspace } from '../auth';
 import { all, one } from '../db';
 import type { Env } from '../index';
@@ -15,13 +15,16 @@ import { auditStatement } from './audit';
 import { month as parseMonth } from './cycleData';
 import { ApiError, bad, forbidden, notFound, writeBatch, type Obj } from './masters';
 import { createMonth, resetDept, startDept } from './months';
+import { submitNode } from './distribution';
 import { ADMINS, CDS, notifySql, type NotifyText } from './notify';
 import { getRules } from './rulesSettings';
-import { capFor } from '../../shared/rules';
 
 const MAX_VALUE = 1_000_000_000;
 /** calc_json is limited well below D1's 2 MB per value. */
 const MAX_CALC_JSON = 1_800_000;
+
+export const NT_MODES = ['aop', 'pack', 'dept', 'leaf', 'ops'] as const;
+export type NtMode = (typeof NT_MODES)[number];
 
 export type CdStatus = 'draft' | 'with_cd' | 'submitted' | 'returned';
 export type HeadStatus = 'draft' | 'pending' | 'approved' | 'returned';
@@ -33,14 +36,26 @@ export type CycleSettings = {
   deadlines: { head: string | null; manager: string | null; supervisor: string | null };
   /** Months averaged for the splits (default: the 3 before the target month). */
   avgMonths: string[];
-  /** Step 2 option: New Target by pack, by pack & department, or (Key Accounts) by pack, KAM & KAE. */
-  ntMode: 'pack' | 'dept' | 'leaf';
+  /**
+   * Step 2 option: New Target from the AOP of the month, by pack, by pack &
+   * department, (Key Accounts) by pack, KAM & KAE, or (Key Accounts) from the
+   * Operation target of the linked departments (MT, Non Retail) plus an uplift.
+   */
+  ntMode: NtMode;
+  /** With the AOP option: the AOP by pack only (goes to the CD), or by pack and department (already split, no CD). */
+  aopBy?: 'pack' | 'dept';
+  /** Key Accounts: the admin's note on the previous targets (for reference in the calculation). */
+  note?: string;
+  /** Key Accounts: the uplift over the Operation target, from and to (%). */
+  uplift?: { min: number; max: number };
   /**
    * The CAP % nobody may exceed when they change a target (the Commercial
    * Director's New Target per pack, and every level's distribution). Saving
    * it sets the cap of every level in the distribution rules.
    */
   capPct: number | null;
+  /** PAGO forecast closing set by the Admin before the send to the CD: days with sales and days left. */
+  pagoFc?: { on: boolean; done: number; left: number } | null;
 };
 
 /** The Commercial Director's work (CD tabs 1-3). */
@@ -63,6 +78,8 @@ export type CycleDto = {
   heads: HeadDto[];
   /** Workflow progress per department: nodes by status. */
   progress: Record<string, { waiting: number; in_progress: number; submitted: number }>;
+  /** Open shift: the CD moves cases between departments after the send to the Heads. */
+  shift: { at: string } | null;
 };
 
 export type HeadDto = {
@@ -73,7 +90,7 @@ export type HeadDto = {
 
 type CycleRow = {
   ws: Workspace; period: string; settings_json: string; cd_status: CdStatus; cd_comment: string | null; cd_json: string | null;
-  dept_json: string | null; calc_depts: string | null; calc_notes: string | null; version: number; updated_at: string;
+  dept_json: string | null; calc_depts: string | null; calc_notes: string | null; version: number; updated_at: string; shift_json: string | null;
 };
 
 // ---------- helpers ----------
@@ -132,13 +149,13 @@ function packGrid(v: unknown, where: string): Record<string, number> {
 async function cycleRow(db: D1Database, ws: Workspace, period: string): Promise<CycleRow | null> {
   return one<CycleRow>(db,
     `SELECT ws, period, settings_json, cd_status, cd_comment, cd_json, dept_json,
-            (SELECT json_group_array(key) FROM json_each(COALESCE(calc_json, '{}'))) AS calc_depts, calc_notes, version, updated_at
+            (SELECT json_group_array(key) FROM json_each(COALESCE(calc_json, '{}'))) AS calc_depts, calc_notes, version, updated_at, shift_json
      FROM cycles WHERE ws = ? AND period = ?`, ws, period);
 }
 
 async function requireCycle(db: D1Database, ws: Workspace, period: string): Promise<CycleRow> {
   const c = await cycleRow(db, ws, period);
-  if (!c) throw notFound();
+  if (!c) throw new ApiError(404, { error: 'not_found', detail: `the ${ws === 'ka' ? 'Key Account' : 'Operation'} cycle of ${period} is not open yet: open it in step 1` });
   return c;
 }
 
@@ -193,6 +210,8 @@ export async function getCycle(db: D1Database, user: SessionUser, ws: Workspace,
     }));
   if (!full && headList.length === 0 && !m) throw forbidden();
   const settings = c ? { ...defaultSettings(period), ...parseJson<CycleSettings>(c.settings_json) } : defaultSettings(period);
+  if (ws === 'ka' && !c) settings.ntMode = 'ops';
+  settings.cdStep = cdStepOf(ws, settings);
   return {
     ws, period, settings,
     cdStatus: c?.cd_status ?? 'draft',
@@ -206,6 +225,7 @@ export async function getCycle(db: D1Database, user: SessionUser, ws: Workspace,
     monthId: m?.id ?? null,
     heads: headList,
     progress,
+    shift: c?.shift_json ? { at: parseJson<{ at: string }>(c.shift_json)?.at ?? '' } : null,
   };
 }
 
@@ -232,14 +252,41 @@ function parseSettings(body: Obj, period: string): CycleSettings {
     s.cdStep = body.cdStep;
   }
   if (body.ntMode !== undefined) {
-    if (body.ntMode !== 'pack' && body.ntMode !== 'dept' && body.ntMode !== 'leaf') throw bad('ntMode must be pack, dept or leaf');
-    s.ntMode = body.ntMode;
+    if (!(NT_MODES as readonly unknown[]).includes(body.ntMode)) throw bad(`ntMode must be one of ${NT_MODES.join(', ')}`);
+    s.ntMode = body.ntMode as NtMode;
+  }
+  if (body.aopBy !== undefined && body.aopBy !== null) {
+    if (body.aopBy !== 'pack' && body.aopBy !== 'dept') throw bad('aopBy must be pack or dept');
+    s.aopBy = body.aopBy;
+  }
+  if (body.note !== undefined && body.note !== null) {
+    if (typeof body.note !== 'string') throw bad('note must be a text');
+    s.note = body.note.slice(0, 2000);
+  }
+  if (body.uplift !== undefined && body.uplift !== null) {
+    const u = body.uplift as Obj;
+    const pct = (v: unknown, f: string) => {
+      if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > 100) throw bad(`uplift.${f} must be a number from 0 to 100`);
+      return v;
+    };
+    const min = pct(u?.min, 'min');
+    const max = pct(u?.max, 'max');
+    if (min > max) throw bad('uplift.min must not be above uplift.max');
+    s.uplift = { min, max };
   }
   if (body.capPct !== undefined) {
     if (body.capPct !== null && (typeof body.capPct !== 'number' || !Number.isFinite(body.capPct) || body.capPct < 0 || body.capPct > 100)) {
       throw bad('capPct must be a number from 0 to 100');
     }
     s.capPct = body.capPct as number | null;
+  }
+  if (body.pagoFc !== undefined) {
+    const f = body.pagoFc as Obj | null;
+    const day = (v: unknown, k: string) => {
+      if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > 31) throw bad(`pagoFc.${k} must be a whole number from 0 to 31`);
+      return v;
+    };
+    s.pagoFc = f === null ? null : { on: f?.on === true, done: day(f?.done, 'done'), left: day(f?.left, 'left') };
   }
   if (body.avgMonths !== undefined) {
     if (!Array.isArray(body.avgMonths) || body.avgMonths.length === 0 || body.avgMonths.length > 24) throw bad('avgMonths must list 1 to 24 months');
@@ -263,11 +310,21 @@ function parseSettings(body: Obj, period: string): CycleSettings {
 async function capStatements(db: D1Database, cap: number | null): Promise<D1PreparedStatement[]> {
   if (cap === null) return [];
   const rules = await getRules(db);
-  const next = { ...rules, caps: { head: cap, manager: cap, supervisor: cap } };
+  const next = { ...rules, enabled: true, caps: { head: cap, manager: cap, supervisor: cap, kam: cap } };
   return [
     db.prepare(`INSERT INTO settings(key, value) VALUES ('rules_json', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).bind(JSON.stringify(next)),
     db.prepare(`INSERT INTO settings(key, value) VALUES ('cap_pct', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).bind(String(cap)),
   ];
+}
+
+/**
+ * Whether the cycle goes to the Commercial Director: Operation with a target
+ * uploaded by pack or from the AOP (by pack, or by pack and department) does;
+ * only a target uploaded by pack and department skips the CD. Key Accounts
+ * never go to the CD.
+ */
+export function cdStepOf(ws: Workspace, s: Pick<CycleSettings, 'ntMode' | 'aopBy'>): boolean {
+  return ws !== 'ka' && s.ntMode !== 'dept';
 }
 
 export async function saveSettings(db: D1Database, actorId: number, ws: Workspace, periodRaw: string, body: Obj): Promise<CycleSettings> {
@@ -275,6 +332,9 @@ export async function saveSettings(db: D1Database, actorId: number, ws: Workspac
   const cur = await cycleRow(db, ws, period);
   const merged = { ...(cur ? parseJson<Obj>(cur.settings_json) ?? {} : {}), ...body };
   const settings = parseSettings(merged, period);
+  // Key Accounts do not go to the Commercial Director: the target is built from the Operation target.
+  if (ws === 'ka' && !cur && body.ntMode === undefined) settings.ntMode = 'ops';
+  settings.cdStep = cdStepOf(ws, settings);
   const now = new Date().toISOString();
   const caps = body.capPct !== undefined ? await capStatements(db, settings.capPct) : [];
   if (!cur) {
@@ -285,7 +345,7 @@ export async function saveSettings(db: D1Database, actorId: number, ws: Workspac
     ], 'this cycle already exists');
     return settings;
   }
-  if (cur.cd_status === 'with_cd' && body.cdStep === false) throw conflict('the target is with the Commercial Director: recall it first');
+  if (cur.cd_status === 'with_cd' && !settings.cdStep) throw conflict('the target is with the Commercial Director: recall it first');
   const res = await writeBatch(db, [
     updateCycle(db, ws, period, cur.version, 'settings_json = ?', [JSON.stringify(settings)]),
     auditStatement(db, actorId, 'cycle.settings', {}, { ws, period, settings }),
@@ -305,8 +365,9 @@ export async function sendToCd(db: D1Database, actorId: number, ws: Workspace, p
   const period = parseMonth(periodRaw, 'period');
   const c = await requireCycle(db, ws, period);
   const settings = parseJson<CycleSettings>(c.settings_json) ?? defaultSettings(period);
-  if (!settings.cdStep) throw conflict('the Commercial Director step is off for this cycle');
-  if (c.cd_status !== 'draft' && c.cd_status !== 'returned') throw conflict(`the target is ${c.cd_status}`);
+  if (!cdStepOf(ws, settings)) throw conflict('the Commercial Director step is off in step 1 of this cycle: turn it on, or set the department target without the CD');
+  if (c.cd_status === 'with_cd') throw conflict('the target is already with the Commercial Director: recall it first to send it again');
+  if (c.cd_status === 'submitted') throw conflict('the Commercial Director already submitted the split: recall it first to send it again');
   // The starting New Target per pack (worked out by the browser from the uploads, first source found wins).
   const cd = parseJson<CdWork>(c.cd_json);
   let work: CdWork | null = cd;
@@ -315,7 +376,7 @@ export async function sendToCd(db: D1Database, actorId: number, ws: Workspace, p
     work = { nt, ntOk: false, dm: {}, splitNt: {}, basis: {}, gm: {}, colJ: {}, ...(cd ? { gm: cd.gm, colJ: cd.colJ, avgMonths: cd.avgMonths } : {}) };
     if (cd && JSON.stringify(cd.nt) === JSON.stringify(nt)) work = { ...cd, ntOk: cd.ntOk };
   }
-  if (!work || Object.keys(work.nt).length === 0) throw bad('nt (the New Target per pack) is required the first time');
+  if (!work || Object.keys(work.nt).length === 0) throw bad('there is no New Target per pack yet: complete step 2 (New Target) first');
   const res = await writeBatch(db, [
     updateCycle(db, ws, period, c.version, `cd_status = 'with_cd', cd_comment = NULL, cd_json = ?`, [JSON.stringify(work)]),
     auditStatement(db, actorId, 'cycle.cd_send', {}, { ws, period }),
@@ -329,6 +390,15 @@ export async function recallFromCd(db: D1Database, actorId: number, ws: Workspac
   const period = parseMonth(periodRaw, 'period');
   const c = await requireCycle(db, ws, period);
   if (c.cd_status !== 'with_cd' && c.cd_status !== 'submitted') throw conflict(`the target is ${c.cd_status}`);
+  // A shift with the CD is cancelled: the split the Heads have stays.
+  if (c.shift_json && c.cd_status === 'with_cd') {
+    const r = await writeBatch(db, [
+      updateCycle(db, ws, period, c.version, `cd_status = 'submitted', cd_json = COALESCE(?, cd_json), shift_json = NULL`, [parseJson<{ cd?: string | null }>(c.shift_json)?.cd ?? null]),
+      auditStatement(db, actorId, 'cycle.shift_cancel', {}, { ws, period }),
+    ], 'conflict');
+    checkApplied(r);
+    return;
+  }
   if (c.cd_status === 'submitted') {
     const sent = await one<{ n: number }>(db,
       `SELECT COUNT(*) AS n FROM head_approvals h JOIN departments d ON d.id = h.dept_id
@@ -342,6 +412,93 @@ export async function recallFromCd(db: D1Database, actorId: number, ws: Workspac
       txt(`Admin recalled the ${period} target.`, `استرجع المسؤول هدف ${period}.`), `/cd/${ws}/${period}`),
   ], 'conflict');
   checkApplied(res);
+}
+
+// ---------- shift between departments after the send to the Heads ----------
+
+/**
+ * Admin: the target already went to the Heads and the CD needs to move cases
+ * from one department to another. The CD's split opens again (the Heads keep
+ * working meanwhile); after the CD submits, Admin re-sends the departments
+ * whose target changed (resendShifted).
+ */
+export async function shiftToCd(db: D1Database, actorId: number, ws: Workspace, periodRaw: string): Promise<void> {
+  const period = parseMonth(periodRaw, 'period');
+  const c = await requireCycle(db, ws, period);
+  const settings = parseJson<CycleSettings>(c.settings_json) ?? defaultSettings(period);
+  if (!cdStepOf(ws, settings)) throw conflict('this cycle has no Commercial Director step');
+  if (c.cd_status !== 'submitted') throw conflict('the Commercial Director has not submitted the split yet');
+  const shift = { at: new Date().toISOString(), from: parseJson(c.dept_json) ?? {}, cd: c.cd_json };
+  const res = await writeBatch(db, [
+    updateCycle(db, ws, period, c.version, `cd_status = 'with_cd', cd_comment = NULL, shift_json = ?`, [JSON.stringify(shift)]),
+    auditStatement(db, actorId, 'cycle.cd_shift', {}, { ws, period }),
+    notifySql(db, CDS(ws).sql, CDS(ws).args, 'cd_sent',
+      txt(`Admin sent the ${period} target back to shift cases between departments.`, `أعاد المسؤول هدف ${period} لنقل كميات بين الأقسام.`), `/cd/${ws}/${period}`),
+  ], 'conflict');
+  checkApplied(res);
+}
+
+/** Route targets of a department scaled to its new target, pack by pack, in whole cases (largest remainder). */
+export function rescaleRoutes(routes: Record<string, Record<string, number>>, target: Record<string, number>): Record<string, Record<string, number>> {
+  const names = Object.keys(routes);
+  const out: Record<string, Record<string, number>> = Object.fromEntries(names.map((r) => [r, {}]));
+  if (!names.length) return out;
+  const totalOf = (r: string) => Object.values(routes[r] ?? {}).reduce((a, b) => a + b, 0);
+  const packs = new Set([...Object.keys(target), ...names.flatMap((r) => Object.keys(routes[r] ?? {}))]);
+  for (const p of packs) {
+    const t = Math.max(0, Math.round(target[p] ?? 0));
+    if (t === 0) continue;
+    let w = names.map((r) => routes[r]?.[p] ?? 0);
+    if (!w.some((x) => x > 0)) w = names.map(totalOf);
+    if (!w.some((x) => x > 0)) w = names.map(() => 1);
+    const sum = w.reduce((a, b) => a + b, 0);
+    const raw = w.map((x) => (t * x) / sum);
+    const base = raw.map(Math.floor);
+    let left = t - base.reduce((a, b) => a + b, 0);
+    const order = raw.map((x, i) => [x - base[i]!, i] as const).sort((a, b) => b[0] - a[0]);
+    for (let k = 0; left > 0; k = (k + 1) % order.length, left--) base[order[k]![1]]! += 1;
+    names.forEach((r, i) => { if (base[i]! > 0) out[r]![p] = base[i]!; });
+  }
+  return out;
+}
+
+/**
+ * Admin, after the CD submitted the shift: every department whose target
+ * changed gets its route targets scaled to the new target and is sent to its
+ * Head again (restarted: the Head and the team start over on the new target).
+ * Departments whose target did not change keep running as they are.
+ */
+export async function resendShifted(db: D1Database, env: Env, actorId: number, ws: Workspace, periodRaw: string): Promise<{ resent: string[]; unchanged: string[] }> {
+  const period = parseMonth(periodRaw, 'period');
+  const c = await requireCycle(db, ws, period);
+  if (!c.shift_json) throw conflict('there is no shift to send');
+  if (c.cd_status !== 'submitted') throw conflict('the Commercial Director has not submitted the shift yet');
+  const dept = parseJson<Record<string, Record<string, number>>>(c.dept_json) ?? {};
+  const calcRow = await one<{ calc_json: string | null }>(db, `SELECT calc_json FROM cycles WHERE ws = ? AND period = ?`, ws, period);
+  const calc = parseJson<Record<string, Record<string, Record<string, number>>>>(calcRow?.calc_json ?? null) ?? {};
+  const names = new Map((await all<{ id: number; name: string }>(db, `SELECT id, name FROM departments WHERE workspace = ?`, ws)).map((d) => [String(d.id), d.name]));
+  const changed: string[] = [];
+  const unchanged: string[] = [];
+  for (const [d, routes] of Object.entries(calc)) {
+    const sums: Record<string, number> = {};
+    for (const g of Object.values(routes)) for (const [p, n] of Object.entries(g)) sums[p] = (sums[p] ?? 0) + n;
+    const t = dept[d] ?? {};
+    const same = [...new Set([...Object.keys(t), ...Object.keys(sums)])].every((p) => Math.round(t[p] ?? 0) === Math.round(sums[p] ?? 0));
+    if (same) { unchanged.push(d); continue; }
+    calc[d] = rescaleRoutes(routes, t);
+    changed.push(d);
+  }
+  const res = await writeBatch(db, [
+    updateCycle(db, ws, period, c.version, `calc_json = ?, shift_json = NULL`, [JSON.stringify(calc)]),
+    auditStatement(db, actorId, 'cycle.shift_send', {}, { ws, period, changed }),
+  ], 'conflict');
+  checkApplied(res);
+  for (const d of changed) {
+    const h = await one<{ status: HeadStatus }>(db, `SELECT status FROM head_approvals WHERE period = ? AND dept_id = ?`, period, Number(d));
+    if (h && (h.status === 'pending' || h.status === 'approved' || h.status === 'returned')) await restartHead(db, actorId, ws, period, Number(d));
+    if (h && h.status !== 'draft') await sendToHead(db, actorId, ws, period, Number(d), env);
+  }
+  return { resent: changed.map((d) => names.get(d) ?? d), unchanged: unchanged.map((d) => names.get(d) ?? d) };
 }
 
 function parseCdWork(v: unknown): CdWork {
@@ -419,28 +576,18 @@ export async function submitCd(db: D1Database, user: SessionUser, ws: Workspace,
   const period = parseMonth(periodRaw, 'period');
   const c = await requireCycle(db, ws, period);
   if (c.cd_status !== 'with_cd') throw conflict('the target is not with the Commercial Director');
-  const work = parseJson<CdWork>(c.cd_json);
-  if (!work) throw conflict('there is nothing to submit');
+  const saved = parseJson<CdWork>(c.cd_json);
+  if (!saved) throw conflict('there is nothing to submit');
+  // The CD changes the target freely: the New Target follows the split.
+  const work = cdReconcile(saved);
   const depts = (await all<{ id: number }>(db, `SELECT id FROM departments WHERE workspace = ? ORDER BY id`, ws)).map((d) => String(d.id));
   const cats = await packCategories(db);
   const problems = cdSubmitProblems(work, cats, depts);
-  // The CAP %: no pack's New Target may move more than the cap from the uploaded target.
-  const settings = { ...defaultSettings(period), ...parseJson<CycleSettings>(c.settings_json) };
-  if (settings.capPct !== null) {
-    const up = await one<{ v: string }>(db, `SELECT values_json AS v FROM data_months WHERE ws = ? AND kind = 'new_target' AND month = ?`, ws, period);
-    const byPack = parseJson<{ byPack?: Record<string, number> }>(up?.v ?? null)?.byPack;
-    if (byPack) {
-      const over = Object.keys(work.nt).filter((p) => {
-        const base = Math.round(byPack[p] ?? 0);
-        return Math.abs((work.nt[p] ?? 0) - base) > capFor(base, settings.capPct!);
-      });
-      if (over.length) problems.push(`${over.length} packs move more than the ${settings.capPct}% cap: ${over.slice(0, 10).join(', ')}`);
-    }
-  }
+  // The CAP % is not applied to the Commercial Director (it limits the distribution levels only).
   if (problems.length) throw new ApiError(400, { error: 'invalid_request', detail: problems.join('; ') });
   const dept = cdFinal(work, cats, depts);
   const res = await writeBatch(db, [
-    updateCycle(db, ws, period, c.version, `cd_status = 'submitted', cd_comment = NULL, dept_json = ?`, [JSON.stringify(dept)]),
+    updateCycle(db, ws, period, c.version, `cd_status = 'submitted', cd_comment = NULL, dept_json = ?, cd_json = ?`, [JSON.stringify(dept), JSON.stringify(work)]),
     auditStatement(db, user.id, 'cycle.cd_submit', {}, { ws, period }),
     notifySql(db, ADMINS, [], 'cd_submitted',
       txt(`The Commercial Director submitted the ${period} split. You can calculate the route targets.`,
@@ -455,7 +602,7 @@ export async function setDeptTarget(db: D1Database, actorId: number, ws: Workspa
   const period = parseMonth(periodRaw, 'period');
   const c = await requireCycle(db, ws, period);
   const settings = parseJson<CycleSettings>(c.settings_json) ?? defaultSettings(period);
-  if (settings.cdStep) throw conflict('the Commercial Director step is on: the department target comes from the CD');
+  if (cdStepOf(ws, settings)) throw conflict('the Commercial Director step is on: the department target comes from the CD');
   const raw = body.dept;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw bad('dept must be an object of department id to packs');
   const ids = new Set((await all<{ id: number }>(db, `SELECT id FROM departments WHERE workspace = ?`, ws)).map((d) => String(d.id)));
@@ -518,9 +665,19 @@ export async function applyCalc(db: D1Database, actorId: number, ws: Workspace, 
     next[d] = routes;
     applied.push(d);
   }
+  // Departments no longer in this workspace, and routes that moved to another department, are dropped:
+  // a route is counted under one department only.
+  for (const k of Object.keys(next)) {
+    const known = routesOf.get(k);
+    const routes = next[k];
+    if (!known || !routes || typeof routes !== 'object') { delete next[k]; continue; }
+    for (const r of Object.keys(routes as Obj)) if (!known.has(r)) delete (routes as Obj)[r];
+  }
   const json = JSON.stringify(next);
   if (json.length > MAX_CALC_JSON) throw new ApiError(413, { error: 'too_many_rows', detail: 'the calculation is too large' });
-  const notes = body.notes === undefined ? null : JSON.stringify(body.notes).slice(0, 20000);
+  // Notes too long to keep whole are left out (a cut would not be JSON any more).
+  const nj = body.notes === undefined ? null : JSON.stringify(body.notes);
+  const notes = nj !== null && nj.length <= 200000 ? nj : null;
   const res = await writeBatch(db, [
     updateCycle(db, ws, period, c.version, 'calc_json = ?, calc_notes = COALESCE(?, calc_notes)', [json, notes]),
     auditStatement(db, actorId, 'cycle.calc_apply', {}, { ws, period, applied, kept }),
@@ -543,12 +700,12 @@ async function deptOfWs(db: D1Database, ws: Workspace, deptId: number): Promise<
  * missing packs = 0, salesman ID from the latest previous target), and marks
  * the Head's approval pending.
  */
-export async function sendToHead(db: D1Database, actorId: number, ws: Workspace, periodRaw: string, deptId: number): Promise<{ monthId: number }> {
+export async function sendToHead(db: D1Database, actorId: number, ws: Workspace, periodRaw: string, deptId: number, env?: Env): Promise<{ monthId: number }> {
   const period = parseMonth(periodRaw, 'period');
   await deptOfWs(db, ws, deptId);
   const c = await requireCycle(db, ws, period);
   const settings = parseJson<CycleSettings>(c.settings_json) ?? defaultSettings(period);
-  if (settings.cdStep && c.cd_status !== 'submitted') throw conflict('the Commercial Director has not submitted the split yet');
+  if (cdStepOf(ws, settings) && c.cd_status !== 'submitted') throw conflict('the Commercial Director has not submitted the split yet');
   const head = await one<{ status: HeadStatus }>(db, `SELECT status FROM head_approvals WHERE period = ? AND dept_id = ?`, period, deptId);
   if (head && (head.status === 'pending' || head.status === 'approved')) throw conflict(`already ${head.status}: restart the channel first`);
   const calcRow = await one<{ j: string | null }>(db,
@@ -564,10 +721,25 @@ export async function sendToHead(db: D1Database, actorId: number, ws: Workspace,
   }
   const state = await one<{ state: string }>(db, `SELECT state FROM month_depts WHERE month_id = ? AND dept_id = ?`, m.id, deptId);
   if (state && state.state !== 'loading') throw conflict('this department is already running in the month: restart the channel first');
+  await linkPeople(db, ws, deptId);
   // A clean slate for this department (earlier send, returned target) with the live tree.
   await resetDept(db, actorId, m.id, deptId);
 
-  const codes = (JSON.parse(m.packs_json) as { code: string }[]).map((p) => p.code);
+  const snap = JSON.parse(m.packs_json) as { code: string; grp: string; sort: number }[];
+  // Packs turned on after the month was opened: added to the month's pack list now.
+  const wanted = new Set<string>();
+  for (const g of Object.values(calc)) for (const [p, n] of Object.entries(g)) if (n > 0) wanted.add(p);
+  const missing = [...wanted].filter((p) => !snap.some((x) => x.code === p));
+  if (missing.length) {
+    const found = await all<{ code: string; grp: string; sort: number }>(db,
+      `SELECT code, grp, sort FROM packs WHERE code IN (SELECT value FROM json_each(?))`, JSON.stringify(missing));
+    const unknown = missing.filter((p) => !found.some((f) => f.code === p));
+    if (unknown.length) throw conflict(`pack ${unknown.join(', ')} is not in the pack list (Settings › Packs): add it there, or recalculate without it`);
+    snap.push(...found);
+    snap.sort((a, b) => a.sort - b.sort || a.code.localeCompare(b.code));
+    await db.prepare(`UPDATE months SET packs_json = ? WHERE id = ?`).bind(JSON.stringify(snap), m.id).run();
+  }
+  const codes = snap.map((p) => p.code);
   const codeSet = new Set(codes);
   const leaves = await all<{ id: number; node_id: number; route_code: string; delivery_system: string }>(db,
     `SELECT l.id, l.node_id, l.route_code, l.delivery_system FROM leaves l
@@ -593,6 +765,10 @@ export async function sendToHead(db: D1Database, actorId: number, ws: Workspace,
     }
     return { leaf_id: l.id, node_id: l.node_id, delivery_system: l.delivery_system, route_code: l.route_code, values_json: JSON.stringify(values) };
   });
+  // Salesman IDs of an uploaded MTFL file win over the previous target's.
+  const sm = parseJson<{ source?: string; salesmen?: Record<string, unknown> }>(c.calc_notes)?.salesmen;
+  const uploadedSalesmen: Record<string, string> = {};
+  if (sm && typeof sm === 'object') for (const [r, v] of Object.entries(sm)) if (typeof v === 'string' && v && !r.includes('"')) uploadedSalesmen[r] = v;
   const now = new Date().toISOString();
   const fileId = `(SELECT MAX(id) FROM month_files WHERE month_id = ? AND dept_id = ?)`;
   await writeBatch(db, [
@@ -602,12 +778,13 @@ export async function sendToHead(db: D1Database, actorId: number, ws: Workspace,
       `INSERT INTO month_leaves(month_id, leaf_id, node_id, dept_id, file_id, delivery_system, route_code, salesman_id, values_json)
        SELECT ?, json_extract(value, '$.leaf_id'), json_extract(value, '$.node_id'), ?, ${fileId},
               json_extract(value, '$.delivery_system'), json_extract(value, '$.route_code'),
-              (SELECT json_extract(dr.extra_json, '$.salesmanId') FROM data_routes dr
+              COALESCE(json_extract(?, '$."' || json_extract(value, '$.route_code') || '"'),
+                (SELECT json_extract(dr.extra_json, '$.salesmanId') FROM data_routes dr
                 WHERE dr.ws = ? AND dr.kind = 'prev_target' AND dr.route_code = json_extract(value, '$.route_code')
-                ORDER BY dr.month DESC LIMIT 1),
+                ORDER BY dr.month DESC LIMIT 1)),
               json_extract(value, '$.values_json')
        FROM json_each(?) WHERE true`,
-    ).bind(m.id, deptId, m.id, deptId, ws, JSON.stringify(rows)),
+    ).bind(m.id, deptId, m.id, deptId, JSON.stringify(uploadedSalesmen), ws, JSON.stringify(rows)),
     db.prepare(
       `INSERT INTO head_approvals(period, dept_id, status, sent_total, sent_json, sent_at, decided_at, comment)
        VALUES (?, ?, 'pending', ?, ?, ?, NULL, NULL)
@@ -620,7 +797,75 @@ export async function sendToHead(db: D1Database, actorId: number, ws: Workspace,
         `هدف ${period} (${total.toLocaleString('en-US')} صندوق) بانتظار موافقتك. الموعد: ${settings.deadlines.head ?? '-'}.`),
       `/approve/${ws}/${period}`),
   ], 'conflict');
+  // The Head reviews and distributes to the managers before approving: their turn opens now.
+  if (env) await startDept(db, env, actorId, m.id, deptId);
   return { monthId: m.id };
+}
+
+/**
+ * One send for both workspaces: sending an Operation department also sends the
+ * Key Account department(s) linked to it, so the Head gets both targets at once.
+ * A linked Key Account department is sent when its target is calculated and it
+ * is not already with the Head; otherwise the reason is reported back.
+ */
+export async function sendToHeadAll(db: D1Database, actorId: number, ws: Workspace, periodRaw: string, deptId: number, env?: Env):
+  Promise<{ monthId: number; ka: { deptId: number; name: string; sent: boolean; reason?: string }[] }> {
+  const r = await sendToHead(db, actorId, ws, periodRaw, deptId, env);
+  const ka: { deptId: number; name: string; sent: boolean; reason?: string }[] = [];
+  if (ws !== 'ops') return { ...r, ka };
+  const period = parseMonth(periodRaw, 'period');
+  const linked = await all<{ id: number; name: string }>(db,
+    `SELECT id, name FROM departments WHERE workspace = 'ka' AND ops_dept_id = ? ORDER BY sort, code`, deptId);
+  for (const d of linked) {
+    const h = await one<{ status: HeadStatus }>(db, `SELECT status FROM head_approvals WHERE period = ? AND dept_id = ?`, period, d.id);
+    if (h && (h.status === 'pending' || h.status === 'approved')) { ka.push({ deptId: d.id, name: d.name, sent: false, reason: `already ${h.status}` }); continue; }
+    try {
+      await sendToHead(db, actorId, 'ka', period, d.id, env);
+      ka.push({ deptId: d.id, name: d.name, sent: true });
+    } catch (x) {
+      ka.push({ deptId: d.id, name: d.name, sent: false, reason: x instanceof Error ? x.message : String(x) });
+    }
+  }
+  return { ...r, ka };
+}
+
+/**
+ * Before a send: the Key Account Head is the linked Operation Head, and every
+ * person without an account gets the active account of the same name. A Head
+ * nobody can sign in as is refused (nobody would receive the target).
+ */
+async function linkPeople(db: D1Database, ws: Workspace, deptId: number): Promise<void> {
+  if (ws === 'ka') {
+    await db.prepare(
+      `UPDATE nodes SET manager_user_id = (SELECT o.manager_user_id FROM nodes o JOIN departments k ON k.ops_dept_id = o.dept_id
+                                           WHERE k.id = nodes.dept_id AND o.parent_id IS NULL)
+       WHERE dept_id = ? AND parent_id IS NULL
+         AND (SELECT o.manager_user_id FROM nodes o JOIN departments k ON k.ops_dept_id = o.dept_id WHERE k.id = nodes.dept_id AND o.parent_id IS NULL) IS NOT NULL`,
+    ).bind(deptId).run();
+  }
+  await db.prepare(
+    `UPDATE nodes SET manager_user_id = (SELECT MIN(u.id) FROM users u WHERE u.active = 1 AND lower(trim(u.name)) = lower(trim(nodes.name)))
+     WHERE dept_id = ? AND manager_user_id IS NULL
+       AND (SELECT COUNT(*) FROM users u WHERE u.active = 1 AND lower(trim(u.name)) = lower(trim(nodes.name))) = 1`,
+  ).bind(deptId).run();
+  const root = await one<{ name: string; u: number | null }>(db, `SELECT name, manager_user_id AS u FROM nodes WHERE dept_id = ? AND parent_id IS NULL`, deptId);
+  if (root && root.u === null) {
+    throw conflict(ws === 'ka'
+      ? `${root.name} has no Head account: link this Key Account department to its Operation Head (Key Account cycle › Setup), or create the account in Users`
+      : `${root.name} has no account: create the accounts in Users first`);
+  }
+}
+
+/** People of a department who cannot sign in (no account): they would not receive their turn. */
+export async function peopleWithoutAccount(db: D1Database, ws: Workspace): Promise<Record<string, string[]>> {
+  const rows = await all<{ dept_id: number; name: string }>(db,
+    `SELECT n.dept_id, n.name FROM nodes n JOIN departments d ON d.id = n.dept_id
+     WHERE d.workspace = ? AND n.manager_user_id IS NULL
+       AND NOT EXISTS (SELECT 1 FROM users u WHERE u.active = 1 AND lower(trim(u.name)) = lower(trim(n.name)))
+     ORDER BY n.name`, ws);
+  const out: Record<string, string[]> = {};
+  for (const r of rows) (out[String(r.dept_id)] ??= []).push(r.name);
+  return out;
 }
 
 async function headContext(db: D1Database, user: SessionUser, ws: Workspace, period: string, deptId: number) {
@@ -635,19 +880,67 @@ async function headContext(db: D1Database, user: SessionUser, ws: Workspace, per
   return h;
 }
 
+/**
+ * One approval for both workspaces: approving the Operation target also
+ * approves the linked Key Account target waiting for the same Head, so the
+ * KAMs get their turn too. A Key Account target that cannot be approved is
+ * reported back (the Head can approve it on its own card).
+ */
+export async function approveHeadAll(db: D1Database, env: Env, user: SessionUser, ws: Workspace, periodRaw: string, deptId: number): Promise<{ ka: { deptId: number; name: string; approved: boolean; reason?: string }[] }> {
+  await approveHead(db, env, user, ws, periodRaw, deptId);
+  const ka: { deptId: number; name: string; approved: boolean; reason?: string }[] = [];
+  if (ws !== 'ops') return { ka };
+  const period = parseMonth(periodRaw, 'period');
+  const linked = await all<{ id: number; name: string }>(db,
+    `SELECT d.id, d.name FROM departments d JOIN head_approvals h ON h.dept_id = d.id AND h.period = ?
+     WHERE d.workspace = 'ka' AND d.ops_dept_id = ? AND h.status = 'pending' ORDER BY d.sort, d.code`, period, deptId);
+  for (const d of linked) {
+    try {
+      await approveHead(db, env, user, 'ka', period, d.id);
+      ka.push({ deptId: d.id, name: d.name, approved: true });
+    } catch (x) {
+      ka.push({ deptId: d.id, name: d.name, approved: false, reason: x instanceof Error ? x.message : String(x) });
+    }
+  }
+  return { ka };
+}
+
 /** Head approves: the department starts and the Head's own split opens. */
 export async function approveHead(db: D1Database, env: Env, user: SessionUser, ws: Workspace, periodRaw: string, deptId: number): Promise<void> {
   const period = parseMonth(periodRaw, 'period');
   const h = await headContext(db, user, ws, period, deptId);
   if (!h.month_id) throw conflict('the month is not open');
-  await startDept(db, env, user.id, h.month_id, deptId);
+  const state = await one<{ state: string }>(db, `SELECT state FROM month_depts WHERE month_id = ? AND dept_id = ?`, h.month_id, deptId);
+  if (state?.state === 'loading') {
+    // Sent before the Head could distribute first: open the Head's turn (they distribute after approving).
+    await startDept(db, env, user.id, h.month_id, deptId);
+  } else {
+    // Approving sends the Head's split (as saved on the distribution screen, else as sent) to the managers.
+    const root = await one<{ node_id: number; status: string }>(db,
+      `SELECT node_id, status FROM month_nodes WHERE month_id = ? AND dept_id = ? AND parent_id IS NULL`, h.month_id, deptId);
+    if (root?.status === 'in_progress') await submitNode(db, env, h.month_id, root.node_id, user.id, 'draft', { asManager: true });
+  }
+  await markHeadApproved(db, user, ws, period, deptId, h.month_id);
+}
+
+async function markHeadApproved(db: D1Database, user: SessionUser, ws: Workspace, period: string, deptId: number, monthId: number): Promise<void> {
   await writeBatch(db, [
     db.prepare(`UPDATE head_approvals SET status = 'approved', decided_at = ? WHERE period = ? AND dept_id = ? AND status = 'pending'`)
       .bind(new Date().toISOString(), period, deptId),
-    auditStatement(db, user.id, 'cycle.head_approve', { monthId: h.month_id }, { ws, period, deptId }),
+    auditStatement(db, user.id, 'cycle.head_approve', { monthId }, { ws, period, deptId }),
     notifySql(db, ADMINS, [], 'head_approved',
       txt(`${user.name} approved the ${period} target.`, `وافق ${user.name} على هدف ${period}.`), `/admin/cycle/${ws}/${period}`),
   ], 'conflict');
+}
+
+/** After a submit on the distribution screen: the Head's own split approves a pending target. */
+export async function approveOnRootSubmit(db: D1Database, user: SessionUser, monthId: number, nodeId: number): Promise<void> {
+  const r = await one<{ dept_id: number; period: string; ws: Workspace; status: HeadStatus }>(db,
+    `SELECT mn.dept_id, m.period, d.workspace AS ws, h.status FROM month_nodes mn
+       JOIN months m ON m.id = mn.month_id JOIN departments d ON d.id = mn.dept_id
+       JOIN head_approvals h ON h.period = m.period AND h.dept_id = mn.dept_id
+      WHERE mn.month_id = ? AND mn.node_id = ? AND mn.parent_id IS NULL`, monthId, nodeId);
+  if (r?.status === 'pending') await markHeadApproved(db, user, r.ws, r.period, r.dept_id, monthId);
 }
 
 /** Head returns the target to Admin with a comment. */
@@ -656,6 +949,8 @@ export async function returnHead(db: D1Database, user: SessionUser, ws: Workspac
   const comment = typeof body.comment === 'string' ? body.comment.trim().slice(0, 2000) : '';
   if (!comment) throw bad('a comment is required to return the target');
   const h = await headContext(db, user, ws, period, deptId);
+  // The Head's distribution turn was opened on send: close it again so the admin can re-send.
+  if (h.month_id) await resetDept(db, user.id, h.month_id, deptId);
   await writeBatch(db, [
     db.prepare(`UPDATE head_approvals SET status = 'returned', decided_at = ?, comment = ? WHERE period = ? AND dept_id = ? AND status = 'pending'`)
       .bind(new Date().toISOString(), comment, period, deptId),
@@ -680,10 +975,12 @@ export async function restartHead(db: D1Database, actorId: number, ws: Workspace
 }
 
 /** Targets waiting for the signed-in Head's approval (any workspace). */
-export async function myApprovals(db: D1Database, userId: number): Promise<{ ws: Workspace; period: string; deptId: number; deptName: string; status: HeadStatus; sentTotal: number | null; sentByCategory: Record<string, number> | null; sentAt: string | null; deadline: string | null; comment: string | null }[]> {
-  const rows = await all<{ ws: Workspace; period: string; dept_id: number; dept_name: string; status: HeadStatus; sent_total: number | null; sent_json: string | null; sent_at: string | null; settings_json: string | null; comment: string | null }>(db,
+export async function myApprovals(db: D1Database, userId: number): Promise<{ ws: Workspace; period: string; deptId: number; deptName: string; status: HeadStatus; sentTotal: number | null; sentByCategory: Record<string, number> | null; sentAt: string | null; deadline: string | null; comment: string | null; monthId: number | null; rootNodeId: number | null; rootStatus: string | null }[]> {
+  const rows = await all<{ ws: Workspace; period: string; dept_id: number; dept_name: string; status: HeadStatus; sent_total: number | null; sent_json: string | null; sent_at: string | null; settings_json: string | null; comment: string | null; month_id: number | null; root_status: string | null }>(db,
     `SELECT d.workspace AS ws, h.period, h.dept_id, d.name AS dept_name, h.status, h.sent_total, h.sent_json, h.sent_at, h.comment,
-            (SELECT settings_json FROM cycles c WHERE c.ws = d.workspace AND c.period = h.period) AS settings_json
+            (SELECT settings_json FROM cycles c WHERE c.ws = d.workspace AND c.period = h.period) AS settings_json,
+            (SELECT id FROM months m WHERE m.period = h.period) AS month_id,
+            (SELECT mn.status FROM month_nodes mn JOIN months m ON m.id = mn.month_id WHERE m.period = h.period AND mn.node_id = r.id) AS root_status, r.id AS root_id
      FROM head_approvals h JOIN departments d ON d.id = h.dept_id
      JOIN nodes r ON r.dept_id = d.id AND r.parent_id IS NULL
      WHERE r.manager_user_id = ? AND h.status <> 'draft'
@@ -692,6 +989,7 @@ export async function myApprovals(db: D1Database, userId: number): Promise<{ ws:
     ws: r.ws, period: r.period, deptId: r.dept_id, deptName: r.dept_name, status: r.status, sentTotal: r.sent_total,
     sentByCategory: parseJson<Record<string, number>>(r.sent_json), sentAt: r.sent_at,
     deadline: parseJson<CycleSettings>(r.settings_json)?.deadlines.head ?? null, comment: r.comment,
+    monthId: r.month_id, rootNodeId: r.root_status ? (r as unknown as { root_id: number }).root_id : null, rootStatus: r.root_status,
   }));
 }
 
@@ -740,4 +1038,26 @@ export async function headSummary(db: D1Database, user: SessionUser, ws: Workspa
     nodes,
     leaves: leaves.map((l) => ({ nodeId: l.nodeId, routeCode: l.routeCode, values: parseJson<Record<string, number>>(l.values_json) ?? {} })),
   };
+}
+
+/**
+ * Admin › Target cycle: revert the target month to the beginning. The cycle
+ * (settings, CD work, department target, calculation), the Heads' approvals,
+ * the month's distribution of this workspace and the month's New Target upload
+ * are cleared; the shared history (sales, AOP, previous targets) is kept.
+ */
+export async function revertCycle(db: D1Database, actorId: number, ws: Workspace, periodRaw: string): Promise<void> {
+  const period = parseMonth(periodRaw, 'period');
+  const depts = await all<{ id: number }>(db, `SELECT id FROM departments WHERE workspace = ?`, ws);
+  const m = await one<{ id: number }>(db, `SELECT id FROM months WHERE period = ?`, period);
+  if (m) {
+    const inMonth = new Set((await all<{ dept_id: number }>(db, `SELECT dept_id FROM month_depts WHERE month_id = ?`, m.id)).map((r) => r.dept_id));
+    for (const d of depts) if (inMonth.has(d.id)) await resetDept(db, actorId, m.id, d.id);
+  }
+  await writeBatch(db, [
+    db.prepare(`DELETE FROM head_approvals WHERE period = ? AND dept_id IN (SELECT id FROM departments WHERE workspace = ?)`).bind(period, ws),
+    db.prepare(`DELETE FROM cycles WHERE ws = ? AND period = ?`).bind(ws, period),
+    db.prepare(`DELETE FROM data_months WHERE ws = ? AND kind = 'new_target' AND month = ?`).bind(ws, period),
+    auditStatement(db, actorId, 'cycle.revert', { monthId: m?.id }, { ws, period }),
+  ], 'conflict');
 }

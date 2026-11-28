@@ -76,7 +76,7 @@ const heldBelow = (monthId: number, nodeId: number) => ({
  * pending (some descendant is held): holds do not nest.
  */
 export async function reopenNode(
-  db: D1Database, env: Env, actorId: number, monthId: number, nodeId: number,
+  db: D1Database, env: Env, actorId: number, monthId: number, nodeId: number, opts: { team?: boolean } = {},
 ): Promise<{ status: 'in_progress'; version: number }> {
   const held = heldBelow(monthId, nodeId);
   const [r] = await batch(db, [
@@ -100,13 +100,18 @@ export async function reopenNode(
   const reopened = guard(monthId, nodeId, v + 1, 'in_progress');
   const res = await batch(db, [
     auditIf(db, { sql: `(${asRead.sql} AND ${notHeld.sql})`, args: [...asRead.args, ...notHeld.args] },
-      actorId, 'node.reopen', monthId, nodeId, { version: v + 1 }, now),
+      actorId, 'node.reopen', monthId, nodeId, { version: v + 1, team: !!opts.team }, now),
     db.prepare(
       `UPDATE month_nodes SET status = 'in_progress', opened_at = ?, submitted_at = NULL, version = version + 1
        WHERE month_id = ? AND node_id = ? AND version = ? AND status = 'submitted' AND ${notHeld.sql}`,
     ).bind(now, monthId, nodeId, v, ...notHeld.args),
-    db.prepare(
-      `${SUBTREE}
+    // team: everyone below is returned too (their work is dropped and each gets a fresh turn after the
+    // node resubmits); otherwise they are held and restored when the node resubmits unchanged.
+    db.prepare(opts.team
+      ? `${SUBTREE}
+       UPDATE month_nodes SET held_status = NULL, status = 'waiting', draft_json = NULL, opened_at = NULL, submitted_at = NULL, version = version + 1
+       WHERE month_id = ? AND node_id IN (SELECT id FROM sub) AND held_status IS NULL AND ${reopened.sql}`
+      : `${SUBTREE}
        UPDATE month_nodes SET held_status = status, status = 'waiting', version = version + 1
        WHERE month_id = ? AND node_id IN (SELECT id FROM sub) AND held_status IS NULL AND ${reopened.sql}`,
     ).bind(monthId, nodeId, monthId, monthId, ...reopened.args),

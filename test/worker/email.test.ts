@@ -163,3 +163,15 @@ describe('sendDeadlineReminders', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
+
+describe('target summary in the turn email', () => {
+  it('sums the starting split by category and puts a button link', async () => {
+    const { targetSummary } = await import('../../src/worker/email');
+    const s = targetSummary(JSON.stringify({ 'l:1': { A: 10, W: 5 }, 'l:2': { A: 2.4, L: 1 } }), new Map([['A', 'CSD'], ['W', 'Water'], ['L', 'LRB-Others']]));
+    expect(s).toEqual([{ label: 'CSD', cases: 12 }, { label: 'Water', cases: 5 }, { label: 'LRB-Others', cases: 1 }, { label: 'Total', cases: 18 }]);
+    const m = turnOpened({ name: 'N', period: '2026-12', nodeName: 'Sup A', deadline: '2026-12-05', link: 'https://x/m/1/n/2', summary: s });
+    expect(m.text).toContain('CSD: 12 cases');
+    expect(m.text).toContain('Deadline to finalize: 2026-12-05');
+    expect(m.html).toContain('href="https://x/m/1/n/2"');
+  });
+});

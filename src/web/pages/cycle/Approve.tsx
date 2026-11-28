@@ -2,6 +2,7 @@
 // Admin sent, as a summary by manager (open a manager to see the supervisors)
 // and by pack; approve (the distribution to managers opens) or return with a
 // comment.
+import { inPackOrder } from '../../cycle/compute';
 import { useMemo, useState } from 'preact/hooks';
 import { CATEGORIES, subCategoryByName, subsOf, type Category } from '../../../shared/calc/packs';
 import type { Workspace } from '../../../worker/auth';
@@ -97,7 +98,7 @@ function HeadSummary({ a, meta }: { a: Approval; meta: PackMeta }) {
         <div class="tablewrap cy-tall"><table class="ad-table cy-table">
           <thead><tr><th>{tc('pack')}</th><th class="num">{tc('target')}</th>{managers.map((m) => <th key={m} class="num">{agg.names.get(m)}</th>)}</tr></thead>
           <tbody>{CATEGORIES.flatMap((c) => {
-            const inCat = packs.filter((p) => catOf(p) === c).sort();
+            const inCat = inPackOrder(packs.filter((p) => catOf(p) === c), Object.keys(meta));
             if (!inCat.length) return [];
             return [
               <tr key={c} class="sub l1"><td>{c}</td><td class="num">{fmtNum(catSum(rootSum, c))}</td>{managers.map((m) => <td key={m} class="num">{fmtNum(catSum(agg.sums.get(m), c))}</td>)}</tr>,
@@ -120,9 +121,10 @@ function HeadSummary({ a, meta }: { a: Approval; meta: PackMeta }) {
 type Approval = {
   ws: Workspace; period: string; deptId: number; deptName: string; status: HeadStatus; sentTotal: number | null;
   sentByCategory: Record<string, number> | null; sentAt: string | null; deadline: string | null; comment: string | null;
+  monthId: number | null; rootNodeId: number | null; rootStatus: string | null;
 };
 
-function Item({ a, onDone, meta }: { a: Approval; onDone: () => void; meta: PackMeta }) {
+function Item({ a, onDone, meta, withKa = false }: { a: Approval; onDone: () => void; meta: PackMeta; withKa?: boolean }) {
   const [lang] = useLang();
   const [comment, setComment] = useState('');
   const [busy, setBusy] = useState(false);
@@ -154,14 +156,26 @@ function Item({ a, onDone, meta }: { a: Approval; onDone: () => void; meta: Pack
       {a.status !== 'draft' && <HeadSummary a={a} meta={meta} />}
       {a.status === 'pending' && (
         <>
+          {a.rootStatus === 'in_progress' && a.monthId && a.rootNodeId && (
+            <div class="banner info" data-testid="review-first">
+              {tc('reviewFirst')}
+              <a class="btn" href={`/m/${a.monthId}/n/${a.rootNodeId}`} data-testid="review-distribute">{tc('reviewDistribute')}</a>
+            </div>
+          )}
           <div class="actions">
-            <button type="button" class="btn primary" disabled={busy} onClick={() => void act('approve')}>{tc('approveDistribute')}</button>
+            <button type="button" class="btn primary" disabled={busy} onClick={() => void act('approve')}>
+              {a.rootStatus === 'in_progress' ? tc('approveSendMgrs') : tc('approveDistribute')}
+            </button>
           </div>
+          {withKa && <p class="small muted" data-testid="approve-with-ka">{tc('approveAlsoKa')}</p>}
           <textarea rows={2} value={comment} placeholder={tc('returnHeadHelp')} aria-label={tc('comment')} onInput={(e) => setComment(e.currentTarget.value)} />
           <div class="actions">
             <button type="button" class="btn danger" disabled={busy || !comment.trim()} onClick={() => void act('return')}>{tc('returnToAdmin')}</button>
           </div>
         </>
+      )}
+      {a.status === 'approved' && a.rootStatus === 'in_progress' && a.monthId && a.rootNodeId && (
+        <div class="actions"><a class="btn primary" href={`/m/${a.monthId}/n/${a.rootNodeId}`}>{tc('reviewDistribute')}</a></div>
       )}
       {a.status === 'returned' && a.comment && <p class="small">{tc('yourComment')}: <q>{a.comment}</q></p>}
       {err && <div class="alert" role="alert">{err}</div>}
@@ -179,7 +193,8 @@ export function Approve() {
       <PageHead title={tc('approveTitle')} intro={tc('approveIntro')} />
       {list.error && <div class="alert" role="alert">{list.error}</div>}
       {list.data && items.length === 0 && <p class="card muted">{tc('noApprovals')}</p>}
-      {items.map((a) => <Item key={`${a.ws}${a.period}${a.deptId}`} a={a} meta={meta.data ?? {}} onDone={list.reload} />)}
+      {items.map((a) => <Item key={`${a.ws}${a.period}${a.deptId}`} a={a} meta={meta.data ?? {}} onDone={list.reload}
+        withKa={a.ws === 'ops' && items.some((k) => k.ws === 'ka' && k.period === a.period && k.status === 'pending')} />)}
     </section>
   );
 }

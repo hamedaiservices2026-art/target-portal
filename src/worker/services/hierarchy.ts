@@ -71,7 +71,8 @@ async function requireManager(db: D1Database, id: number): Promise<void> {
 
 // ---------- nodes ----------
 
-export type NodeDto = { id: number; parent_id: number | null; name: string; manager_user_id: number | null };
+/** dept_id is given only when all departments are listed. */
+export type NodeDto = { id: number; parent_id: number | null; name: string; manager_user_id: number | null; dept_id?: number };
 type NodeRow = NodeDto & { dept_id: number };
 const NODE_COLS = 'id, parent_id, name, manager_user_id';
 const toNode = ({ id, parent_id, name, manager_user_id }: NodeRow): NodeDto => ({ id, parent_id, name, manager_user_id });
@@ -81,7 +82,7 @@ const nodeConflict = (msg: string): string =>
 
 export async function listNodes(db: D1Database, dept: number | null): Promise<NodeDto[]> {
   return dept === null
-    ? all<NodeDto>(db, `SELECT ${NODE_COLS} FROM nodes ORDER BY id`)
+    ? all<NodeDto>(db, `SELECT ${NODE_COLS}, dept_id FROM nodes ORDER BY id`)
     : all<NodeDto>(db, `SELECT ${NODE_COLS} FROM nodes WHERE dept_id = ? ORDER BY id`, dept);
 }
 

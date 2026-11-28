@@ -46,7 +46,7 @@ export interface Workspace {
   /** The cap % of this node's level (rule 3, and rule 2 for people without an exception). */
   capPct: number;
   /** Rules 2 and 3 on/off and each team member's own cap % (null = the level cap). */
-  rules: { rule2: boolean; rule3: boolean; personCapPct: (number | null)[] };
+  rules: { rule2: boolean; rule3: boolean; personCapPct: (number | null)[]; capOn?: boolean; base?: 'own' | 'group' };
   packs: MonthPack[];
   totals: Grid;
   children: { key: ChildKey; label: string; sub: string; starts: Grid; values: Grid }[];
@@ -75,6 +75,8 @@ export interface Dept extends Tree {
   month: { id: number; period: string; deadline: string | null };
   deptId: number;
   deptCode: string;
+  /** The department's workspace: a Key Account manager's split uses the KAM threshold. */
+  ws?: string;
   capPct: number;
   rules: RulesSettings;
   packs: MonthPack[];
@@ -95,10 +97,13 @@ function depthOf(d: Tree, nodeId: number): number {
 export function ruleContext(d: Dept, nodeId: number, labels: string[]): { capPct: number; level: 'head' | 'manager' | 'supervisor'; opts: RuleOptions; personCapPct: (number | null)[] } {
   const level = levelOf(depthOf(d, nodeId));
   const caps = personCaps(d.rules, labels);
+  // The person splitting (a Head or manager named in the exceptions) has their own cap for the whole split.
+  const own = personCaps(d.rules, [d.nodes.get(nodeId)?.name ?? ''])[0];
+  const on = d.rules.enabled;
   return {
-    capPct: d.rules.caps[level],
+    capPct: own ?? (level === 'manager' && d.ws === 'ka' ? d.rules.caps.kam ?? d.rules.caps.manager : d.rules.caps[level]),
     level,
-    opts: { rule2: d.rules.rule2, rule3: d.rules.rule3, personCapPct: caps },
+    opts: { rule2: on && d.rules.rule2, rule3: on && d.rules.rule3, personCapPct: caps, personBase: d.rules.base },
     personCapPct: caps.map((c) => c ?? null),
   };
 }
@@ -167,7 +172,7 @@ export async function loadDept(db: D1Database, monthId: number, nodeId: number, 
   const deptOf = `(SELECT dept_id FROM month_nodes WHERE month_id = ? AND node_id = ?)`;
   const stmts: D1PreparedStatement[] = [
     db.prepare(
-      `SELECT m.id, m.period, m.deadline, m.packs_json, n.dept_id, d.code AS dept_code,
+      `SELECT m.id, m.period, m.deadline, m.packs_json, n.dept_id, d.code AS dept_code, d.workspace AS ws,
               (SELECT value FROM settings WHERE key = 'cap_pct') AS cap_pct,
               (SELECT value FROM settings WHERE key = 'rules_json') AS rules_json
        FROM month_nodes n JOIN months m ON m.id = n.month_id JOIN departments d ON d.id = n.dept_id
@@ -184,7 +189,7 @@ export async function loadDept(db: D1Database, monthId: number, nodeId: number, 
   if (scope !== 'none') stmts.push(leafQuery(db, monthId, nodeId, scope, true));
   const [head, nodesRes, leavesRes] = await batch(db, stmts);
   const h = head!.results[0] as
-    | { id: number; period: string; deadline: string | null; packs_json: string; dept_id: number; dept_code: string; cap_pct: string | null; rules_json: string | null }
+    | { id: number; period: string; deadline: string | null; packs_json: string; dept_id: number; dept_code: string; ws: string | null; cap_pct: string | null; rules_json: string | null }
     | undefined;
   if (!h) throw notFound();
 
@@ -202,6 +207,7 @@ export async function loadDept(db: D1Database, monthId: number, nodeId: number, 
     month: { id: h.id, period: h.period, deadline: h.deadline },
     deptId: h.dept_id,
     deptCode: h.dept_code,
+    ws: h.ws ?? 'ops',
     capPct: capPctFrom(h.cap_pct),
     rules: parseRules(h.rules_json, capPctFrom(h.cap_pct)),
     packs,
@@ -383,7 +389,7 @@ export async function getWorkspace(db: D1Database, user: SessionUser, monthId: n
     month: d.month,
     node: { id: nodeId, name: node.name, status: node.status, deptCode: d.deptCode, deptId: d.deptId, level: rc.level, workspace: wsRow?.workspace === 'ka' ? 'ka' : 'ops' },
     capPct: rc.capPct,
-    rules: { rule2: d.rules.rule2, rule3: d.rules.rule3, personCapPct: rc.personCapPct },
+    rules: { rule2: rc.opts.rule2 ?? true, rule3: rc.opts.rule3 ?? true, personCapPct: rc.personCapPct, capOn: d.rules.enabled, base: d.rules.base },
     packs: d.packs,
     totals: gridOf(totals.get(nodeId)!, d.codes),
     children,
@@ -532,6 +538,13 @@ export async function submitWith(
   if (node.status !== 'in_progress') throw conflict('not_in_progress');
   if (node.parent_id !== null && d.nodes.get(node.parent_id)?.status !== 'submitted') throw conflict('parent_not_submitted');
   if (opts.expectedVersion !== undefined && opts.expectedVersion !== node.version) throw stale();
+  // A supervisor submits only once every route of theirs has a salesman ID (the admin push is not held back).
+  // Supervisors only (not the Head's approval), Operation only (Key Account routes are accounts).
+  if (opts.asManager && node.parent_id !== null) {
+    const missing = (d.leavesByNode.get(nodeId) ?? []).filter((l) => !l.salesman_id?.trim()).map((l) => l.route_code);
+    const isOps = missing.length > 0 && (await one<{ w: string | null }>(db, `SELECT workspace AS w FROM departments WHERE id = ?`, d.deptId))?.w !== 'ka';
+    if (missing.length && isOps) throw new ApiError(400, { error: 'salesman_missing', detail: `Add the salesman ID of route(s) ${missing.slice(0, 20).join(', ')} before submitting.`, issues: missing });
+  }
 
   const { codes } = d;
   const totals = subtreeTotals(d, nodeId);

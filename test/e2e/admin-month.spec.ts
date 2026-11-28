@@ -132,7 +132,8 @@ test('admin opens a month, uploads the checked forecast, starts, pushes, exports
   const task = mpage.getByTestId('task').filter({ hasText: ROOT });
   await expect(task.getByTestId('task-status')).toHaveText('In progress');
   await task.getByRole('link', { name: 'Open' }).click();
-  await mpage.getByRole('button', { name: 'Submit to next level' }).click();
+  // The top of the department (the Head's level) sends the split to the managers.
+  await mpage.getByRole('button', { name: 'Approve and send to managers' }).click();
   await mpage.getByRole('button', { name: 'Yes, submit' }).click();
   await expect(mpage.getByTestId('read-only')).toBeVisible();
   await mctx.close();

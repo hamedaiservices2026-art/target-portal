@@ -1,218 +1,372 @@
-// Admin: users. Create, edit, disable/enable, reset password. The API never returns password hashes.
-import { useState } from 'preact/hooks';
-import type { UserDto } from '../../../worker/services/masters';
+// Admin › Users, laid out like the v16 prototype: one account per person of
+// the sales hierarchy (Channel Head, Sales Manager, Sales Supervisor) and the
+// Commercial Director. Each account shows its roles, status and first
+// password; the admin can reset or change a password, unlock, disable and
+// download the logins to send. The API never returns password hashes.
+import { useMemo, useState } from 'preact/hooks';
+import type { AccountDto, AccountRole } from '../../../worker/services/accounts';
 import { api } from '../../api';
-import { ConfirmButton, errText, Field, LoadError, PageHead, useResource } from '../../components/AdminBits';
-import { ImportPanel } from '../../components/ImportPanel';
+import { errText, LoadError, PageHead, useResource } from '../../components/AdminBits';
+import { writeXlsx } from '../../excel';
+import { fmtDateTime } from '../../format';
 import { t, useLang } from '../../i18n';
+import { tc } from '../../cycle/i18n';
 import { useSession } from '../../session';
 
-type Form = { username: string; name: string; email: string; role: 'admin' | 'manager'; lang: 'en' | 'ar'; password: string };
-const EMPTY: Form = { username: '', name: '', email: '', role: 'manager', lang: 'ar', password: '' };
+type Data = { accounts: AccountDto[]; missing: number };
+const ws = (w?: string) => (w === 'ka' ? tc('wsKa') : tc('wsOps'));
 
-function validate(f: Form, creating: boolean): string | null {
-  if (!f.username.trim() || /\s/.test(f.username.trim())) return t('adUserErrUsername');
-  if (!f.name.trim()) return t('adUserErrName');
-  if (f.email.trim() && !/^[^\s@]+@[^\s@]+$/.test(f.email.trim())) return t('adUserErrEmail');
-  if (creating && f.password.length < 8) return t('adPasswordShort');
-  return null;
+export function roleText(r: AccountRole): string {
+  if (r.kind === 'admin') return tc('urAdmin');
+  if (r.kind === 'cd') return `${tc('ppCd')} · ${ws(r.ws)}`;
+  // Key Accounts: the manager level is the KAM, the level under it the KAE.
+  const ka = r.ws === 'ka';
+  const pos = r.kind === 'head' ? (ka ? tc('urKaHead') : tc('ppHead')) : r.kind === 'manager' ? (ka ? 'KAM' : tc('ppManager')) : (ka ? 'KAE' : tc('ppSupervisor'));
+  return `${pos} · ${r.dept ?? '—'}`;
+}
+const STATUS: Record<AccountDto['status'], [string, string]> = {
+  disabled: ['urDisabled', 'muted'], locked: ['urLocked', 'bad'], norole: ['urNoRole', 'muted'], pending: ['urPending', 'warn'], active: ['urActive', 'ok'],
+};
+const statusText = (s: AccountDto['status']) => tc(STATUS[s][0] as 'urActive');
+
+function newPassword(): string {
+  const L = 'ABCDEFGHJKLMNPQRSTUVWXYZ', D = '23456789';
+  const a = new Uint32Array(8);
+  crypto.getRandomValues(a);
+  return Array.from(a, (x, i) => (i < 4 ? L[x % L.length] : D[x % D.length])).join('');
 }
 
-function UserForm({ editing, me, onDone }: { editing: UserDto | null; me: number | undefined; onDone: (msg: string) => void }) {
+type Kind = 'cd' | 'admin' | 'head' | 'manager' | 'supervisor' | 'kam' | 'kae' | 'other' | `custom:${string}`;
+type NodeLite = { id: number; name: string; parent_id: number | null; manager_user_id: number | null; dept_id?: number };
+type DeptLite = { id: number; workspace?: 'ops' | 'ka' };
+/** The hierarchy level each position links to, and in which workspace. */
+const LEVEL: Partial<Record<Kind, { depth: number; ws: 'ops' | 'ka' }>> = {
+  head: { depth: 0, ws: 'ops' }, manager: { depth: 1, ws: 'ops' }, supervisor: { depth: 2, ws: 'ops' },
+  kam: { depth: 1, ws: 'ka' }, kae: { depth: 2, ws: 'ka' },
+};
+
+/** Hierarchy people of one level and workspace (Head 0, Manager/KAM 1, Supervisor/KAE 2+) without an account yet. */
+function openNodes(nodes: NodeLite[], depts: DeptLite[], depth: number, wsWanted: 'ops' | 'ka'): NodeLite[] {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const wsOf = new Map(depts.map((d) => [d.id, d.workspace ?? 'ops']));
+  const depthOf = (n: NodeLite) => { let d = 0; for (let p = n.parent_id; p !== null && d < 20; p = byId.get(p)?.parent_id ?? null) d++; return d; };
+  return nodes.filter((n) => n.manager_user_id === null && (wsOf.get(n.dept_id ?? 0) ?? 'ops') === wsWanted && (depth === 2 ? depthOf(n) >= 2 : depthOf(n) === depth))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function AddAccount({ taken, positions, onPositions, onDone }: { taken: Set<string>; positions: string[]; onPositions: (p: string[]) => void; onDone: (msg: string) => void }) {
   useLang();
-  const [f, setF] = useState<Form>(editing
-    ? { username: editing.username, name: editing.name, email: editing.email ?? '', role: editing.role, lang: editing.lang, password: '' }
-    : EMPTY);
+  const nodesRes = useResource<{ nodes: NodeLite[] }>('/api/admin/nodes');
+  const deptRes = useResource<{ departments: DeptLite[] }>('/api/admin/departments');
+  const [newPos, setNewPos] = useState<string | null>(null);
+  const [name, setName] = useState('');
+  const [username, setUsername] = useState('');
+  const [kind, setKind] = useState<Kind>('supervisor');
+  const [nodeId, setNodeId] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const self = editing !== null && editing.id === me;
-  const set = <K extends keyof Form>(k: K, v: Form[K]) => setF((x) => ({ ...x, [k]: v }));
-
-  async function submit(e: Event) {
-    e.preventDefault();
-    const problem = validate(f, !editing);
-    if (problem) return setErr(problem);
-    setBusy(true);
-    setErr(null);
+  const level = LEVEL[kind];
+  const depth = level?.depth;
+  const choices = level === undefined ? [] : openNodes(nodesRes.data?.nodes ?? [], deptRes.data?.departments ?? [], level.depth, level.ws);
+  async function addPosition() {
+    const v = (newPos ?? '').trim();
+    if (!v) return;
     try {
-      const body = { username: f.username.trim(), name: f.name.trim(), email: f.email.trim() || null, role: f.role, lang: f.lang };
-      if (editing) await api('PATCH', `/api/admin/users/${editing.id}`, body);
-      else await api('POST', '/api/admin/users', { ...body, password: f.password });
-      onDone(editing ? t('adSaved') : t('adUserCreated'));
+      const r = await api<{ positions: string[] }>('PUT', '/api/admin/positions', { positions: [...positions, v] });
+      onPositions(r.positions);
+      setKind(`custom:${v}`);
+      setNewPos(null);
     } catch (x) {
       setErr(errText(x));
+    }
+  }
+  function pickNode(v: string) {
+    setNodeId(v);
+    const n = choices.find((x) => String(x.id) === v);
+    if (n && !name.trim()) { setName(n.name); if (!username) setUsername(slug(n.name)); }
+  }
+  async function save(e: Event) {
+    e.preventDefault();
+    setErr(null);
+    const u = username.trim().toLowerCase();
+    if (!name.trim() || !u || /\s/.test(u)) return setErr(tc('urNeedName'));
+    if (taken.has(u)) return setErr(tc('urTaken', { u }));
+    setBusy(true);
+    try {
+      const pw = newPassword();
+      const position = kind.startsWith('custom:') ? kind.slice(7) : kind === 'other' ? tc('urOther') : null;
+      const { user } = await api<{ user: { id: number } }>('POST', '/api/admin/users', { username: u, name: name.trim(), role: kind === 'admin' ? 'admin' : 'manager', password: pw, ...(position ? { position } : {}) });
+      if (kind === 'cd') await api('PUT', `/api/admin/users/${user.id}/cd`, { cd: ['ops', 'ka'] });
+      if (nodeId && depth !== undefined) await api('PATCH', `/api/admin/nodes/${nodeId}`, { managerUserId: user.id });
+      onDone(tc('urCreated', { u, pw }));
+    } catch (x) {
+      setErr(errText(x));
+    } finally {
       setBusy(false);
     }
   }
-
   return (
-    <form class="card ad-form" onSubmit={submit} data-testid="user-form" noValidate>
-      <h2>{editing ? t('adUserEdit') : t('adUserAdd')}</h2>
-      <div class="grid">
-        <Field id="u-username" label={t('username')} hint={t('adUserUsernameHint')}>
-          <input id="u-username" value={f.username} autocomplete="off" onInput={(e) => set('username', e.currentTarget.value)} />
-        </Field>
-        <Field id="u-name" label={t('adFullName')}>
-          <input id="u-name" value={f.name} onInput={(e) => set('name', e.currentTarget.value)} />
-        </Field>
-        <Field id="u-email" label={t('adEmail')} hint={t('adOptional')}>
-          <input id="u-email" type="email" value={f.email} onInput={(e) => set('email', e.currentTarget.value)} />
-        </Field>
-        <Field id="u-role" label={t('adRole')} hint={self ? t('adUserSelfRole') : t('adRoleHint')}>
-          <select id="u-role" value={f.role} disabled={self} onChange={(e) => set('role', e.currentTarget.value as Form['role'])}>
-            <option value="manager">{t('roleManager')}</option>
-            <option value="admin">{t('roleAdmin')}</option>
-          </select>
-        </Field>
-        <Field id="u-lang" label={t('adLanguage')}>
-          <select id="u-lang" value={f.lang} onChange={(e) => set('lang', e.currentTarget.value as Form['lang'])}>
-            <option value="ar">العربية</option>
-            <option value="en">English</option>
-          </select>
-        </Field>
-        {!editing && (
-          <Field id="u-password" label={t('password')} hint={t('adPasswordHint')}>
-            <input id="u-password" type="password" autocomplete="new-password" value={f.password} onInput={(e) => set('password', e.currentTarget.value)} />
-          </Field>
+    <form class="card ad-card" onSubmit={save} data-testid="add-account">
+      <h2>{tc('urAddTitle')}</h2>
+      <div class="toolbar">
+        <label>{tc('ppPosition')} <select value={kind} data-testid="add-kind" onChange={(e) => { setKind(e.currentTarget.value as Kind); setNodeId(''); }}>
+          <option value="supervisor">{tc('ppSupervisor')}</option>
+          <option value="manager">{tc('ppManager')}</option>
+          <option value="head">{tc('ppHead')}</option>
+          <option value="kam">{tc('urKam')}</option>
+          <option value="kae">{tc('urKae')}</option>
+          <option value="other">{tc('urOther')}</option>
+          {positions.map((p) => <option key={p} value={`custom:${p}`}>{p}</option>)}
+          <option value="cd">{tc('ppCd')}</option>
+          <option value="admin">{tc('urAdmin')}</option>
+        </select></label>
+        {newPos === null
+          ? <button type="button" class="btn link" data-testid="add-position" onClick={() => setNewPos('')}>{tc('urAddPosition')}</button>
+          : (
+            <span class="toolbar">
+              <input aria-label={tc('urNewPosition')} placeholder={tc('urNewPosition')} value={newPos} onInput={(e) => setNewPos(e.currentTarget.value)} />
+              <button type="button" class="btn" onClick={() => void addPosition()}>{tc('urAddIt')}</button>
+              <button type="button" class="btn link" onClick={() => setNewPos(null)}>{tc('cancel')}</button>
+            </span>
+          )}
+        {depth !== undefined && (
+          <label>{tc('urLinkTo')} <select value={nodeId} data-testid="add-node" onChange={(e) => pickNode(e.currentTarget.value)}>
+            <option value="">{tc('urNoLink')}</option>
+            {choices.map((n) => <option key={n.id} value={String(n.id)}>{n.name}</option>)}
+          </select></label>
         )}
+        <label>{tc('ppName')} <input value={name} onInput={(e) => { const v = e.currentTarget.value; setName(v); if (!username || username === slug(name)) setUsername(slug(v)); }} /></label>
+        <label>{t('username')} <input value={username} onInput={(e) => setUsername(e.currentTarget.value)} autocapitalize="none" spellcheck={false} /></label>
+        <button type="submit" class="btn primary" disabled={busy}>{tc('urCreate')}</button>
       </div>
+      <p class="muted small">{tc('urAddHelp')}</p>
       {err && <div class="alert" role="alert">{err}</div>}
-      <div class="actions">
-        <button type="submit" class="btn primary" disabled={busy}>{busy ? t('dsSaving') : t('adUserSave')}</button>
-        <button type="button" class="btn" onClick={() => onDone('')}>{t('dsCancel')}</button>
-      </div>
     </form>
   );
 }
 
-function ResetPassword({ user, onDone }: { user: UserDto; onDone: (msg: string) => void }) {
+/** Inline edit of a person's name and username. */
+function EditAccount({ a, taken, onDone }: { a: AccountDto; taken: Set<string>; onDone: (msg: string) => void }) {
   useLang();
-  const [pw, setPw] = useState('');
+  const [name, setName] = useState(a.name);
+  const [username, setUsername] = useState(a.username);
+  const [emp, setEmp] = useState(a.employeeId ?? '');
+  const [mail, setMail] = useState(a.email ?? '');
   const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  async function submit(e: Event) {
+  async function save(e: Event) {
     e.preventDefault();
-    if (pw.length < 8) return setErr(t('adPasswordShort'));
-    setBusy(true);
+    const u = username.trim().toLowerCase();
+    if (!name.trim() || !u || /\s/.test(u)) return setErr(tc('urNeedName'));
+    if (u !== a.username && taken.has(u)) return setErr(tc('urTaken', { u }));
+    setErr(null);
     try {
-      await api('POST', `/api/admin/users/${user.id}/password`, { password: pw });
-      onDone(t('adPasswordReset'));
+      await api('PATCH', `/api/admin/users/${a.id}`, { name: name.trim(), username: u, email: mail.trim() });
+      if (emp.trim() !== (a.employeeId ?? '')) await api('PUT', `/api/admin/users/${a.id}/employee-id`, { employeeId: emp.trim() });
+      onDone(tc('urEdited', { u }));
     } catch (x) {
       setErr(errText(x));
-      setBusy(false);
     }
   }
   return (
-    <form class="inline-form" onSubmit={submit}>
-      <label for={`pw-${user.id}`}>{t('adNewPasswordFor')} {user.username}</label>
-      <input id={`pw-${user.id}`} type="password" autocomplete="new-password" value={pw} onInput={(e) => setPw(e.currentTarget.value)} />
-      <button type="submit" class="btn primary" disabled={busy}>{t('adPasswordSet')}</button>
-      <button type="button" class="btn" onClick={() => onDone('')}>{t('dsCancel')}</button>
-      <small class="muted">{t('adPasswordHint')} {t('adPasswordSignsOut')}</small>
+    <form class="toolbar" onSubmit={save} data-testid="edit-account">
+      <label>{tc('ppName')} <input value={name} onInput={(e) => setName(e.currentTarget.value)} /></label>
+      <label>{t('username')} <input value={username} autocapitalize="none" spellcheck={false} onInput={(e) => setUsername(e.currentTarget.value)} /></label>
+      <label>{tc('urEmpId')} <input value={emp} data-testid="edit-emp" onInput={(e) => setEmp(e.currentTarget.value)} /></label>
+      <label>{tc('urEmail')} <input type="email" value={mail} data-testid="edit-email" onInput={(e) => setMail(e.currentTarget.value)} /></label>
+      <button type="submit" class="btn primary">{tc('save')}</button>
+      <button type="button" class="btn" onClick={() => onDone('')}>{tc('cancel')}</button>
+      {err && <div class="alert" role="alert">{err}</div>}
+    </form>
+  );
+}
+const slug = (s: string) => s.normalize('NFKD').replace(/[^\w\s.-]/g, '').trim().toLowerCase().replace(/[\s_-]+/g, '.').replace(/\.+/g, '.').replace(/^\.|\.$/g, '');
+
+function SetPassword({ a, onDone }: { a: AccountDto; onDone: (msg: string) => void }) {
+  useLang();
+  const [pw, setPw] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  async function save(e: Event) {
+    e.preventDefault();
+    if (pw.length < 8) return setErr(t('adPasswordShort'));
+    setErr(null);
+    try {
+      await api('POST', `/api/admin/users/${a.id}/password`, { password: pw });
+      onDone(tc('urPwSet', { u: a.username }));
+    } catch (x) {
+      setErr(errText(x));
+    }
+  }
+  return (
+    <form class="toolbar" onSubmit={save}>
+      <label>{tc('urNewPwFor', { u: a.username })} <input type="text" value={pw} autocomplete="new-password" onInput={(e) => setPw(e.currentTarget.value)} /></label>
+      <button type="submit" class="btn primary">{tc('urSetPw')}</button>
+      <button type="button" class="btn" onClick={() => setPw(newPassword())}>{tc('urSuggest')}</button>
+      <button type="button" class="btn" onClick={() => onDone('')}>{tc('cancel')}</button>
+      <span class="muted small">{tc('urSetPwHelp')}</span>
       {err && <div class="alert" role="alert">{err}</div>}
     </form>
   );
 }
 
 export function Users() {
-  useLang();
+  const [lang] = useLang();
   const { user: me } = useSession();
-  const res = useResource<{ users: UserDto[] }>('/api/admin/users');
+  const res = useResource<Data>('/api/admin/accounts');
   const [q, setQ] = useState('');
-  const [form, setForm] = useState<'new' | number | null>(null);
-  const [resetting, setResetting] = useState<number | null>(null);
-  const [flash, setFlash] = useState('');
-  const [err, setErr] = useState<string | null>(null);
-  const [importing, setImporting] = useState(false);
+  const [flash, setFlash] = useState<{ ok: boolean; text: string } | null>(null);
+  const [arm, setArm] = useState<number | null>(null);
+  const [setting, setSetting] = useState<number | null>(null);
+  const [editing, setEditing] = useState<number | null>(null);
+  const [armDel, setArmDel] = useState<number | null>(null);
+  const posRes = useResource<{ positions: string[] }>('/api/admin/positions');
+  const [positions, setPositions] = useState<string[] | null>(null);
+  const posList = positions ?? posRes.data?.positions ?? [];
+  const [adding, setAdding] = useState(false);
+  const [sync, setSync] = useState<{ done: number; left: number } | null>(null);
+  const [made, setMade] = useState<string[][]>([]);
 
-  const done = (msg: string) => {
-    setForm(null);
-    setResetting(null);
-    if (msg) setFlash(msg);
+  const accounts = res.data?.accounts ?? [];
+  const shown = useMemo(() => {
+    const f = q.trim().toLowerCase();
+    return accounts.filter((a) => !f || [a.employeeId ?? '', a.name, a.username, a.email ?? '', ...a.roles.map(roleText)].join(' ').toLowerCase().includes(f));
+  }, [accounts, q, lang]);
+  const count = (s: AccountDto['status']) => accounts.filter((a) => a.status === s).length;
+
+  const act = async (fn: () => Promise<string>) => {
+    setFlash(null);
+    try {
+      setFlash({ ok: true, text: await fn() });
+    } catch (x) {
+      setFlash({ ok: false, text: errText(x) });
+    }
+    setArm(null);
     res.reload();
   };
-  async function setActive(u: UserDto, active: boolean) {
-    setErr(null);
+  const reset = (a: AccountDto) => act(async () => {
+    const r = await api<{ password: string }>('POST', `/api/admin/users/${a.id}/password`, {});
+    return tc('urResetDone', { u: a.username, pw: r.password });
+  });
+  const remove = (a: AccountDto) => act(async () => { await api('DELETE', `/api/admin/users/${a.id}`); setArmDel(null); return tc('urDeleted', { u: a.username }); });
+  const unlock = (a: AccountDto) => act(async () => { await api('POST', `/api/admin/users/${a.id}/unlock`, {}); return tc('urUnlocked', { u: a.username }); });
+  const toggle = (a: AccountDto) => act(async () => {
+    await api('PATCH', `/api/admin/users/${a.id}`, { active: !a.active });
+    return tc(a.active ? 'urDisabledMsg' : 'urEnabledMsg', { u: a.username });
+  });
+
+  async function createMissing() {
+    setFlash(null);
+    const out: string[][] = [];
     try {
-      await api('PATCH', `/api/admin/users/${u.id}`, { active });
-      setFlash(active ? t('adUserEnabled') : t('adUserDisabled'));
-      res.reload();
+      for (let i = 0; i < 500; i++) {
+        const r = await api<{ created: { name: string; username: string; password: string } | null; remaining: number }>('POST', '/api/admin/accounts/sync', {});
+        if (r.created) out.push([r.created.name, r.created.username, r.created.password]);
+        setSync({ done: out.length, left: r.remaining });
+        if (!r.created || r.remaining === 0) break;
+      }
+      setFlash({ ok: true, text: tc('urSynced', { n: out.length }) });
     } catch (x) {
-      setErr(errText(x));
+      setFlash({ ok: false, text: errText(x) });
+    } finally {
+      setSync(null);
+      setMade(out);
+      res.reload();
     }
   }
 
-  const needle = q.trim().toLowerCase();
-  const users = (res.data?.users ?? []).filter((u) =>
-    !needle || [u.username, u.name, u.email ?? ''].some((s) => s.toLowerCase().includes(needle)));
-  const editing = typeof form === 'number' ? res.data?.users.find((u) => u.id === form) ?? null : null;
+  function downloadLogins() {
+    const rows = accounts.filter((a) => a.status !== 'disabled' && a.roles.length)
+      .map((a) => [a.employeeId ?? '', a.name, a.username, a.firstPw ?? tc('urChangedByUser'), a.email ?? '', a.roles.map(roleText).join('; '), statusText(a.status)]);
+    void writeXlsx('user_logins.xlsx', [tc('urEmpId'), tc('ppName'), t('username'), tc('urFirstPw'), tc('urEmail'), tc('urRoles'), tc('status')], rows);
+  }
+
+  /** IDs from a sales file (HOD / Manager / Supervisor / KAM / KAE ID columns), matched to the accounts by name. */
+  async function readIds(file: File | undefined) {
+    if (!file) return;
+    await act(async () => {
+      const { readSheets } = await import('../../excel');
+      const { parsePeopleIds } = await import('../../cycle/parsers');
+      const people: { name: string; id: string }[] = [];
+      const kae: string[] = [];
+      for (const sh of await readSheets(file)) { const r = parsePeopleIds(sh.data); people.push(...r.people); kae.push(...r.kae); }
+      if (!people.length && !kae.length) throw new Error(tc('urIdsNone'));
+      const r = await api<{ matched: number; notFound: string[] }>('POST', '/api/admin/employee-ids', { people, kae });
+      return tc('urIdsDone', { n: r.matched }) + (r.notFound.length ? ` ${tc('urIdsNotFound', { list: r.notFound.slice(0, 15).join(', ') })}` : '');
+    });
+  }
 
   return (
     <section data-testid="admin-users">
-      <PageHead title={t('navUsers')} intro={t('adUsersIntro')}>
-        <span class="act">
-          <button type="button" class="btn" aria-expanded={importing} onClick={() => setImporting(!importing)}>
-            {importing ? t('imClose') : t('imOpen')}
-          </button>
-          <button type="button" class="btn primary" onClick={() => { setFlash(''); setForm('new'); }}>{t('adUserAddBtn')}</button>
-        </span>
-      </PageHead>
-      {importing && <ImportPanel kind="users" onApplied={res.reload} />}
-      {flash && <div class="banner ok" role="status">{flash}</div>}
-      {err && <div class="alert" role="alert">{err}</div>}
-      {form !== null && <UserForm key={String(form)} editing={editing} me={me?.id} onDone={done} />}
+      <PageHead title={t('navUsers')} intro={tc('urIntro')} />
       {res.error && <LoadError message={res.error} onRetry={res.reload} />}
-      {!res.data && !res.error && <p class="muted">{t('loading')}</p>}
       {res.data && (
         <>
-          <div class="toolbar">
-            <div class="search">
-              <input type="search" aria-label={t('adUserSearch')} placeholder={t('adUserSearch')} value={q} onInput={(e) => setQ(e.currentTarget.value)} />
-            </div>
+          <div class="summary">
+            <div class="card"><div class="k">{tc('urAccounts')}</div><div class="v">{accounts.length}</div></div>
+            <div class="card"><div class="k">{tc('urPending')}</div><div class="v">{count('pending')}</div></div>
+            <div class="card"><div class="k">{tc('urLocked')}</div><div class="v">{count('locked')}</div></div>
+            <div class="card"><div class="k">{tc('urDisabled')}</div><div class="v">{count('disabled')}</div></div>
           </div>
-          <div class="tablewrap">
+          {flash && <div class={flash.ok ? 'banner ok' : 'alert'} role={flash.ok ? 'status' : 'alert'} data-testid="users-flash">{flash.text}</div>}
+          {res.data.missing > 0 && (
+            <div class="banner warn">
+              {tc('urMissing', { n: res.data.missing })}
+              <button type="button" class="btn primary" data-testid="create-missing" disabled={sync !== null} onClick={() => void createMissing()}>
+                {sync ? tc('urSyncing', { n: sync.done, left: sync.left }) : tc('urCreateMissing')}
+              </button>
+            </div>
+          )}
+          {made.length > 0 && (
+            <div class="actions">
+              <button type="button" class="btn primary" onClick={() => void writeXlsx('new_logins.xlsx', [tc('ppName'), t('username'), tc('urFirstPw')], made)}>{tc('urDownloadNew', { n: made.length })}</button>
+            </div>
+          )}
+          <div class="toolbar">
+            <input type="search" aria-label={t('adUserSearch')} placeholder={tc('urSearch')} value={q} onInput={(e) => setQ(e.currentTarget.value)} style={{ flex: 1, maxWidth: '380px' }} />
+            <span class="spacer" />
+            <button type="button" class="btn" onClick={() => setAdding(!adding)}>{tc('urAddTitle')}</button>
+            <label class="btn" title={tc('urIdsHelp')}>{tc('urIdsRead')}<input type="file" accept=".xlsx,.xlsm" hidden data-testid="read-ids" onChange={(e) => { void readIds(e.currentTarget.files?.[0]); e.currentTarget.value = ''; }} /></label>
+            <button type="button" class="btn" data-testid="dl-logins" onClick={downloadLogins}>{tc('urDownload')}</button>
+          </div>
+          {adding && <AddAccount taken={new Set(accounts.map((a) => a.username))} positions={posList} onPositions={setPositions} onDone={(m) => { setAdding(false); setFlash({ ok: true, text: m }); res.reload(); }} />}
+          <div class="tablewrap" style={{ maxHeight: '620px' }}>
             <table class="ad-table">
-              <thead>
-                <tr>
-                  <th class="s">{t('username')}</th><th class="s">{t('adFullName')}</th><th class="s">{t('adEmail')}</th>
-                  <th class="s">{t('adRole')}</th><th class="s">{t('adLanguage')}</th><th class="s">{t('adStatus')}</th>
-                  <th class="s">{t('adActions')}</th>
-                </tr>
-              </thead>
+              <thead><tr>
+                <th>{tc('urEmpId')}</th><th>{tc('ppName')}</th><th>{t('username')}</th><th>{tc('urEmail')}</th><th>{tc('urRoles')}</th><th>{tc('status')}</th>
+                <th>{tc('urFirstPw')}</th><th>{tc('urLastLogin')}</th><th />
+              </tr></thead>
               <tbody>
-                {users.length === 0 && <tr><td class="empty" colSpan={7}>{t('adNothingFound')}</td></tr>}
-                {users.map((u) => {
-                  const self = u.id === me?.id;
+                {shown.map((a) => {
+                  const self = me?.id === a.id;
                   return (
                     <>
-                      <tr key={u.id} data-testid="user-row" class={u.active ? '' : 'off'}>
-                        <td class="s">{u.username}</td>
-                        <td class="s">{u.name}</td>
-                        <td class="s">{u.email ?? '—'}</td>
-                        <td class="s">{u.role === 'admin' ? t('roleAdmin') : t('roleManager')}</td>
-                        <td class="s">{u.lang === 'ar' ? 'العربية' : 'English'}</td>
-                        <td class="s">
-                          <span class={`status ${u.active ? 'ok' : 'bad'}`} data-testid="user-status">{u.active ? t('adActive') : t('adDisabled')}</span>
-                        </td>
-                        <td class="s act">
-                          <button type="button" class="btn" onClick={() => { setFlash(''); setForm(u.id); }}>{t('adEdit')}</button>
-                          <button type="button" class="btn" onClick={() => { setFlash(''); setResetting(u.id); }}>{t('adResetPassword')}</button>
-                          {u.active ? (
-                            <ConfirmButton
-                              label={t('adDisable')}
-                              question={`${t('adDisable')} ${u.username}?`}
-                              yesLabel={t('adDisableYes')}
-                              disabled={self}
-                              title={self ? t('adUserSelfLock') : undefined}
-                              onConfirm={() => setActive(u, false)}
-                            />
-                          ) : (
-                            <button type="button" class="btn" onClick={() => setActive(u, true)}>{t('adEnable')}</button>
-                          )}
+                      <tr key={a.id} data-testid="user-row">
+                        <td data-testid="emp-id">{a.employeeId ? <code>{a.employeeId}</code> : <span class="muted">—</span>}</td>
+                        <td><b>{a.name}</b></td>
+                        <td><code>{a.username}</code></td>
+                        <td class="small">{a.email ?? <span class="muted">—</span>}</td>
+                        <td>{a.roles.length ? a.roles.map((r, i) => <span key={i} class={`status ${r.kind === 'admin' ? 'ok' : 'muted'}`} style={{ margin: '1px' }}>{roleText(r)}</span>) : a.position ? null : '—'}
+                          {a.position && <span class="status muted" style={{ margin: '1px' }}>{a.position}</span>}</td>
+                        <td><span class={`status ${STATUS[a.status][1]}`} data-testid="user-status">{statusText(a.status)}</span></td>
+                        <td>{a.firstPw ? <code data-testid="first-pw">{a.firstPw}</code> : <span class="muted">{tc('urChangedByUser')}</span>}</td>
+                        <td class="muted">{a.lastLogin ? fmtDateTime(a.lastLogin, lang) : '—'}</td>
+                        <td style={{ whiteSpace: 'nowrap' }}>
+                          {a.status === 'locked' && <button type="button" class="btn link" onClick={() => void unlock(a)}>{tc('urUnlock')}</button>}
+                          {!self && (arm === a.id
+                            ? <button type="button" class="btn link" onClick={() => void reset(a)}>{tc('urConfirmReset')}</button>
+                            : <button type="button" class="btn link" onClick={() => setArm(a.id)}>{tc('urReset')}</button>)}
+                          <button type="button" class="btn link" onClick={() => { setEditing(editing === a.id ? null : a.id); setSetting(null); }}>{tc('urEdit')}</button>
+                          <button type="button" class="btn link" onClick={() => { setSetting(setting === a.id ? null : a.id); setEditing(null); }}>{tc('urChangePw')}</button>
+                          {!self && <button type="button" class={`btn link${a.active ? ' danger' : ''}`} onClick={() => void toggle(a)}>{a.active ? t('adDisable') : t('adEnable')}</button>}
+                          {!self && (armDel === a.id
+                            ? <button type="button" class="btn link danger" data-testid="confirm-delete" onClick={() => void remove(a)}>{tc('urConfirmDelete')}</button>
+                            : <button type="button" class="btn link danger" onClick={() => setArmDel(a.id)}>{tc('urDelete')}</button>)}
                         </td>
                       </tr>
-                      {resetting === u.id && (
-                        <tr key={`r${u.id}`}><td colSpan={7} class="s"><ResetPassword user={u} onDone={done} /></td></tr>
+                      {editing === a.id && (
+                        <tr key={`e${a.id}`}><td colSpan={9}><EditAccount a={a} taken={new Set(accounts.map((x) => x.username))} onDone={(m) => { setEditing(null); if (m) setFlash({ ok: true, text: m }); res.reload(); }} /></td></tr>
+                      )}
+                      {setting === a.id && (
+                        <tr key={`p${a.id}`}><td colSpan={9}><SetPassword a={a} onDone={(m) => { setSetting(null); if (m) setFlash({ ok: true, text: m }); res.reload(); }} /></td></tr>
                       )}
                     </>
                   );

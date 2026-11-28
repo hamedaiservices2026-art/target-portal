@@ -18,7 +18,32 @@ export const AUTH_EXPIRED = 'auth:expired';
 /** Login answers 401 for a wrong password; that is not an expired session. */
 const NO_EXPIRY_EVENT = new Set(['/api/auth/login']);
 
+/** Raised after every save (write call) so the app can show "Saved" or the error. */
+export const API_WRITE = 'api:write';
+export type ApiWriteDetail = { ok: true } | { ok: false; error: unknown };
+/** Writes that are not a save the person made (sign in, previews, calculations, read-style POSTs). */
+const NOT_A_SAVE = /^\/api\/(auth\/|my\/notifications)|\/(preview|export|calc|calculate|dry-run|check|password-step|stage|log)(\/|$|\?)/;
+function announce(method: string, path: string, detail: ApiWriteDetail) {
+  if (method === 'GET' || NOT_A_SAVE.test(path)) return;
+  try {
+    window.dispatchEvent(new CustomEvent<ApiWriteDetail>(API_WRITE, { detail }));
+  } catch {
+    /* no window (tests) */
+  }
+}
+
 export async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
+  try {
+    const out = await call<T>(method, path, body);
+    announce(method, path, { ok: true });
+    return out;
+  } catch (error) {
+    announce(method, path, { ok: false, error });
+    throw error;
+  }
+}
+
+async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   const init: RequestInit = { method, headers: { Accept: 'application/json' }, credentials: 'same-origin' };
   if (method !== 'GET') {
     (init.headers as Record<string, string>)['Content-Type'] = 'application/json';

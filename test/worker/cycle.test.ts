@@ -118,9 +118,12 @@ describe('target cycle (handover flow)', () => {
 
     // Only the Head approves; approval starts the department.
     expect((await api('POST', `/cycle/ops/${P}/heads/${tt}/approve`, other)).status).toBe(403);
+    // Sending opens the Head's distribution turn at once (review and distribute before approving).
+    const st0 = await one<{ state: string }>(env.DB, `SELECT state FROM month_depts WHERE month_id = ? AND dept_id = ?`, monthId, tt);
+    expect(st0!.state).toBe('running');
     expect((await api('POST', `/cycle/ops/${P}/heads/${tt}/approve`, head)).status).toBe(200);
     const st = await one<{ state: string }>(env.DB, `SELECT state FROM month_depts WHERE month_id = ? AND dept_id = ?`, monthId, tt);
-    expect(st!.state).toBe('running');
+    expect(['running', 'complete']).toContain(st!.state);
     cyc = await json(await api('GET', `/cycle/ops/${P}`, admin));
     expect(cyc.heads.find((x: Json) => x.deptId === tt).status).toBe('approved');
 
@@ -132,7 +135,9 @@ describe('target cycle (handover flow)', () => {
 
   it('a Head can return the target with a comment', async () => {
     await api('PUT', `/admin/cycle/ops/${P}/settings`, admin, { cdStep: false });
-    expect((await api('PUT', `/admin/cycle/ops/${P}/dept-target`, admin, { dept: { [tt]: { CSD_CANS150: 10 } } })).status).toBe(200);
+    // Operation always goes to the CD: the CD step stays on.
+    expect((await json(await api('GET', `/cycle/ops/${P}`, admin))).settings.cdStep).toBe(true);
+    await run(env.DB, `UPDATE cycles SET cd_status = 'submitted', dept_json = ? WHERE ws = 'ops' AND period = ?`, JSON.stringify({ [tt]: { CSD_CANS150: 10 } }), P);
     expect((await api('PUT', `/admin/cycle/ops/${P}/calc`, admin, { calc: { [tt]: { R1: { CSD_CANS150: 10 } } } })).status).toBe(200);
     expect((await api('POST', `/admin/cycle/ops/${P}/heads/${tt}/send`, admin)).status).toBe(200);
     expect((await api('POST', `/cycle/ops/${P}/heads/${tt}/return`, head, {})).status).toBe(400);
@@ -141,6 +146,125 @@ describe('target cycle (handover flow)', () => {
     expect(h).toEqual({ status: 'returned', comment: 'too high' });
     // Re-send after a return is allowed.
     expect((await api('POST', `/admin/cycle/ops/${P}/heads/${tt}/send`, admin)).status).toBe(200);
+  });
+
+  it('after the send, the CD can shift cases between departments and Admin re-sends the changed Heads', async () => {
+    await api('PUT', `/admin/cycle/ops/${P}/settings`, admin, { cdStep: true });
+    const work: CdWork = {
+      nt: { CSD_CANS150: 100 }, ntOk: true, splitNt: { CSD_CANS150: 100 }, basis: {},
+      dm: { [tt]: { 'TT DMM': { CSD_CANS150: 60 } }, [mt]: { MT: { CSD_CANS150: 40 } } }, gm: {}, colJ: { [tt]: { CSD: 60 }, [mt]: { CSD: 40 } },
+    };
+    await run(env.DB, `UPDATE cycles SET cd_status = 'submitted', cd_json = ?, dept_json = ? WHERE ws = 'ops' AND period = ?`,
+      JSON.stringify(work), JSON.stringify({ [tt]: { CSD_CANS150: 60 }, [mt]: { CSD_CANS150: 40 } }), P);
+    expect((await api('PUT', `/admin/cycle/ops/${P}/calc`, admin, { calc: { [tt]: { R1: { CSD_CANS150: 45 }, R2: { CSD_CANS150: 15 } } } })).status).toBe(200);
+    expect((await api('POST', `/admin/cycle/ops/${P}/heads/${tt}/send`, admin)).status).toBe(200);
+    // Plain recall is refused once a Head has it; the shift is allowed.
+    expect((await api('POST', `/admin/cycle/ops/${P}/cd/recall`, admin)).status).toBe(409);
+    expect((await api('POST', `/admin/cycle/ops/${P}/cd/shift`, admin)).status).toBe(200);
+    let cyc = await json(await api('GET', `/cycle/ops/${P}`, cd));
+    expect([cyc.cdStatus, !!cyc.shift]).toEqual(['with_cd', true]);
+    // The CD moves 20 cases from MT to TT and submits.
+    const moved = { ...work, dm: { [tt]: { 'TT DMM': { CSD_CANS150: 80 } }, [mt]: { MT: { CSD_CANS150: 20 } } }, colJ: { [tt]: { CSD: 80 }, [mt]: { CSD: 20 } } };
+    expect((await api('PUT', `/cycle/ops/${P}/cd`, cd, { cd: moved, version: cyc.version })).status).toBe(200);
+    expect((await api('POST', `/cycle/ops/${P}/cd/submit`, cd)).status).toBe(200);
+    const r = await json(await api('POST', `/admin/cycle/ops/${P}/shift/send`, admin));
+    expect(r.resent).toEqual(['TT']);
+    const leaves = await all<{ route_code: string; values_json: string }>(env.DB, `SELECT route_code, values_json FROM month_leaves WHERE dept_id = ? ORDER BY route_code`, tt);
+    expect(leaves.map((l) => JSON.parse(l.values_json).CSD_CANS150)).toEqual([60, 20]);
+    cyc = await json(await api('GET', `/cycle/ops/${P}`, admin));
+    expect([cyc.shift, cyc.heads.find((x: Json) => x.deptId === tt).status]).toEqual([null, 'pending']);
+  });
+
+  it('sending an Operation Head also sends the linked Key Account department', async () => {
+    await api('PUT', `/admin/cycle/ops/${P}/settings`, admin, {});
+    await run(env.DB, `UPDATE cycles SET cd_status = 'submitted', dept_json = ? WHERE ws = 'ops' AND period = ?`, JSON.stringify({ [tt]: { CSD_CANS150: 10 } }), P);
+    expect((await api('PUT', `/admin/cycle/ops/${P}/calc`, admin, { calc: { [tt]: { R1: { CSD_CANS150: 10 } } } })).status).toBe(200);
+    const ka = (await run(env.DB, `INSERT INTO departments(code, name, workspace) VALUES ('KA_TT', 'KA TT', 'ka')`)).lastRowId;
+    const kroot = (await run(env.DB, `INSERT INTO nodes(dept_id, parent_id, name) VALUES (?, NULL, 'KA Head')`, ka)).lastRowId;
+    await run(env.DB, `INSERT INTO leaves(dept_id, delivery_system, route_code, node_id, label) VALUES (?, 'KA', 'K1', ?, 'K1')`, ka, kroot);
+    expect((await api('PUT', `/admin/ka-links/${ka}`, admin, { opsDeptId: tt })).status).toBe(200);
+    await api('PUT', `/admin/cycle/ka/${P}/settings`, admin, {});
+    await run(env.DB, `UPDATE cycles SET dept_json = ? WHERE ws = 'ka' AND period = ?`, JSON.stringify({ [ka]: { CSD_CANS150: 7 } }), P);
+    expect((await api('PUT', `/admin/cycle/ka/${P}/calc`, admin, { calc: { [ka]: { K1: { CSD_CANS150: 7 } } } })).status).toBe(200);
+    const r = await json(await api('POST', `/admin/cycle/ops/${P}/heads/${tt}/send`, admin));
+    expect(r.ka).toEqual([{ deptId: ka, name: 'KA TT', sent: true }]);
+    const hs = await all<{ dept_id: number; status: string }>(env.DB, `SELECT dept_id, status FROM head_approvals ORDER BY dept_id`);
+    expect(hs).toEqual([{ dept_id: tt, status: 'pending' }, { dept_id: ka, status: 'pending' }]);
+    // The Operation Head is the Key Account Head: both targets wait for the same person.
+    const ap = await json(await api('GET', '/my/approvals', head));
+    expect(ap.approvals.length).toBe(2);
+  });
+
+  it('a Key Account department made after the month opened is sent; approving Operation also approves it and the KAM gets the turn', async () => {
+    await api('PUT', `/admin/cycle/ops/${P}/settings`, admin, {});
+    await run(env.DB, `UPDATE cycles SET cd_status = 'submitted', dept_json = ? WHERE ws = 'ops' AND period = ?`, JSON.stringify({ [tt]: { CSD_CANS150: 10 }, [mt]: { CSD_CANS150: 5 } }), P);
+    expect((await api('PUT', `/admin/cycle/ops/${P}/calc`, admin, { calc: { [tt]: { R1: { CSD_CANS150: 10 } } } })).status).toBe(200);
+    // The month opens with the first send (MT has no Head account: refused with the reason).
+    expect((await api('PUT', `/admin/cycle/ops/${P}/calc`, admin, { calc: { [mt]: { M1: { CSD_CANS150: 5 } } } })).status).toBe(200);
+    expect((await json(await api('POST', `/admin/cycle/ops/${P}/heads/${mt}/send`, admin))).detail).toMatch(/MT Head has no account/);
+    expect(await one(env.DB, `SELECT COUNT(*) AS n FROM months`)).toEqual({ n: 1 });
+    // A Key Account department uploaded after the month opened, ending at the KAM (routes under the KAM).
+    await addUser('kam1');
+    await run(env.DB, `UPDATE users SET name = 'Kam One' WHERE username = 'kam1'`);
+    const ka = (await run(env.DB, `INSERT INTO departments(code, name, workspace) VALUES ('KA_TT', 'KA TT', 'ka')`)).lastRowId;
+    const kroot = (await run(env.DB, `INSERT INTO nodes(dept_id, parent_id, name) VALUES (?, NULL, 'KA Head')`, ka)).lastRowId;
+    const kam = (await run(env.DB, `INSERT INTO nodes(dept_id, parent_id, name) VALUES (?, ?, 'Kam One')`, ka, kroot)).lastRowId;
+    await run(env.DB, `INSERT INTO leaves(dept_id, delivery_system, route_code, node_id, label) VALUES (?, 'KA', 'K1', ?, 'Kae One')`, ka, kam);
+    await run(env.DB, `UPDATE departments SET ops_dept_id = ? WHERE id = ?`, tt, ka);
+    await api('PUT', `/admin/cycle/ka/${P}/settings`, admin, {});
+    await run(env.DB, `UPDATE cycles SET dept_json = ? WHERE ws = 'ka' AND period = ?`, JSON.stringify({ [ka]: { CSD_CANS150: 7 } }), P);
+    expect((await api('PUT', `/admin/cycle/ka/${P}/calc`, admin, { calc: { [ka]: { K1: { CSD_CANS150: 7 } } } })).status).toBe(200);
+    const r = await json(await api('POST', `/admin/cycle/ops/${P}/heads/${tt}/send`, admin));
+    expect(r.ka).toEqual([{ deptId: ka, name: 'KA TT', sent: true }]);
+    // The KA Head is the Operation Head; the KAM got the account of the same name.
+    expect(await one(env.DB, `SELECT manager_user_id AS u FROM nodes WHERE id = ?`, kroot)).toEqual({ u: headId });
+    const ap = await json(await api('POST', `/cycle/ops/${P}/heads/${tt}/approve`, head));
+    expect(ap.ka).toEqual([{ deptId: ka, name: 'KA TT', approved: true }]);
+    const kamNode = await one<{ status: string; u: number | null }>(env.DB, `SELECT status, manager_user_id AS u FROM month_nodes WHERE node_id = ?`, kam);
+    expect(kamNode?.status).toBe('in_progress');
+    expect(kamNode?.u).not.toBeNull();
+  });
+
+  it('every AOP option goes to the CD; data can be cleared before an upload', async () => {
+    await api('PUT', `/admin/cycle/ops/${P}/settings`, admin, { ntMode: 'aop', aopBy: 'dept' });
+    expect((await json(await api('GET', `/cycle/ops/${P}`, admin))).settings.cdStep).toBe(true);
+    await api('PUT', `/admin/cycle/ops/${P}/settings`, admin, { aopBy: 'pack' });
+    expect((await json(await api('GET', `/cycle/ops/${P}`, admin))).settings.cdStep).toBe(true);
+    for (const m of ['2027-01', '2027-02']) {
+      expect((await api('POST', '/admin/data/ops/months', admin, { kind: 'aop_dept', month: m, values: { MT: { CSD_CANS150: 5 } } })).status).toBe(200);
+    }
+    expect(await json(await api('POST', '/admin/data/ops/clear-all', admin, { table: 'months', kind: 'aop_dept' }))).toEqual({ removed: 2 });
+    expect(await json(await api('GET', '/data/ops/months?kind=aop_dept', admin))).toEqual({});
+    expect((await api('POST', '/admin/data/ops/clear-all', other, { table: 'months', kind: 'aop_dept' })).status).toBe(403);
+  });
+
+  it('a target uploaded by department skips the Commercial Director', async () => {
+    await api('PUT', `/admin/cycle/ops/${P}/settings`, admin, { ntMode: 'dept' });
+    const cyc = await json(await api('GET', `/cycle/ops/${P}`, admin));
+    expect(cyc.settings.cdStep).toBe(false);
+    expect((await api('PUT', `/admin/cycle/ops/${P}/dept-target`, admin, { dept: { [tt]: { CSD_CANS150: 10 } } })).status).toBe(200);
+    expect((await api('PUT', `/admin/cycle/ops/${P}/calc`, admin, { calc: { [tt]: { R1: { CSD_CANS150: 10 } } } })).status).toBe(200);
+    expect((await api('POST', `/admin/cycle/ops/${P}/heads/${tt}/send`, admin)).status).toBe(200);
+    await api('PUT', `/admin/cycle/ops/${P}/settings`, admin, { ntMode: 'pack' });
+    expect((await json(await api('GET', `/cycle/ops/${P}`, admin))).settings.cdStep).toBe(true);
+  });
+
+  it('a pack turned on after the month was opened is added to the month when sending', async () => {
+    await api('PUT', `/admin/cycle/ops/${P}/settings`, admin, {});
+    await run(env.DB, `UPDATE cycles SET cd_status = 'submitted', dept_json = ? WHERE ws = 'ops' AND period = ?`, JSON.stringify({ [tt]: { CSD_CANS150: 10, LIT_CANS320: 4, NOPE: 1 } }), P);
+    expect((await api('PUT', `/admin/cycle/ops/${P}/calc`, admin, { calc: { [tt]: { R1: { CSD_CANS150: 10 } } } })).status).toBe(200);
+    expect((await api('POST', `/admin/cycle/ops/${P}/heads/${tt}/send`, admin)).status).toBe(200);
+    expect((await api('POST', `/admin/cycle/ops/${P}/heads/${tt}/restart`, admin)).status).toBe(200);
+    await run(env.DB, `INSERT INTO packs(code, grp, active) VALUES ('LIT_CANS320', 'LRB-Others', 1)`);
+    expect((await api('PUT', `/admin/cycle/ops/${P}/calc`, admin, { calc: { [tt]: { R1: { CSD_CANS150: 10, LIT_CANS320: 4 } } } })).status).toBe(200);
+    const r = await api('POST', `/admin/cycle/ops/${P}/heads/${tt}/send`, admin);
+    expect(r.status, await r.clone().text()).toBe(200);
+    const m = await one<{ packs_json: string }>(env.DB, `SELECT packs_json FROM months WHERE period = ?`, P);
+    expect(m!.packs_json).toContain('LIT_CANS320');
+    // A pack that is not in the pack list at all is named in the error.
+    expect((await api('POST', `/admin/cycle/ops/${P}/heads/${tt}/restart`, admin)).status).toBe(200);
+    expect((await api('PUT', `/admin/cycle/ops/${P}/calc`, admin, { calc: { [tt]: { R1: { NOPE: 1 } } } })).status).toBe(200);
+    expect((await json(await api('POST', `/admin/cycle/ops/${P}/heads/${tt}/send`, admin))).detail).toMatch(/NOPE is not in the pack list/);
   });
 
   it('rules settings are admin only and validated', async () => {

@@ -1,6 +1,4 @@
 import { expect, test, type Page } from '@playwright/test';
-import { readSheet } from 'read-excel-file/node';
-import writeXlsxFile from 'write-excel-file/node';
 
 // Unique names per run so this spec does not depend on what other specs created.
 const SFX = Date.now().toString(36);
@@ -19,36 +17,23 @@ async function signInAdmin(page: Page) {
   await expect(page.getByRole('heading', { name: 'Users' })).toBeVisible();
 }
 
-async function mappingFile(rows: (string | undefined)[][]): Promise<Buffer> {
-  const header = ['Delivery System', 'Route Code', 'Node', 'Label'].map((value) => ({ value, fontWeight: 'bold' as const }));
-  const data = [
-    [{ value: 'Route mapping export' }], // a title row above the header: the page must find the header row
-    header,
-    ...rows.map((r) => r.map((value) => (value === undefined ? null : { value }))),
-  ];
-  return writeXlsxFile(data as never).toBuffer();
-}
-
 test('admin sets up a manager, a department, a two-level tree, a route mapping, the cap and packs', async ({ page }) => {
   await signInAdmin(page);
 
-  // --- Users: create a manager.
-  await page.getByRole('button', { name: 'Add user' }).click();
-  await page.getByLabel('Username').fill(MANAGER);
-  await page.getByLabel('Full name').fill(`Manager ${SFX}`);
-  await page.getByLabel('Role').selectOption('manager');
-  await page.getByLabel('Password').fill('manager-pass-123');
-  await page.getByRole('button', { name: 'Save user' }).click();
+  // --- Users: add an account (not part of the hierarchy: no role yet).
+  await page.getByRole('button', { name: 'Add account' }).click();
+  const add = page.getByTestId('add-account');
+  await add.getByLabel('Name', { exact: true }).fill(`Manager ${SFX}`);
+  await add.getByLabel('Username').fill(MANAGER);
+  await add.getByLabel('Position').selectOption('manager');
+  await add.getByRole('button', { name: 'Create' }).click();
+  await expect(page.getByTestId('users-flash')).toContainText(`Account ${MANAGER} created. First password:`);
   const userRow = page.getByTestId('user-row').filter({ hasText: MANAGER });
-  await expect(userRow).toBeVisible();
-  // The admin cannot disable or demote themself.
-  const own = page.getByTestId('user-row').filter({ hasText: 'admin' }).first();
-  await expect(own.getByRole('button', { name: 'Disable' })).toBeDisabled();
-  // Disable needs an inline confirmation.
-  await userRow.getByRole('button', { name: 'Disable' }).click();
-  await expect(userRow.getByRole('button', { name: 'Yes, disable' })).toBeVisible();
-  await userRow.getByRole('button', { name: 'Cancel' }).click();
-  await expect(userRow.getByTestId('user-status')).toHaveText('Active');
+  await expect(userRow.getByTestId('user-status')).toHaveText('No role');
+  await expect(page.getByTestId('save-toast')).toContainText('Saved.');
+  // The admin cannot disable themself.
+  const own = page.getByTestId('user-row').filter({ has: page.locator('code', { hasText: /^admin$/ }) });
+  await expect(own.getByRole('button', { name: 'Disable' })).toHaveCount(0);
 
   // --- Departments.
   await page.getByRole('link', { name: 'Departments' }).click();
@@ -57,68 +42,31 @@ test('admin sets up a manager, a department, a two-level tree, a route mapping, 
   await page.getByRole('button', { name: 'Add department' }).click();
   await expect(page.getByTestId('dept-row').filter({ hasText: DEPT_CODE })).toBeVisible();
 
-  // --- Hierarchy: a two-level tree.
+  // --- Hierarchy (v16 layout): a Head, a manager, a supervisor and a route.
   await page.getByRole('link', { name: 'Hierarchy' }).click();
-  await page.getByLabel('Department').selectOption({ label: `${DEPT_CODE} — ${DEPT_NAME}` });
-  await page.getByRole('button', { name: 'Add top node' }).click();
-  await page.getByLabel('Node name').fill(ROOT);
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-  const rootRow = page.getByTestId('node-row').filter({ hasText: ROOT });
-  await expect(rootRow).toBeVisible();
-
-  await rootRow.getByRole('button', { name: 'Add child' }).click();
-  await page.getByLabel('Node name').fill(CHILD);
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-  const childRow = page.getByTestId('node-row').filter({ hasText: CHILD });
-  await expect(childRow).toBeVisible();
-
-  // Assign the manager to the child; delete is blocked on a node with children.
-  await childRow.getByRole('button', { name: 'Assign manager' }).click();
-  await page.getByLabel('Manager', { exact: true }).selectOption({ label: `Manager ${SFX} (${MANAGER})` });
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(childRow.getByTestId('node-manager')).toContainText(`Manager ${SFX}`);
-  await expect(rootRow.getByRole('button', { name: 'Delete' })).toBeDisabled();
-
-  // --- Route mapping: bad file first (unknown node), then a good one.
-  const bad = await mappingFile([[SYSTEM, 'R-1', 'No such node', 'One']]);
-  await page.getByTestId('map-file').setInputFiles({ name: 'bad.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: bad });
-  await expect(page.getByTestId('map-errors')).toContainText('Unknown node');
-  await expect(page.getByTestId('map-errors')).toContainText('Line 3'); // header on Excel row 2, first data row = Excel row 3
-
-  const good = await mappingFile([
-    [SYSTEM, 'R-1', CHILD, 'Route one'],
-    [SYSTEM, 'R-2', CHILD, undefined],
-    [undefined, undefined, undefined, undefined], // blank row is skipped
-  ]);
-  await page.getByTestId('map-file').setInputFiles({ name: 'good.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: good });
-  await expect(page.getByTestId('map-summary')).toContainText('2 created');
-  await expect(page.getByTestId('map-summary')).toContainText('0 moved');
-  await expect(page.getByTestId('leaf-row')).toHaveCount(2);
-  await expect(page.getByTestId('leaf-row').first()).toContainText(SYSTEM);
-
-  // Same file again: nothing changes.
-  await page.getByTestId('map-file').setInputFiles({ name: 'good.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: good });
-  await expect(page.getByTestId('map-summary')).toContainText('2 unchanged');
-
-  // Leaves search.
-  await page.getByLabel('Search routes').fill('R-2');
-  await expect(page.getByTestId('leaf-row')).toHaveCount(1);
-
-  // --- Settings: cap 4 (restored in finally so other specs keep the default).
-  try {
-    await page.getByRole('link', { name: 'Settings' }).click();
-    await expect(page.getByText('5% of 1,000 = 50 cases')).toBeVisible();
-    await page.getByLabel('Cap (%)').fill('4');
-    await page.getByRole('button', { name: 'Save cap' }).click();
-    await expect(page.getByTestId('settings-saved')).toBeVisible();
-    await page.reload();
-    await expect(page.getByLabel('Cap (%)')).toHaveValue('4');
-    expect(((await (await page.request.get('/api/admin/settings')).json()) as { capPct: number }).capPct).toBe(4);
-    await page.getByLabel('Cap (%)').fill('0');
-    await expect(page.getByRole('button', { name: 'Save cap' })).toBeDisabled();
-  } finally {
-    await page.request.put('/api/admin/settings', { data: { capPct: 5 } });
-  }
+  const addBox = page.getByTestId('hz-add');
+  await addBox.getByLabel('New Channel Head name').fill(ROOT);
+  await addBox.getByRole('button', { name: 'Add' }).first().click();
+  await expect(page.getByTestId('hz-msg')).toHaveText(`${ROOT} added.`);
+  await addBox.getByLabel('New Sales Manager name').fill(CHILD);
+  const headSel = addBox.getByLabel('Channel Head of the new manager');
+  await headSel.selectOption((await headSel.locator('option', { hasText: ROOT }).getAttribute('value'))!);
+  await addBox.getByRole('button', { name: 'Add' }).nth(1).click();
+  await expect(page.getByTestId('hz-manager').filter({ has: page.getByLabel(`Name ${CHILD}`, { exact: true }) })).toBeVisible();
+  await addBox.getByLabel('New Sales Supervisor name').fill(`Sup ${SFX}`);
+  await addBox.getByLabel('Sales Manager of the new supervisor').selectOption({ label: `${CHILD} · ${ROOT}` });
+  await addBox.getByRole('button', { name: 'Add' }).nth(2).click();
+  await addBox.getByLabel('New route code').fill(`R1${SFX}`);
+  await addBox.getByLabel('Delivery System').fill(SYSTEM);
+  await addBox.getByLabel('Supervisor of the new route').selectOption({ label: `Sup ${SFX} · ${CHILD}` });
+  await addBox.getByRole('button', { name: 'Add' }).nth(3).click();
+  await expect(page.getByTestId('hz-msg')).toHaveText('Route added.');
+  const headRow = page.getByTestId('hz-head').filter({ has: page.getByLabel(`Name ${ROOT}`, { exact: true }) });
+  await expect(headRow).toContainText('1');
+  // Deleting a Head (with everything under it) asks first.
+  await headRow.getByRole('button', { name: 'Delete' }).click();
+  await expect(page.getByText(/with all the people and 1 routes under it/)).toBeVisible();
+  await page.getByRole('button', { name: 'Cancel' }).click();
 
   // --- Packs: the group dropdown offers exactly the three groups.
   await page.getByRole('link', { name: 'Packs' }).click();
@@ -129,7 +77,7 @@ test('admin sets up a manager, a department, a two-level tree, a route mapping, 
   expect(addOptions).toEqual(['CSD', 'Water', 'LRB-Others']);
 });
 
-test('hierarchy: move choices exclude the node and its descendants, banners show, routes can be edited, template downloads', async ({ page }) => {
+test('hierarchy: rename in place, move with the lists, banners show, routes edited and deleted', async ({ page }) => {
   await signInAdmin(page);
   const post = async (path: string, data: object) => {
     const res = await page.request.post(path, { data });
@@ -142,67 +90,52 @@ test('hierarchy: move choices exclude the node and its descendants, banners show
     (await post('/api/admin/nodes', { deptId: department.id, name, parentId })).node.id as number;
   const a = await mk(`A-${SFX}`, null);
   const b = await mk(`B-${SFX}`, a);
-  await mk(`C-${SFX}`, b);
+  const c = await mk(`C-${SFX}`, b);
   const d = await mk(`D-${SFX}`, a);
-  await post('/api/admin/leaves', { deptId: department.id, nodeId: d, deliverySystem: `DS-${SFX}`, routeCode: 'X-1', label: 'Old label' });
+  await mk(`E-${SFX}`, d);
+  await post('/api/admin/leaves', { deptId: department.id, nodeId: c, deliverySystem: `DS-${SFX}`, routeCode: `X1${SFX}`, label: 'Old label' });
 
-  await page.goto(`/admin/hierarchy?dept=${department.id}`);
-  await expect(page.getByLabel('Department')).toHaveValue(String(department.id));
-  const rowOf = (n: string) => page.getByTestId('node-row').filter({ has: page.locator('.node-name', { hasText: `${n}-${SFX}` }) }).first();
+  await page.goto('/admin/hierarchy');
+  const sup = (n: string) => page.getByTestId('hz-supervisor').filter({ has: page.getByLabel(`Name ${n}-${SFX}`, { exact: true }) });
 
-  // The top node cannot be moved; B's choices are A and D only (not B itself, not its child C).
-  await expect(rowOf('A').getByRole('button', { name: 'Move' })).toBeDisabled();
-  await rowOf('B').getByRole('button', { name: 'Move' }).click();
-  const choices = (await page.getByLabel('New parent').locator('option').allTextContents()).map((s) => s.trim());
-  expect(choices).toEqual([`A-${SFX}`, `D-${SFX}`]);
+  // Rename in place.
+  await sup('E').getByRole('textbox').fill(`E2-${SFX}`);
+  await sup('E').getByRole('textbox').press('Enter');
+  await expect(page.getByTestId('hz-msg')).toHaveText('Saved.');
+  await expect(sup('E2')).toBeVisible();
 
-  // A move whose month was skipped shows the "next month" banner with the period (server answer faked).
+  // A supervisor's manager choices are the managers of the same Head; a move whose month was skipped shows the banner.
+  const choices = (await sup('C').getByLabel(`Sales Manager C-${SFX}`).locator('option').allTextContents()).map((s) => s.trim());
+  expect(choices).toEqual([`B-${SFX}`, `D-${SFX}`]);
   await page.route('**/api/admin/nodes/*', async (route) => {
     if (route.request().method() !== 'PATCH') return route.continue();
     const real = await route.fetch();
     const body = await real.json();
     await route.fulfill({ response: real, json: { ...body, treeChange: { appliedMonths: [], skippedMonths: [1], error: 'boom' } } });
   });
-  await page.getByLabel('New parent').selectOption({ label: `D-${SFX}` });
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await sup('C').getByLabel(`Sales Manager C-${SFX}`).selectOption({ label: `D-${SFX}` });
   await expect(page.getByTestId('tree-skipped')).toContainText('This change applies from next month for: Oct 2026');
   await expect(page.getByTestId('tree-error')).toBeVisible();
   await page.unroute('**/api/admin/nodes/*');
 
-  // Delete asks first; a node with routes cannot be deleted.
-  await expect(rowOf('D').getByRole('button', { name: 'Delete' })).toBeDisabled();
-  await rowOf('A').getByRole('button', { name: 'Add child' }).click();
-  await page.getByLabel('Node name').fill(`E-${SFX}`);
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await rowOf('E').getByRole('button', { name: 'Delete' }).click();
-  await rowOf('E').getByRole('button', { name: 'Cancel' }).click();
-  await expect(rowOf('E')).toBeVisible();
-  await rowOf('E').getByRole('button', { name: 'Delete' }).click();
-  await rowOf('E').getByRole('button', { name: 'Yes, delete' }).click();
-  await expect(page.locator('.node-name', { hasText: `E-${SFX}` })).toHaveCount(0);
+  // A supervisor with a route cannot be deleted; an empty one asks first.
+  await expect(sup('C').getByRole('button', { name: 'Delete' })).toBeDisabled();
+  await sup('E2').getByRole('button', { name: 'Delete' }).click();
+  await expect(sup('E2').getByRole('button', { name: 'Confirm delete' })).toBeVisible();
+  await sup('E2').getByRole('button', { name: 'Confirm delete' }).click();
+  await expect(sup('E2')).toHaveCount(0);
 
-  // Routes: edit the label, move to another node, delete.
-  const leaf = page.getByTestId('leaf-row');
+  // Routes: salesman, move, delete.
+  await page.getByLabel('Filter by route, salesman, supervisor or manager…').fill(`X1${SFX}`);
+  const leaf = page.getByTestId('hz-route');
   await expect(leaf).toHaveCount(1);
-  await leaf.getByRole('button', { name: 'Edit label' }).click();
-  await page.getByLabel('Label', { exact: true }).fill('New label');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(leaf).toContainText('New label');
-  await leaf.getByRole('button', { name: 'Move' }).click();
-  await page.getByLabel('Move to node').selectOption({ label: `A-${SFX}` });
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(leaf).toContainText(`A-${SFX}`);
+  await leaf.getByLabel(`Salesman ID X1${SFX}`).fill('42059');
+  await leaf.getByLabel(`Salesman ID X1${SFX}`).press('Enter');
+  await expect(page.getByTestId('hz-msg')).toHaveText('Saved.');
+  await expect(leaf.getByLabel(`Salesman ID X1${SFX}`)).toHaveValue('42059');
   await leaf.getByRole('button', { name: 'Delete' }).click();
-  await leaf.getByRole('button', { name: 'Yes, delete' }).click();
-  await expect(page.getByTestId('leaf-row')).toHaveCount(0);
-
-  // Template download has exactly the four column names.
-  const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Download template' }).click();
-  const file = await download;
-  expect(file.suggestedFilename()).toBe('route-mapping-template.xlsx');
-  const sheet = await readSheet(await file.path() as string);
-  expect(sheet[0]).toEqual(['Delivery System', 'Route Code', 'Node', 'Label']);
+  await leaf.getByRole('button', { name: 'Confirm delete' }).click();
+  await expect(page.getByTestId('hz-route')).toHaveCount(0);
 });
 
 test('users: reset password, disable and enable; the pages work in Arabic', async ({ page }) => {
@@ -215,19 +148,28 @@ test('users: reset password, disable and enable; the pages work in Arabic', asyn
   await page.getByLabel('Search users…').fill(username);
   await expect(page.getByTestId('user-row')).toHaveCount(1);
 
+  // Reset asks first, then shows the new first password.
   await row.getByRole('button', { name: 'Reset password' }).click();
+  await row.getByRole('button', { name: 'Confirm new password' }).click();
+  await expect(page.getByTestId('users-flash')).toContainText(`New first password for ${username}:`);
+  const first = (await page.getByTestId('users-flash').textContent())!.split(':').pop()!.trim();
+  expect(first).toMatch(/^[A-Z]{4}[2-9]{4}$/);
+  await expect(row.getByTestId('first-pw')).toHaveText(first);
+
+  // The admin sets a password of their choice.
+  await row.getByRole('button', { name: 'Change password' }).click();
   await page.getByLabel(`New password for ${username}`).fill('short');
-  await page.getByRole('button', { name: 'Set password', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText('at least 8');
+  await page.getByRole('button', { name: 'Save password', exact: true }).click();
+  await expect(page.getByRole('alert').first()).toContainText('at least 8');
   await page.getByLabel(`New password for ${username}`).fill('second-pass-123');
-  await page.getByRole('button', { name: 'Set password', exact: true }).click();
-  await expect(page.getByRole('status')).toContainText('Password changed');
+  await page.getByRole('button', { name: 'Save password', exact: true }).click();
+  await expect(page.getByTestId('users-flash')).toContainText(`Password saved for ${username}.`);
+  await expect(row.getByTestId('first-pw')).toHaveText('second-pass-123');
 
   await row.getByRole('button', { name: 'Disable' }).click();
-  await row.getByRole('button', { name: 'Yes, disable' }).click();
   await expect(row.getByTestId('user-status')).toHaveText('Disabled');
   await row.getByRole('button', { name: 'Enable' }).click();
-  await expect(row.getByTestId('user-status')).toHaveText('Active');
+  await expect(row.getByTestId('user-status')).toHaveText('No role'); // not in the hierarchy
 
   // Arabic: right-to-left, translated headings.
   const toAr = page.waitForResponse((r) => r.url().endsWith('/api/me') && r.request().method() === 'PATCH');
@@ -238,4 +180,15 @@ test('users: reset password, disable and enable; the pages work in Arabic', asyn
   const back = page.waitForResponse((r) => r.url().endsWith('/api/me') && r.request().method() === 'PATCH');
   await page.getByTestId('lang-toggle').click();
   await back;
+});
+
+test('hierarchy: one tab for Operation and one for Key Account', async ({ page }) => {
+  await signInAdmin(page);
+  await page.goto('/admin/hierarchy');
+  await expect(page.getByTestId('hz-tabs')).toBeVisible();
+  await expect(page.getByTestId('ka-cleanup')).toBeVisible();
+  await page.getByRole('tab', { name: 'Key Account hierarchy' }).click();
+  await expect(page.getByRole('heading', { name: 'Upload the Key Account hierarchy' })).toBeVisible();
+  await expect(page.getByTestId('ka-cleanup')).toHaveCount(0);
+  await expect(page.getByTestId('hz-heads')).toContainText('KAM');
 });

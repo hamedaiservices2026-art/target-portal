@@ -84,7 +84,9 @@ function Box({ value, num, name, placeholder, onInput }: {
 }
 
 /** The `<tr>` of filters: Pack (text), target, each visible member and moved (numeric), status (select). */
-export function FilterRow({ f, vis, memberNames, labels, onChange }: {
+export function FilterRow({ f, vis, memberNames, labels, onChange, extra = 0 }: {
+  /** Empty cells after the target and after each member (the sales benchmark columns). */
+  extra?: number;
   f: FilterState;
   vis: number[];
   memberNames: string[];
@@ -100,14 +102,16 @@ export function FilterRow({ f, vis, memberNames, labels, onChange }: {
       <th>
         <Box value={f.tgt} num name={labels.label(labels.target)} placeholder={labels.num} onInput={(tgt) => set({ tgt })} />
       </th>
-      {vis.map((i) => (
+      {Array.from({ length: extra }, (_x, k) => <th key={`e${k}`} />)}
+      {vis.map((i) => [
         <th key={i}>
           <Box
             value={f.members[i] ?? ''} num name={labels.label(memberNames[i] ?? '')} placeholder={labels.num}
             onInput={(v) => set({ members: f.members.map((m, j) => (j === i ? v : m)) })}
           />
-        </th>
-      ))}
+        </th>,
+        ...Array.from({ length: extra }, (_x, k) => <th key={`e${i}-${k}`} />),
+      ])}
       <th>
         <Box value={f.moved} num name={labels.label(labels.moved)} placeholder={labels.num} onInput={(moved) => set({ moved })} />
       </th>
