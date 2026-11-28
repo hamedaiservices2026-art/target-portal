@@ -140,7 +140,7 @@ export function ByCategory({ ws, codes, info, totals, editable, onApply, bench }
     const vals = packs.map((p) => info(p).nums.map(fin));
     try {
       const next = rebalanceGroup(packs.map((p) => totals[p] ?? 0), vals, who, n);
-      onApply(Object.fromEntries(packs.map((p, i) => [p, next[i]!.map(String)])));
+      onApply(Object.fromEntries(packs.map((p, i) => [p, next[i]!.map(fmtNum)])));
     } catch (e) {
       setErr(e instanceof RebalanceError ? e.message : errText(e));
     }

@@ -175,8 +175,8 @@ export function Tabs<T extends string>({ value, items, onChange }: { value: T; i
 export function NumCell({ value, onChange, disabled, label, invalid }: {
   value: number; onChange: (n: number) => void; disabled?: boolean; label: string; invalid?: boolean;
 }) {
-  const [text, setText] = useState(String(value));
-  useEffect(() => setText(String(value)), [value]);
+  const [text, setText] = useState(fmtNum(value));
+  useEffect(() => setText(fmtNum(value)), [value]);
   const bad = parseCaseInput(text) === null;
   return (
     <input
@@ -184,8 +184,8 @@ export function NumCell({ value, onChange, disabled, label, invalid }: {
       onInput={(e) => setText(e.currentTarget.value)}
       onBlur={() => {
         const n = parseCaseInput(text);
-        if (n === null) setText(String(value));
-        else if (n !== value) onChange(n);
+        if (n === null || n === value) setText(fmtNum(value));
+        else onChange(n);
       }}
       onKeyDown={(e) => { if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur(); }}
     />

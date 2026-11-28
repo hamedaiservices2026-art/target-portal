@@ -65,7 +65,7 @@ function clearMirrors(mid: string, nid: string, keep?: string): void {
 // ---------- formatting ----------
 
 function rawFromServer(w: Workspace): Raw {
-  return Object.fromEntries(w.packs.map((p) => [p.code, w.children.map((c) => String(c.values[p.code] ?? 0))]));
+  return Object.fromEntries(w.packs.map((p) => [p.code, w.children.map((c) => fmtNum(c.values[p.code] ?? 0))]));
 }
 
 // ---------- page ----------
@@ -106,9 +106,11 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
       if (m) {
         r = Object.fromEntries(Object.entries(server).map(([p, arr]) => [p, arr.map((v, i) => {
           const saved = m[w.children[i]!.key]?.[p];
-          return typeof saved === 'string' ? saved : v;
+          if (typeof saved !== 'string') return v;
+          const n = parseCaseInput(saved);
+          return n === null ? saved : fmtNum(n);
         })]));
-        back = Object.keys(r).some((p) => r[p]!.some((v, i) => v !== server[p]![i]));
+        back = Object.keys(r).some((p) => r[p]!.some((v, i) => parseCaseInput(v) !== parseCaseInput(server[p]![i]!)));
         if (!back) clearMirrors(mid, nid);
       }
       setWs(w);
@@ -216,12 +218,12 @@ export function Distribute({ mid = '', nid = '' }: { mid?: string; nid?: string 
     setRaw((prev) => {
       const v = prev[pack]?.[i] ?? '';
       const n = parseCaseInput(v);
-      if (n === null || String(n) === v) return prev;
-      return { ...prev, [pack]: prev[pack]!.map((x, j) => (j === i ? String(n) : x)) };
+      if (n === null || fmtNum(n) === v) return prev;
+      return { ...prev, [pack]: prev[pack]!.map((x, j) => (j === i ? fmtNum(n) : x)) };
     });
   }, []);
   const onReset = useCallback((pack: string) => {
-    setRaw((prev) => ({ ...prev, [pack]: (starts[pack] ?? []).map(String) }));
+    setRaw((prev) => ({ ...prev, [pack]: (starts[pack] ?? []).map(fmtNum) }));
     touched();
   }, [starts]);
   const onToggle = useCallback((g: string) => {
